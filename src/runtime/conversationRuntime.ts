@@ -48,6 +48,8 @@ export interface ConversationRuntime {
   listSessions(): Promise<Session[]>;
   deleteSession(sessionId: string): Promise<void>;
   getMessages(sessionId: string): Promise<ChatMessage[]>;
+  /** Snapshot read used for canonical UI state such as the session title. */
+  getSession?(sessionId: string): Promise<Session>;
   sendMessage(
     sessionId: string,
     input: string,

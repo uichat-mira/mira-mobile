@@ -57,6 +57,7 @@ import {
   getChatHistoryErrorMessage,
   getChatSendErrorMessage,
   readCanonicalSessionTitle,
+  readLocalSessionTitle,
 } from './chatSessionState';
 
 function ThinkingIndicator({ color }: { color: string }) {
@@ -320,7 +321,13 @@ export function ChatScreen() {
   );
 
   const refreshSessionTitle = useCallback(async () => {
-    if (isLocalProvider) return;
+    if (isLocalProvider) {
+      const localTitle = await readLocalSessionTitle(runtime, sessionId);
+      if (localTitle !== null) {
+        setSessionTitle(localTitle);
+      }
+      return;
+    }
     const canonicalTitle = await readCanonicalSessionTitle(
       miraHostClient,
       sessionId,
@@ -328,7 +335,7 @@ export function ChatScreen() {
     if (canonicalTitle !== null) {
       setSessionTitle(canonicalTitle);
     }
-  }, [isLocalProvider, sessionId]);
+  }, [isLocalProvider, runtime, sessionId]);
 
   const loadMessages = useCallback(async (): Promise<ChatMessage[] | null> => {
     setHistoryError(null);

@@ -18,6 +18,8 @@ interface StoredLocalSession {
 const STORAGE_KEY = 'mira.local-provider.sessions.v1';
 const writeQueues = new WeakMap<LocalKeyValueStore, Promise<void>>();
 
+export const DEFAULT_LOCAL_SESSION_TITLE = 'New local conversation';
+
 const toSession = (value: StoredLocalSession): Session => ({
   id: value.id,
   title: value.title,
@@ -108,20 +110,32 @@ export class LocalSessionRepository {
       .map(toSession);
   }
 
-  create(providerId: string, title = 'New local conversation'): Promise<Session> {
+  create(providerId: string, title = DEFAULT_LOCAL_SESSION_TITLE): Promise<Session> {
     return this.enqueueWrite(async () => {
       const values = await this.loadStored();
       const now = new Date().toISOString();
       const value: StoredLocalSession = {
         id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         providerId,
-        title: title.trim() || 'New local conversation',
+        title: title.trim() || DEFAULT_LOCAL_SESSION_TITLE,
         updatedAt: now,
         agentEnabled: false,
         messages: [],
       };
       await this.saveStored([value, ...values]);
       return toSession(value);
+    });
+  }
+
+  rename(sessionId: string, title: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const values = await this.loadStored();
+      const index = values.findIndex((item) => item.id === sessionId);
+      if (index < 0) throw new Error('Local session was not found');
+      const nextTitle = title.trim();
+      if (!nextTitle) return;
+      values[index] = { ...values[index], title: nextTitle };
+      await this.saveStored(values);
     });
   }
 

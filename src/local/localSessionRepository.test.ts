@@ -91,4 +91,21 @@ describe('LocalSessionRepository', () => {
 
     await expect(repository.getMessages(session.id)).resolves.toEqual([message]);
   });
+
+  it('renames only the requested session', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const session = await repository.create('provider-a');
+    const other = await repository.create('provider-a', 'Other');
+
+    await repository.rename(session.id, 'Renamed title');
+
+    await expect(repository.get(session.id)).resolves.toMatchObject({ title: 'Renamed title' });
+    await expect(repository.get(other.id)).resolves.toMatchObject({ title: 'Other' });
+  });
+
+  it('rejects renaming an unknown session', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+
+    await expect(repository.rename('missing', 'Nope')).rejects.toThrow('not found');
+  });
 });
