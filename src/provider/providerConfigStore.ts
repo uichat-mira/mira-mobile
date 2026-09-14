@@ -1,5 +1,9 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
 
+export interface LocalProviderCompatibility {
+  reasoningTags?: 'strip';
+}
+
 export interface LocalProviderConfig {
   id: string;
   name: string;
@@ -7,9 +11,29 @@ export interface LocalProviderConfig {
   model: string;
   protocol: 'chat-completions';
   toolGatewayId?: string;
+  compatibility?: LocalProviderCompatibility;
 }
 
 const STORAGE_KEY = 'mira.local-provider.configs.v1';
+
+const parseCompatibility = (
+  value: unknown,
+): LocalProviderCompatibility | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Stored local Provider compatibility configuration is invalid');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.reasoningTags !== undefined &&
+    record.reasoningTags !== 'strip'
+  ) {
+    throw new Error('Stored local Provider reasoning-tag compatibility is invalid');
+  }
+  return record.reasoningTags === 'strip'
+    ? { reasoningTags: 'strip' }
+    : undefined;
+};
 
 const parseConfig = (value: unknown): LocalProviderConfig => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -25,6 +49,7 @@ const parseConfig = (value: unknown): LocalProviderConfig => {
   ) {
     throw new Error('Stored local Provider configuration is incomplete');
   }
+  const compatibility = parseCompatibility(record.compatibility);
   return {
     id: record.id,
     name: record.name,
@@ -32,6 +57,7 @@ const parseConfig = (value: unknown): LocalProviderConfig => {
     model: record.model,
     protocol: 'chat-completions',
     ...(typeof record.toolGatewayId === 'string' ? { toolGatewayId: record.toolGatewayId } : {}),
+    ...(compatibility ? { compatibility } : {}),
   };
 };
 
