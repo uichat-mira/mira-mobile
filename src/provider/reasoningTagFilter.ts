@@ -97,11 +97,8 @@ export const filterReasoningTagEvents = (
 ): AsyncIterable<RuntimeEvent> =>
   (async function* () {
     const filter = createReasoningTagFilter();
-    let flushed = false;
 
     const flushVisible = function* (): Generator<RuntimeEvent> {
-      if (flushed) return;
-      flushed = true;
       const trailing = filter.flush();
       if (trailing) yield { type: 'text-delta' as const, delta: trailing };
     };
