@@ -1,6 +1,7 @@
 import type { ChatMessage, Session } from '../types';
 import { OpenAiCompatibleClient, type OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
+import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
 import { providerCredentialStore, type ProviderCredentialStore } from '../security/providerCredentialStore';
 import { LocalSessionRepository, DEFAULT_LOCAL_SESSION_TITLE } from '../local/localSessionRepository';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
@@ -21,6 +22,14 @@ const deriveSessionTitle = (input: string): string => {
     ? `${normalized.slice(0, MAX_SESSION_TITLE_LENGTH)}…`
     : normalized;
 };
+
+const applyProviderCompatibility = (
+  stream: AsyncIterable<RuntimeEvent>,
+  config: LocalProviderConfig,
+): AsyncIterable<RuntimeEvent> =>
+  config.compatibility?.reasoningTags === 'strip'
+    ? filterReasoningTagEvents(stream)
+    : stream;
 
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
@@ -167,12 +176,15 @@ export class LocalProviderRuntime implements ConversationRuntime {
         options?.agentEnabled && this.toolGateway
           ? await new MobileAgentLoop(this.toolGateway).run(
               requestMessages,
-              (messages, tools) =>
-                client.streamChat({
-                  model: config.model,
-                  messages: [...messages],
-                  tools: [...tools],
-                }),
+              async (messages, tools) =>
+                applyProviderCompatibility(
+                  await client.streamChat({
+                    model: config.model,
+                    messages: [...messages],
+                    tools: [...tools],
+                  }),
+                  config,
+                ),
               {
                 shouldPause: () => this.executionSuspended,
                 signal: abortController?.signal,
@@ -180,10 +192,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
                   this.waitForApprovalDecision(runToken!, approval),
               },
             )
-          : await client.streamChat({
-              model: config.model,
-              messages: requestMessages,
-            });
+          : applyProviderCompatibility(
+              await client.streamChat({
+                model: config.model,
+                messages: requestMessages,
+              }),
+              config,
+            );
     } catch (error) {
       if (this.activeClient === client) this.activeClient = null;
       if (
