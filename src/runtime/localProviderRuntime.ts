@@ -2,7 +2,7 @@ import type { ChatMessage, Session } from '../types';
 import { OpenAiCompatibleClient, type OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import { providerCredentialStore, type ProviderCredentialStore } from '../security/providerCredentialStore';
-import { LocalSessionRepository } from '../local/localSessionRepository';
+import { LocalSessionRepository, DEFAULT_LOCAL_SESSION_TITLE } from '../local/localSessionRepository';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { MobileAgentLoop } from './mobileAgentLoop';
 import type {
@@ -12,6 +12,15 @@ import type {
 } from '../tools/toolGatewayClient';
 
 const createMessageId = () => `local-message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const MAX_SESSION_TITLE_LENGTH = 30;
+
+const deriveSessionTitle = (input: string): string => {
+  const normalized = input.replace(/\s+/gu, ' ').trim();
+  if (!normalized) return DEFAULT_LOCAL_SESSION_TITLE;
+  return normalized.length > MAX_SESSION_TITLE_LENGTH
+    ? `${normalized.slice(0, MAX_SESSION_TITLE_LENGTH)}…`
+    : normalized;
+};
 
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
@@ -77,6 +86,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return this.sessionRepository.delete(sessionId);
   }
 
+  getSession(sessionId: string): Promise<Session> {
+    return this.sessionRepository.get(sessionId);
+  }
+
   getMessages(sessionId: string): Promise<ChatMessage[]> {
     return this.sessionRepository.getMessages(sessionId);
   }
@@ -107,8 +120,20 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (!alreadyRecorded) {
       await this.sessionRepository.appendMessages(sessionId, [userMessage]);
     }
+    const canonicalMessages = alreadyRecorded ? previous : [...previous, userMessage];
+    if (session.title === DEFAULT_LOCAL_SESSION_TITLE) {
+      const firstUserMessage = canonicalMessages.find(
+        (message) => message.role === 'user' && message.content.trim().length > 0,
+      );
+      if (firstUserMessage) {
+        await this.sessionRepository.rename(
+          sessionId,
+          deriveSessionTitle(firstUserMessage.content),
+        );
+      }
+    }
     const client = this.clientFactory(config, apiKey);
-    const requestMessages = (alreadyRecorded ? previous : [...previous, userMessage]).map<OpenAiCompatibleMessage>(
+    const requestMessages = canonicalMessages.map<OpenAiCompatibleMessage>(
       (message) => ({
         role: message.role,
         content: message.content,

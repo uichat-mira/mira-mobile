@@ -3,8 +3,13 @@ import { RemoteHostError } from '../api/remoteHttp';
 import { ToolGatewayError } from '../tools/toolGatewayClient';
 import { ToolPolicyError } from '../tools/toolPolicy';
 import type { RuntimeKind } from '../runtime/conversationRuntime';
+import type { Session } from '../types';
 
 type SessionReader = Pick<MiraHostApi, 'getSession'>;
+
+interface LocalSessionTitleReader {
+  getSession?(sessionId: string): Promise<Pick<Session, 'title'>>;
+}
 
 export const readCanonicalSessionTitle = async (
   client: SessionReader,
@@ -12,6 +17,18 @@ export const readCanonicalSessionTitle = async (
 ): Promise<string | null> => {
   try {
     return (await client.getSession(sessionId)).title;
+  } catch {
+    return null;
+  }
+};
+
+export const readLocalSessionTitle = async (
+  reader: LocalSessionTitleReader,
+  sessionId: string,
+): Promise<string | null> => {
+  if (!reader.getSession) return null;
+  try {
+    return (await reader.getSession(sessionId)).title;
   } catch {
     return null;
   }

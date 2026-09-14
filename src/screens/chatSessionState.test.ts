@@ -5,6 +5,7 @@ import {
   getChatHistoryErrorMessage,
   getChatSendErrorMessage,
   readCanonicalSessionTitle,
+  readLocalSessionTitle,
 } from './chatSessionState';
 
 describe('chatSessionState', () => {
@@ -27,6 +28,26 @@ describe('chatSessionState', () => {
     await expect(
       readCanonicalSessionTitle({ getSession }, 'thread-1'),
     ).resolves.toBeNull();
+  });
+
+  it('reads the canonical title from the local runtime session', async () => {
+    const getSession = jest.fn().mockResolvedValue({
+      title: '本地会话标题',
+    });
+
+    await expect(
+      readLocalSessionTitle({ getSession }, 'local-1'),
+    ).resolves.toBe('本地会话标题');
+    expect(getSession).toHaveBeenCalledWith('local-1');
+  });
+
+  it('keeps the route title when the local runtime cannot provide a session', async () => {
+    const getSession = jest.fn().mockRejectedValue(new Error('missing'));
+
+    await expect(
+      readLocalSessionTitle({ getSession }, 'local-1'),
+    ).resolves.toBeNull();
+    await expect(readLocalSessionTitle({}, 'local-1')).resolves.toBeNull();
   });
 
   it('distinguishes authorization, missing-thread and network history errors', () => {
