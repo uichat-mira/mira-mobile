@@ -8,6 +8,7 @@ const config: LocalProviderConfig = {
   model: 'model-1',
   protocol: 'chat-completions',
   toolGatewayId: 'gateway-1',
+  compatibility: { reasoningTags: 'strip' },
 };
 
 describe('ProviderConfigStore', () => {
@@ -16,6 +17,49 @@ describe('ProviderConfigStore', () => {
     await store.save([config]);
 
     await expect(store.load()).resolves.toEqual([config]);
+  });
+
+  it('keeps legacy provider configuration with compatibility disabled', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      'mira.local-provider.configs.v1',
+      JSON.stringify([
+        {
+          id: 'legacy',
+          name: 'Legacy Provider',
+          baseUrl: 'https://legacy.example.com',
+          model: 'legacy-model',
+          protocol: 'chat-completions',
+        },
+      ]),
+    );
+    const store = new ProviderConfigStore(storage);
+
+    await expect(store.load()).resolves.toEqual([
+      {
+        id: 'legacy',
+        name: 'Legacy Provider',
+        baseUrl: 'https://legacy.example.com',
+        model: 'legacy-model',
+        protocol: 'chat-completions',
+      },
+    ]);
+  });
+
+  it('rejects unsupported reasoning-tag compatibility values', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      'mira.local-provider.configs.v1',
+      JSON.stringify([
+        {
+          ...config,
+          compatibility: { reasoningTags: 'auto' },
+        },
+      ]),
+    );
+    const store = new ProviderConfigStore(storage);
+
+    await expect(store.load()).rejects.toThrow('reasoning-tag compatibility');
   });
 
   it('rejects incomplete stored configuration', async () => {
