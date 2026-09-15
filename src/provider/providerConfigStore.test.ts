@@ -48,7 +48,8 @@ describe('ProviderConfigStore', () => {
   });
 
   it('persists the default hidden-reasoning decision on save', async () => {
-    const store = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    const storage = new MemoryLocalKeyValueStore();
+    const store = new ProviderConfigStore(storage);
     await store.save([
       {
         id: 'default-hidden',
@@ -59,7 +60,8 @@ describe('ProviderConfigStore', () => {
       },
     ]);
 
-    await expect(store.load()).resolves.toEqual([
+    const raw = await storage.get('mira.local-provider.configs.v1');
+    expect(JSON.parse(raw ?? 'null')).toEqual([
       expect.objectContaining({
         id: 'default-hidden',
         compatibility: { reasoningTags: 'strip' },
