@@ -1,6 +1,5 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
-import { Pressable } from 'react-native';
 import { ConversationMenu } from './ConversationMenu';
 
 jest.mock('lucide-react-native', () => ({
@@ -25,13 +24,15 @@ jest.mock('../theme/ThemeContext', () => ({
   }),
 }));
 
-const findPressableByLabel = (
+const findButtonByLabel = (
   root: ReactTestRenderer.ReactTestInstance,
   label: string,
 ) =>
-  root
-    .findAllByType(Pressable)
-    .find((node) => node.props.accessibilityLabel === label);
+  root.findAll(
+    (node) =>
+      node.props.accessibilityRole === 'button' &&
+      node.props.accessibilityLabel === label,
+  )[0];
 
 describe('ConversationMenu share entry', () => {
   test('invokes the existing share entry when available', async () => {
@@ -51,7 +52,7 @@ describe('ConversationMenu share entry', () => {
       );
     });
 
-    const share = findPressableByLabel(renderer!.root, '分享');
+    const share = findButtonByLabel(renderer!.root, '分享');
     expect(share).toBeDefined();
     expect(share!.props.accessibilityState).toEqual({ disabled: false });
 
@@ -82,7 +83,7 @@ describe('ConversationMenu share entry', () => {
       );
     });
 
-    const share = findPressableByLabel(renderer!.root, '正在准备分享图片');
+    const share = findButtonByLabel(renderer!.root, '正在准备分享图片');
     expect(share).toBeDefined();
     expect(share!.props.accessibilityState).toEqual({ disabled: true });
     expect(share!.props.disabled).toBe(true);
