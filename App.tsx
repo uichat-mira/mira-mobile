@@ -40,6 +40,7 @@ import { remoteMiraHostClient } from './src/api/remoteMiraHost';
 import { deviceCredentialStore } from './src/security/deviceCredentialStore';
 import { useHostStore } from './src/store/hostStore';
 import { runtimeRegistry } from './src/runtime/runtimeRegistry';
+import { ShareCardCaptureRoot } from './src/share/ShareCardCapture';
 import type { RootStackParamList } from './src/types/navigation';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -190,6 +191,7 @@ function App() {
   return (
     <ThemeProvider>
       <SafeAreaProvider>
+        <ShareCardCaptureRoot />
         <NavigationContainer linking={linking}>
           <StatusBarThemed />
           <AppInner />
