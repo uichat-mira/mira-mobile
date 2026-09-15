@@ -150,9 +150,10 @@ export function SessionListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void hydratePins().catch(() => undefined);
-      void hydrateReads().catch(() => undefined);
-      void loadSessions();
+      void Promise.allSettled([
+        Promise.resolve().then(hydratePins),
+        Promise.resolve().then(hydrateReads),
+      ]).then(() => loadSessions());
     }, [hydratePins, hydrateReads, loadSessions]),
   );
 
