@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -8,7 +9,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -34,7 +34,6 @@ import {
 import type { RootStackParamList } from '../types/navigation';
 import type { ChatMessage } from '../types';
 import type { ConversationMatch } from '../chat/conversationTools';
-import { buildConversationShareText } from '../chat/conversationTools';
 import { miraHostClient } from '../api/miraHostClient';
 import { RemoteHostError } from '../api/remoteHttp';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
@@ -52,6 +51,8 @@ import {
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
 } from '../components/LocalAgentRunCard';
+import { buildShareCardModel } from '../share/shareCardModel';
+import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
@@ -235,6 +236,7 @@ export function ChatScreen() {
   const [agentError, setAgentError] = useState<string | null>(null);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isSearchVisible, setIsSearchVisible] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [searchFocusMessageId, setSearchFocusMessageId] = useState<string | null>(
     null,
   );
@@ -248,12 +250,21 @@ export function ChatScreen() {
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const menuButtonRef = useRef<View>(null);
   const abortRef = useRef(false);
+  const shareCoordinator = useMemo(() => new ConversationShareCoordinator(), []);
   const runtime = useMemo(
     () => runtimeRegistry.runtimeForSession(sessionId, source),
     [sessionId, source],
   );
   const isLocalProvider = runtime.kind === 'local-provider';
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
+  const shareDisabled = isSharing || isLoading || isLoadingHistory;
+  const shareAccessibilityLabel = isSharing
+    ? '正在准备分享图片'
+    : isLoading
+      ? '分享会话，当前回复完成后可用'
+      : isLoadingHistory
+        ? '分享会话，聊天记录加载完成后可用'
+        : '分享会话';
 
   useEffect(() => {
     setIsSearchVisible(false);
@@ -388,18 +399,34 @@ export function ChatScreen() {
   }, [isSearchVisible]);
 
   const handleShare = useCallback(async () => {
-    const shareText = buildConversationShareText(messages, sessionTitle);
-    if (!shareText) {
+    if (shareCoordinator.isActive || isSharing) return;
+    if (isLoadingHistory || isLoading) return;
+
+    const model = buildShareCardModel(messages, sessionTitle);
+    if (!model) {
       Alert.alert('暂无可分享内容', '当前会话还没有可分享的消息。');
       return;
     }
 
+    setIsSharing(true);
     try {
-      await Share.share({ message: shareText, title: sessionTitle });
+      await shareCoordinator.share(model);
     } catch {
-      Alert.alert('分享失败', '暂时无法分享当前会话，请稍后重试。');
+      Alert.alert(
+        '分享失败',
+        '未能生成分享图片或打开系统分享，请重试；若仍失败，可重新打开会话后再试。',
+      );
+    } finally {
+      setIsSharing(false);
     }
-  }, [messages, sessionTitle]);
+  }, [
+    isLoading,
+    isLoadingHistory,
+    isSharing,
+    messages,
+    sessionTitle,
+    shareCoordinator,
+  ]);
 
   const closeSearch = useCallback(() => {
     setIsSearchVisible(false);
@@ -885,14 +912,21 @@ export function ChatScreen() {
         >
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="分享会话"
+            accessibilityLabel={shareAccessibilityLabel}
+            accessibilityState={{ disabled: shareDisabled, busy: isSharing }}
+            disabled={shareDisabled}
             onPress={() => void handleShare()}
             style={({ pressed }) => [
               styles.groupButton,
-              pressed && { backgroundColor: colors.bg.soft },
+              pressed && !shareDisabled && { backgroundColor: colors.bg.soft },
+              shareDisabled && { opacity: 0.5 },
             ]}
           >
-            <Share2 size={19} color={colors.text.ink} strokeWidth={2} />
+            {isSharing ? (
+              <ActivityIndicator size="small" color={colors.text.ink} />
+            ) : (
+              <Share2 size={19} color={colors.text.ink} strokeWidth={2} />
+            )}
           </Pressable>
           <View
             style={[
@@ -922,6 +956,8 @@ export function ChatScreen() {
         anchor={menuAnchor}
         onClose={() => setIsMenuVisible(false)}
         onShare={() => void handleShare()}
+        shareDisabled={shareDisabled}
+        shareDisabledAccessibilityLabel={shareAccessibilityLabel}
         onFindInChat={openSearch}
       />
 
