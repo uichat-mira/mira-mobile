@@ -1,6 +1,7 @@
 import React from 'react';
 import { Image, Text } from 'react-native';
-import renderer from 'react-test-renderer';
+import type { ReactTestRenderer } from 'react-test-renderer';
+import renderer, { act } from 'react-test-renderer';
 import { ShareCardView } from './ShareCardView';
 import type { ShareCardModel } from './shareCardModel';
 
@@ -15,9 +16,17 @@ const model: ShareCardModel = {
   truncated: false,
 };
 
+const renderCard = (cardModel: ShareCardModel): ReactTestRenderer => {
+  let tree!: ReactTestRenderer;
+  act(() => {
+    tree = renderer.create(<ShareCardView model={cardModel} />);
+  });
+  return tree;
+};
+
 describe('ShareCardView', () => {
   it('renders fixed brand header, conversation content, logos, and footer metadata', () => {
-    const tree = renderer.create(<ShareCardView model={model} />);
+    const tree = renderCard(model);
     const texts = tree.root.findAllByType(Text);
     const values = texts.map((node) => node.props.children);
 
@@ -40,20 +49,20 @@ describe('ShareCardView', () => {
       (node) => node.props.children === '可以，从三个部分开始。',
     );
     expect(userText?.props.style).not.toEqual(assistantText?.props.style);
+
+    act(() => tree.unmount());
   });
 
   it('renders truthful truncation metadata', () => {
-    const tree = renderer.create(
-      <ShareCardView
-        model={{
-          ...model,
-          totalCount: 7,
-          truncated: true,
-        }}
-      />,
-    );
+    const tree = renderCard({
+      ...model,
+      totalCount: 7,
+      truncated: true,
+    });
     const values = tree.root.findAllByType(Text).map((node) => node.props.children);
 
     expect(values).toContain('已截取前 2 条 · 共 7 条');
+
+    act(() => tree.unmount());
   });
 });
