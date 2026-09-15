@@ -44,7 +44,7 @@ class MiraImageShareModule(
         sendIntent,
         title.ifBlank { DEFAULT_SHARE_TITLE },
       )
-      val activity = currentActivity
+      val activity = reactApplicationContext.currentActivity
       if (activity != null) {
         activity.startActivity(chooser)
       } else {
