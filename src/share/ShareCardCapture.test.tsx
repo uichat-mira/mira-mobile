@@ -177,4 +177,29 @@ describe('ShareCardCaptureRoot', () => {
 
     act(() => currentRoot.unmount());
   });
+
+  it('falls back to an older live root after the newest root unmounts', async () => {
+    mockCaptureRef.mockResolvedValueOnce('file:///tmp/older-root.png');
+
+    let olderRoot!: ReactTestRenderer;
+    let newerRoot!: ReactTestRenderer;
+    act(() => {
+      olderRoot = renderer.create(<ShareCardCaptureRoot />);
+      newerRoot = renderer.create(<ShareCardCaptureRoot />);
+    });
+
+    act(() => newerRoot.unmount());
+
+    let capture!: Promise<string>;
+    act(() => {
+      capture = requestShareCardCapture(model);
+    });
+
+    await act(async () => {
+      fireReadySignals(olderRoot);
+      await expect(capture).resolves.toBe('file:///tmp/older-root.png');
+    });
+
+    act(() => olderRoot.unmount());
+  });
 });
