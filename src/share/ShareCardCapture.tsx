@@ -24,7 +24,10 @@ const EXPECTED_LOGO_LOADS = 2;
 
 let nextRequestId = 0;
 let activeRequest: CaptureRequest | null = null;
-let registeredRoot: CaptureRootRegistration | null = null;
+let registeredRoots: CaptureRootRegistration[] = [];
+
+const latestRegisteredRoot = (): CaptureRootRegistration | null =>
+  registeredRoots[registeredRoots.length - 1] ?? null;
 
 export interface ShareCardCaptureOptions {
   timeoutMs?: number;
@@ -39,7 +42,7 @@ export function requestShareCardCapture(
   model: ShareCardModel,
   options: ShareCardCaptureOptions = {},
 ): Promise<string> {
-  const root = registeredRoot;
+  const root = latestRegisteredRoot();
   if (!root) {
     return Promise.reject(new Error('Share capture root is not mounted'));
   }
@@ -96,21 +99,20 @@ export function ShareCardCaptureRoot() {
       id: rootId,
       accept: (nextRequest) => {
         // The caller may have captured this registration immediately before a
-        // root replacement. Refuse stale work instead of dispatching setState
-        // into an instance that no longer owns the global capture slot.
-        if (registeredRoot !== registration) return false;
+        // root replacement. Only the most recent live root can accept new work.
+        if (latestRegisteredRoot() !== registration) return false;
         resetReadiness();
         setRequest(nextRequest);
         return true;
       },
     };
 
-    registeredRoot = registration;
+    registeredRoots = [...registeredRoots, registration];
     return () => {
-      if (registeredRoot === registration) registeredRoot = null;
+      registeredRoots = registeredRoots.filter((root) => root !== registration);
 
       // Only reject work that belongs to this exact root instance. A stale
-      // cleanup must never clear a request already owned by a newer root.
+      // cleanup must never clear a request already owned by another live root.
       const pending = activeRequest;
       if (pending?.rootId !== registration.id) return;
 
