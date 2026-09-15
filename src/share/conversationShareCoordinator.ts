@@ -1,5 +1,6 @@
+import type { ChatMessage } from '../types';
 import { requestShareCardCapture } from './ShareCardCapture';
-import type { ShareCardModel } from './shareCardModel';
+import { buildShareCardModel, type ShareCardModel } from './shareCardModel';
 import { sharePngFile } from './systemShareAdapter';
 
 export interface ConversationShareDependencies {
@@ -7,12 +8,13 @@ export interface ConversationShareDependencies {
   sharePng?: (uri: string, title: string) => Promise<void>;
 }
 
-export type ConversationShareResult = 'shared' | 'busy';
+export type ConversationShareResult = 'shared' | 'busy' | 'empty';
 
 /**
- * Own the single-flight boundary between card rasterization and the native
- * platform share sheet. It intentionally has no access to conversation
- * runtimes or persistence, so sharing cannot mutate authoritative chat state.
+ * Own model preparation plus the single-flight boundary between branded-card
+ * rasterization and the native platform share sheet. It intentionally has no
+ * runtime or persistence access, so sharing cannot mutate authoritative chat
+ * state; callers pass only the canonical message snapshot already on screen.
  */
 export class ConversationShareCoordinator {
   private active = false;
@@ -28,8 +30,14 @@ export class ConversationShareCoordinator {
     return this.active;
   }
 
-  async share(model: ShareCardModel): Promise<ConversationShareResult> {
+  async share(
+    messages: readonly ChatMessage[],
+    title?: string,
+  ): Promise<ConversationShareResult> {
     if (this.active) return 'busy';
+
+    const model = buildShareCardModel(messages, title);
+    if (!model) return 'empty';
 
     this.active = true;
     try {
