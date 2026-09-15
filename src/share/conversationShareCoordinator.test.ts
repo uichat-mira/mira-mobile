@@ -1,19 +1,32 @@
+import type { ChatMessage } from '../types';
 import { ConversationShareCoordinator } from './conversationShareCoordinator';
 import type { ShareCardModel } from './shareCardModel';
 
-const model: ShareCardModel = {
-  title: 'Mira 对话',
-  date: '2026.09.15',
-  messages: [{ id: 'u1', role: 'user', content: '你好' }],
-  totalCount: 1,
-  truncated: false,
-};
+const messages: ChatMessage[] = [
+  {
+    id: 'u1',
+    role: 'user',
+    content: '你好',
+    timestamp: new Date('2026-09-15T00:00:00Z'),
+  },
+  {
+    id: 'a1',
+    role: 'assistant',
+    content: '你好，我是 Mira。',
+    timestamp: new Date('2026-09-15T00:00:01Z'),
+  },
+];
 
 describe('ConversationShareCoordinator', () => {
-  test('captures the branded card before opening platform share', async () => {
+  test('builds the branded model, captures it, then opens platform share', async () => {
     const calls: string[] = [];
-    const capture = jest.fn(async () => {
+    const capture = jest.fn(async (model: ShareCardModel) => {
       calls.push('capture');
+      expect(model.title).toBe('Mira 对话');
+      expect(model.messages).toEqual([
+        { id: 'u1', role: 'user', content: '你好' },
+        { id: 'a1', role: 'assistant', content: '你好，我是 Mira。' },
+      ]);
       return 'file:///tmp/card.png';
     });
     const sharePng = jest.fn(async () => {
@@ -21,15 +34,34 @@ describe('ConversationShareCoordinator', () => {
     });
     const coordinator = new ConversationShareCoordinator({ capture, sharePng });
 
-    await expect(coordinator.share(model)).resolves.toBe('shared');
+    await expect(coordinator.share(messages, 'Mira 对话')).resolves.toBe('shared');
 
     expect(calls).toEqual(['capture', 'share']);
-    expect(capture).toHaveBeenCalledWith(model);
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(sharePng).toHaveBeenCalledWith('file:///tmp/card.png', 'Mira 对话');
     expect(coordinator.isActive).toBe(false);
   });
 
-  test('rejects overlapping work without starting a second capture', async () => {
+  test('returns empty without capture or platform share for an unshareable conversation', async () => {
+    const capture = jest.fn(async () => 'file:///tmp/card.png');
+    const sharePng = jest.fn(async () => undefined);
+    const coordinator = new ConversationShareCoordinator({ capture, sharePng });
+    const emptyMessages: ChatMessage[] = [
+      {
+        id: 'system-1',
+        role: 'system',
+        content: 'hidden instruction',
+        timestamp: new Date('2026-09-15T00:00:00Z'),
+      },
+    ];
+
+    await expect(coordinator.share(emptyMessages, '空会话')).resolves.toBe('empty');
+    expect(capture).not.toHaveBeenCalled();
+    expect(sharePng).not.toHaveBeenCalled();
+    expect(coordinator.isActive).toBe(false);
+  });
+
+  test('guards overlapping work without starting a second capture', async () => {
     let finishCapture: ((uri: string) => void) | undefined;
     const capture = jest.fn(
       () =>
@@ -40,9 +72,9 @@ describe('ConversationShareCoordinator', () => {
     const sharePng = jest.fn(async () => undefined);
     const coordinator = new ConversationShareCoordinator({ capture, sharePng });
 
-    const first = coordinator.share(model);
+    const first = coordinator.share(messages, 'Mira 对话');
     expect(coordinator.isActive).toBe(true);
-    await expect(coordinator.share(model)).resolves.toBe('busy');
+    await expect(coordinator.share(messages, 'Mira 对话')).resolves.toBe('busy');
     expect(capture).toHaveBeenCalledTimes(1);
 
     finishCapture?.('file:///tmp/card.png');
@@ -59,9 +91,11 @@ describe('ConversationShareCoordinator', () => {
     const sharePng = jest.fn(async () => undefined);
     const coordinator = new ConversationShareCoordinator({ capture, sharePng });
 
-    await expect(coordinator.share(model)).rejects.toThrow('capture failed');
+    await expect(coordinator.share(messages, 'Mira 对话')).rejects.toThrow(
+      'capture failed',
+    );
     expect(coordinator.isActive).toBe(false);
-    await expect(coordinator.share(model)).resolves.toBe('shared');
+    await expect(coordinator.share(messages, 'Mira 对话')).resolves.toBe('shared');
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
@@ -73,9 +107,11 @@ describe('ConversationShareCoordinator', () => {
       .mockResolvedValueOnce(undefined);
     const coordinator = new ConversationShareCoordinator({ capture, sharePng });
 
-    await expect(coordinator.share(model)).rejects.toThrow('share failed');
+    await expect(coordinator.share(messages, 'Mira 对话')).rejects.toThrow(
+      'share failed',
+    );
     expect(coordinator.isActive).toBe(false);
-    await expect(coordinator.share(model)).resolves.toBe('shared');
+    await expect(coordinator.share(messages, 'Mira 对话')).resolves.toBe('shared');
     expect(sharePng).toHaveBeenCalledTimes(2);
   });
 });
