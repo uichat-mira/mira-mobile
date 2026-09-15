@@ -27,6 +27,13 @@ const fireReadySignals = (tree: ReactTestRenderer) => {
   logos.forEach((logo) => logo.props.onLoad());
 };
 
+const captureError = (capture: Promise<string>): Promise<Error> =>
+  capture.then(
+    () => Promise.reject(new Error('Expected capture to reject')),
+    (error: unknown) =>
+      error instanceof Error ? error : new Error(String(error)),
+  );
+
 describe('ShareCardCaptureRoot', () => {
   let tree: ReactTestRenderer | null = null;
 
@@ -59,12 +66,12 @@ describe('ShareCardCaptureRoot', () => {
 
     await expect(requestShareCardCapture(model)).rejects.toThrow('already in progress');
 
-    const firstResult = expect(first).rejects.toThrow('unmounted');
+    const firstError = captureError(first);
     act(() => {
       tree?.unmount();
       tree = null;
     });
-    await firstResult;
+    expect((await firstError).message).toContain('unmounted');
   });
 
   it('times out cleanly and accepts a later request', async () => {
@@ -75,17 +82,17 @@ describe('ShareCardCaptureRoot', () => {
     act(() => {
       first = requestShareCardCapture(model, { timeoutMs: 50 });
     });
-    const firstResult = expect(first).rejects.toThrow('timed out');
+    const firstError = captureError(first);
     act(() => jest.advanceTimersByTime(50));
-    await firstResult;
+    expect((await firstError).message).toContain('timed out');
 
     let second!: Promise<string>;
     act(() => {
       second = requestShareCardCapture(model, { timeoutMs: 50 });
     });
-    const secondResult = expect(second).rejects.toThrow('timed out');
+    const secondError = captureError(second);
     act(() => jest.advanceTimersByTime(50));
-    await secondResult;
+    expect((await secondError).message).toContain('timed out');
   });
 
   it('waits for layout and both raster assets before capturing PNG', async () => {
@@ -144,5 +151,30 @@ describe('ShareCardCaptureRoot', () => {
     });
 
     expect(mockCaptureRef).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a stale root cleanup reject work owned by a newer root', async () => {
+    mockCaptureRef.mockResolvedValueOnce('file:///tmp/new-root.png');
+
+    let staleRoot!: ReactTestRenderer;
+    let currentRoot!: ReactTestRenderer;
+    act(() => {
+      staleRoot = renderer.create(<ShareCardCaptureRoot />);
+      currentRoot = renderer.create(<ShareCardCaptureRoot />);
+    });
+
+    let capture!: Promise<string>;
+    act(() => {
+      capture = requestShareCardCapture(model);
+    });
+
+    act(() => staleRoot.unmount());
+
+    await act(async () => {
+      fireReadySignals(currentRoot);
+      await expect(capture).resolves.toBe('file:///tmp/new-root.png');
+    });
+
+    act(() => currentRoot.unmount());
   });
 });

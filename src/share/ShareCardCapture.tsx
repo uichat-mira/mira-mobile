@@ -6,10 +6,16 @@ import { captureRef } from './viewShotAdapter';
 
 interface CaptureRequest {
   id: number;
+  rootId: symbol;
   model: ShareCardModel;
   resolve: (uri: string) => void;
   reject: (error: Error) => void;
   timeoutMs: number;
+}
+
+interface CaptureRootRegistration {
+  id: symbol;
+  notify: (request: CaptureRequest) => void;
 }
 
 const DEFAULT_CAPTURE_TIMEOUT_MS = 10_000;
@@ -18,7 +24,7 @@ const EXPECTED_LOGO_LOADS = 2;
 
 let nextRequestId = 0;
 let activeRequest: CaptureRequest | null = null;
-let notifyRoot: ((request: CaptureRequest) => void) | null = null;
+let registeredRoot: CaptureRootRegistration | null = null;
 
 export interface ShareCardCaptureOptions {
   timeoutMs?: number;
@@ -33,7 +39,8 @@ export function requestShareCardCapture(
   model: ShareCardModel,
   options: ShareCardCaptureOptions = {},
 ): Promise<string> {
-  if (!notifyRoot) {
+  const root = registeredRoot;
+  if (!root) {
     return Promise.reject(new Error('Share capture root is not mounted'));
   }
   if (activeRequest) {
@@ -43,18 +50,23 @@ export function requestShareCardCapture(
   return new Promise<string>((resolve, reject) => {
     const request: CaptureRequest = {
       id: ++nextRequestId,
+      rootId: root.id,
       model,
       resolve,
       reject,
       timeoutMs: Math.max(0, options.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS),
     };
     activeRequest = request;
-    notifyRoot?.(request);
+    root.notify(request);
   });
 }
 
 export function ShareCardCaptureRoot() {
   const [request, setRequest] = useState<CaptureRequest | null>(null);
+  const rootIdRef = useRef<symbol | null>(null);
+  if (!rootIdRef.current) rootIdRef.current = Symbol('share-card-capture-root');
+  const rootId = rootIdRef.current;
+
   const cardRef = useRef<View>(null);
   const layoutDoneRef = useRef(false);
   const logoLoadsRef = useRef(0);
@@ -67,25 +79,33 @@ export function ShareCardCaptureRoot() {
   }, []);
 
   useEffect(() => {
-    const rootNotifier = (nextRequest: CaptureRequest) => {
-      resetReadiness();
-      setRequest(nextRequest);
+    const registration: CaptureRootRegistration = {
+      id: rootId,
+      notify: (nextRequest) => {
+        resetReadiness();
+        setRequest(nextRequest);
+      },
     };
 
-    notifyRoot = rootNotifier;
+    registeredRoot = registration;
     return () => {
-      if (notifyRoot === rootNotifier) notifyRoot = null;
+      if (registeredRoot === registration) registeredRoot = null;
+
+      // Only reject work that belongs to this exact root instance. A stale
+      // cleanup must never clear a request already owned by a newer root.
       const pending = activeRequest;
+      if (pending?.rootId !== registration.id) return;
+
       activeRequest = null;
-      if (pending) pending.reject(new Error('Share capture root was unmounted'));
+      pending.reject(new Error('Share capture root was unmounted'));
     };
-  }, [resetReadiness]);
+  }, [resetReadiness, rootId]);
 
   const settle = useCallback(
     (target: CaptureRequest, outcome: { uri: string } | { error: Error }) => {
       // A timed-out or unmounted capture can finish later. Never let that stale
       // native result settle a newer request that has since become active.
-      if (activeRequest !== target) return;
+      if (activeRequest !== target || target.rootId !== rootId) return;
 
       activeRequest = null;
       setRequest(null);
@@ -93,7 +113,7 @@ export function ShareCardCaptureRoot() {
       if ('uri' in outcome) target.resolve(outcome.uri);
       else target.reject(outcome.error);
     },
-    [resetReadiness],
+    [resetReadiness, rootId],
   );
 
   useEffect(() => {
@@ -105,7 +125,7 @@ export function ShareCardCaptureRoot() {
   }, [request, settle]);
 
   const maybeCapture = useCallback(async () => {
-    if (!request || activeRequest !== request || captureStartedRef.current) return;
+    if (!request || activeRequest !== request || request.rootId !== rootId || captureStartedRef.current) return;
     if (!layoutDoneRef.current || logoLoadsRef.current < EXPECTED_LOGO_LOADS) return;
 
     captureStartedRef.current = true;
@@ -122,7 +142,7 @@ export function ShareCardCaptureRoot() {
         error: error instanceof Error ? error : new Error('Share image capture failed'),
       });
     }
-  }, [request, settle]);
+  }, [request, rootId, settle]);
 
   if (!request) return null;
 
