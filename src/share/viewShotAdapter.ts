@@ -11,8 +11,10 @@ type ViewShotRuntime = {
 
 // react-native-view-shot 5.x exposes TypeScript source files through its package
 // entry. Mira's strict noUnused* checks would otherwise typecheck dependency
-// internals. Keep that third-party implementation behind this narrow runtime
-// boundary rather than weakening the repository TypeScript rules.
-const viewShotRuntime = require('react-native-view-shot') as ViewShotRuntime;
-
-export const captureRef = viewShotRuntime.captureRef;
+// internals, while Jest would eagerly parse that source during App imports.
+// Keep the package behind a lazy runtime boundary instead of weakening either
+// repository TypeScript rules or Jest's node_modules transform policy.
+export const captureRef: ViewShotRuntime['captureRef'] = (target, options) => {
+  const viewShotRuntime = require('react-native-view-shot') as ViewShotRuntime;
+  return viewShotRuntime.captureRef(target, options);
+};
