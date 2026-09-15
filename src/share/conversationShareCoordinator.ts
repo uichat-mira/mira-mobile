@@ -9,12 +9,17 @@ export interface ConversationShareDependencies {
 }
 
 export type ConversationShareResult = 'shared' | 'busy' | 'empty';
+export type ConversationShareInput = ShareCardModel | readonly ChatMessage[];
+
+const isPreparedShareCardModel = (
+  input: ConversationShareInput,
+): input is ShareCardModel => !Array.isArray(input);
 
 /**
- * Own model preparation plus the single-flight boundary between branded-card
- * rasterization and the native platform share sheet. It intentionally has no
- * runtime or persistence access, so sharing cannot mutate authoritative chat
- * state; callers pass only the canonical message snapshot already on screen.
+ * Own the single-flight boundary between branded-card rasterization and the
+ * native platform share sheet. It can prepare a model from a canonical message
+ * snapshot, or accept the same prepared model used by the chat UI for immediate
+ * empty-state feedback. It has no runtime or persistence access.
  */
 export class ConversationShareCoordinator {
   private active = false;
@@ -31,12 +36,14 @@ export class ConversationShareCoordinator {
   }
 
   async share(
-    messages: readonly ChatMessage[],
+    input: ConversationShareInput,
     title?: string,
   ): Promise<ConversationShareResult> {
     if (this.active) return 'busy';
 
-    const model = buildShareCardModel(messages, title);
+    const model = isPreparedShareCardModel(input)
+      ? input
+      : buildShareCardModel(input, title);
     if (!model) return 'empty';
 
     this.active = true;
