@@ -38,10 +38,15 @@ const resolveMessageContent = (message: ChatMessage): string => {
     .trim();
 };
 
+const truncateCodePoints = (value: string, max: number): string => {
+  const characters = Array.from(value);
+  if (characters.length <= max) return value;
+  return `${characters.slice(0, Math.max(0, max - 1)).join('')}…`;
+};
+
 const truncateText = (value: string, max: number): string => {
   const normalized = value.replace(/\s+/gu, ' ').trim();
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, max)}…`;
+  return truncateCodePoints(normalized, max);
 };
 
 const formatDate = (now: Date): string => {
@@ -68,7 +73,6 @@ export const buildShareCardModel = (
   messages: readonly ChatMessage[],
   title?: string,
   now: Date = new Date(),
-  maxMessages: number = MAX_SHARE_CARD_MESSAGES,
 ): ShareCardModel | null => {
   const shareable = messages
     .filter(isShareableMessage)
@@ -80,13 +84,10 @@ export const buildShareCardModel = (
     .filter((message) => message.content.length > 0);
   if (shareable.length === 0) return null;
 
-  const capped = shareable.slice(0, maxMessages).map((message) => ({
+  const capped = shareable.slice(0, MAX_SHARE_CARD_MESSAGES).map((message) => ({
     id: message.id,
     role: message.role,
-    content:
-      message.content.length > MAX_SHARE_CARD_MESSAGE_CHARS
-        ? `${message.content.slice(0, MAX_SHARE_CARD_MESSAGE_CHARS)}…`
-        : message.content,
+    content: truncateCodePoints(message.content, MAX_SHARE_CARD_MESSAGE_CHARS),
   }));
 
   return {
