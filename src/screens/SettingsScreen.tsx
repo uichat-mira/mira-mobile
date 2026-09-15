@@ -50,7 +50,7 @@ type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
 
 const appearanceOptions: readonly SettingsChoice<ThemeMode>[] = [
-  { value: 'system', label: '系统（默认）' },
+  { value: 'system', label: '跟随系统（默认）' },
   { value: 'light', label: '浅色' },
   { value: 'dark', label: '深色' },
 ];
