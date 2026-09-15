@@ -257,14 +257,17 @@ export function ChatScreen() {
   );
   const isLocalProvider = runtime.kind === 'local-provider';
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
-  const shareDisabled = isSharing || isLoading || isLoadingHistory;
+  const shareDisabled =
+    isSharing || isLoading || isLoadingHistory || historyError !== null;
   const shareAccessibilityLabel = isSharing
     ? '正在准备分享图片'
     : isLoading
       ? '分享会话，当前回复完成后可用'
       : isLoadingHistory
         ? '分享会话，聊天记录加载完成后可用'
-        : '分享会话';
+        : historyError
+          ? '分享会话，聊天记录重新加载后可用'
+          : '分享会话';
 
   useEffect(() => {
     setIsSearchVisible(false);
@@ -400,7 +403,7 @@ export function ChatScreen() {
 
   const handleShare = useCallback(async () => {
     if (shareCoordinator.isActive || isSharing) return;
-    if (isLoadingHistory || isLoading) return;
+    if (isLoadingHistory || isLoading || historyError) return;
 
     const model = buildShareCardModel(messages, sessionTitle);
     if (!model) {
@@ -420,6 +423,7 @@ export function ChatScreen() {
       setIsSharing(false);
     }
   }, [
+    historyError,
     isLoading,
     isLoadingHistory,
     isSharing,
