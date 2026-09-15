@@ -51,20 +51,14 @@ const baseConfig: LocalProviderConfig = {
 };
 
 describe('LocalProviderRuntime reasoning-tag compatibility', () => {
-  it('filters split reasoning tags before runtime events and persisted history', async () => {
-    const { runtime, repository, session } = await createRuntime(
-      {
-        ...baseConfig,
-        compatibility: { reasoningTags: 'strip' },
-      },
-      [
-        { type: 'text-delta', delta: '<th' },
-        { type: 'text-delta', delta: 'ink>hidden' },
-        { type: 'text-delta', delta: '</thi' },
-        { type: 'text-delta', delta: 'nk>visible' },
-        { type: 'finish', reason: 'stop' },
-      ],
-    );
+  it('filters split reasoning tags by default before runtime events and persisted history', async () => {
+    const { runtime, repository, session } = await createRuntime(baseConfig, [
+      { type: 'text-delta', delta: '<th' },
+      { type: 'text-delta', delta: 'ink>hidden' },
+      { type: 'text-delta', delta: '</thi' },
+      { type: 'text-delta', delta: 'nk>visible' },
+      { type: 'finish', reason: 'stop' },
+    ]);
 
     const stream = await runtime.sendMessage(session.id, 'hello');
 
@@ -78,12 +72,37 @@ describe('LocalProviderRuntime reasoning-tag compatibility', () => {
     ]);
   });
 
-  it('preserves literal reasoning markup when compatibility is disabled', async () => {
-    const literal = '<think>example for the user</think>';
+  it('drops a trailing unclosed reasoning block by default', async () => {
     const { runtime, repository, session } = await createRuntime(baseConfig, [
-      { type: 'text-delta', delta: literal },
-      { type: 'finish', reason: 'stop' },
+      { type: 'text-delta', delta: 'visible' },
+      { type: 'text-delta', delta: '<think>still hidden' },
+      { type: 'finish', reason: 'length' },
     ]);
+
+    const stream = await runtime.sendMessage(session.id, 'hello');
+
+    await expect(collect(stream)).resolves.toEqual([
+      { type: 'text-delta', delta: 'visible' },
+      { type: 'finish', reason: 'length' },
+    ]);
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'hello' }),
+      expect.objectContaining({ role: 'assistant', content: 'visible' }),
+    ]);
+  });
+
+  it('preserves literal reasoning markup only with explicit code-level preserve mode', async () => {
+    const literal = '<think>example for the user</think>';
+    const { runtime, repository, session } = await createRuntime(
+      {
+        ...baseConfig,
+        compatibility: { reasoningTags: 'preserve' },
+      },
+      [
+        { type: 'text-delta', delta: literal },
+        { type: 'finish', reason: 'stop' },
+      ],
+    );
 
     const stream = await runtime.sendMessage(session.id, 'show the tag');
 
