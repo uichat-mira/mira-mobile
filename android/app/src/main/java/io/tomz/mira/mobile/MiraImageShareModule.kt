@@ -9,6 +9,8 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.io.File
+import java.io.IOException
+import java.util.UUID
 
 class MiraImageShareModule(
   reactContext: ReactApplicationContext,
@@ -29,10 +31,11 @@ class MiraImageShareModule(
         return
       }
 
+      val shareFile = prepareShareFile(sourceFile)
       val contentUri = FileProvider.getUriForFile(
         reactApplicationContext,
         "${reactApplicationContext.packageName}.mira.share",
-        sourceFile,
+        shareFile,
       )
       val sendIntent = Intent(Intent.ACTION_SEND).apply {
         type = "image/png"
@@ -52,7 +55,8 @@ class MiraImageShareModule(
         reactApplicationContext.startActivity(chooser)
       }
       // Android does not provide a reliable completion signal for the chosen
-      // target here. Success means the system chooser was launched.
+      // target here. Keep the copied file available after launching the chooser;
+      // stale copies are cleaned on a later share attempt.
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("IMAGE_SHARE_FAILED", "Unable to open Android image share", error)
@@ -82,8 +86,37 @@ class MiraImageShareModule(
     }
   }
 
+  private fun prepareShareFile(sourceFile: File): File {
+    val shareDirectory = File(reactApplicationContext.cacheDir, SHARE_DIRECTORY_NAME)
+    if (!shareDirectory.exists() && !shareDirectory.mkdirs()) {
+      throw IOException("Unable to create Mira share cache directory")
+    }
+    cleanupStaleShareFiles(shareDirectory)
+
+    val shareFile = File(
+      shareDirectory,
+      "conversation-${UUID.randomUUID()}.png",
+    )
+    sourceFile.copyTo(shareFile, overwrite = false)
+    if (!shareFile.exists() || shareFile.length() <= 0L) {
+      throw IOException("Unable to prepare Mira share image")
+    }
+    return shareFile
+  }
+
+  private fun cleanupStaleShareFiles(shareDirectory: File) {
+    val cutoff = System.currentTimeMillis() - SHARE_FILE_MAX_AGE_MS
+    shareDirectory.listFiles()?.forEach { file ->
+      if (file.isFile && file.lastModified() < cutoff) {
+        file.delete()
+      }
+    }
+  }
+
   companion object {
     private const val MODULE_NAME = "MiraImageShare"
     private const val DEFAULT_SHARE_TITLE = "分享 Mira 对话"
+    private const val SHARE_DIRECTORY_NAME = "mira-share"
+    private const val SHARE_FILE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
   }
 }
