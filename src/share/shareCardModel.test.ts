@@ -100,24 +100,30 @@ describe('buildShareCardModel', () => {
     expect(model?.truncated).toBe(true);
   });
 
-  it('caps a single oversized message and marks the cut with an ellipsis', () => {
+  it('caps an oversized message within the limit and preserves emoji boundaries', () => {
+    const prefix = '长'.repeat(MAX_SHARE_CARD_MESSAGE_CHARS - 2);
     const model = buildShareCardModel(
-      [message('user-1', 'user', '长'.repeat(MAX_SHARE_CARD_MESSAGE_CHARS + 10))],
+      [message('user-1', 'user', `${prefix}😀后续内容`)],
       '标题',
       new Date('2026-09-08T08:00:00Z'),
     );
 
-    expect(model?.messages[0]?.content).toBe(`${'长'.repeat(MAX_SHARE_CARD_MESSAGE_CHARS)}…`);
+    const content = model?.messages[0]?.content ?? '';
+    expect(content).toBe(`${prefix}😀…`);
+    expect(Array.from(content)).toHaveLength(MAX_SHARE_CARD_MESSAGE_CHARS);
+    expect(content).not.toContain('\uFFFD');
     expect(model?.truncated).toBe(false);
   });
 
-  it('truncates a long explicit title to thirty characters', () => {
+  it('truncates a long explicit title within thirty characters without splitting emoji', () => {
+    const prefix = '标'.repeat(28);
     const model = buildShareCardModel(
       [message('user-1', 'user', 'hello')],
-      '标'.repeat(45),
+      `${prefix}😀后续标题`,
       new Date('2026-09-08T08:00:00Z'),
     );
 
-    expect(model?.title).toBe(`${'标'.repeat(30)}…`);
+    expect(model?.title).toBe(`${prefix}😀…`);
+    expect(Array.from(model?.title ?? '')).toHaveLength(30);
   });
 });
