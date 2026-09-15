@@ -15,7 +15,7 @@ interface CaptureRequest {
 
 interface CaptureRootRegistration {
   id: symbol;
-  notify: (request: CaptureRequest) => void;
+  accept: (request: CaptureRequest) => boolean;
 }
 
 const DEFAULT_CAPTURE_TIMEOUT_MS = 10_000;
@@ -57,7 +57,20 @@ export function requestShareCardCapture(
       timeoutMs: Math.max(0, options.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS),
     };
     activeRequest = request;
-    root.notify(request);
+
+    try {
+      if (!root.accept(request)) {
+        if (activeRequest === request) activeRequest = null;
+        reject(new Error('Share capture root is not mounted'));
+      }
+    } catch (error) {
+      if (activeRequest === request) activeRequest = null;
+      reject(
+        error instanceof Error
+          ? error
+          : new Error('Share capture root failed to accept request'),
+      );
+    }
   });
 }
 
@@ -81,9 +94,14 @@ export function ShareCardCaptureRoot() {
   useEffect(() => {
     const registration: CaptureRootRegistration = {
       id: rootId,
-      notify: (nextRequest) => {
+      accept: (nextRequest) => {
+        // The caller may have captured this registration immediately before a
+        // root replacement. Refuse stale work instead of dispatching setState
+        // into an instance that no longer owns the global capture slot.
+        if (registeredRoot !== registration) return false;
         resetReadiness();
         setRequest(nextRequest);
+        return true;
       },
     };
 
@@ -125,7 +143,14 @@ export function ShareCardCaptureRoot() {
   }, [request, settle]);
 
   const maybeCapture = useCallback(async () => {
-    if (!request || activeRequest !== request || request.rootId !== rootId || captureStartedRef.current) return;
+    if (
+      !request ||
+      activeRequest !== request ||
+      request.rootId !== rootId ||
+      captureStartedRef.current
+    ) {
+      return;
+    }
     if (!layoutDoneRef.current || logoLoadsRef.current < EXPECTED_LOGO_LOADS) return;
 
     captureStartedRef.current = true;
