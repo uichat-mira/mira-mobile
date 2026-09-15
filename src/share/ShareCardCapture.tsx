@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { captureRef } from 'react-native-view-shot';
 import { SHARE_CARD_WIDTH, ShareCardView } from './ShareCardView';
 import type { ShareCardModel } from './shareCardModel';
+import { captureRef } from './viewShotAdapter';
 
 interface CaptureRequest {
   id: number;

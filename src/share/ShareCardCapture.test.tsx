@@ -2,11 +2,11 @@ import React from 'react';
 import { Image } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
-import { captureRef } from 'react-native-view-shot';
 import type { ShareCardModel } from './shareCardModel';
 import { requestShareCardCapture, ShareCardCaptureRoot } from './ShareCardCapture';
+import { captureRef } from './viewShotAdapter';
 
-jest.mock('react-native-view-shot', () => ({
+jest.mock('./viewShotAdapter', () => ({
   captureRef: jest.fn(),
 }));
 
