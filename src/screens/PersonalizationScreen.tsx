@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChevronDown, X } from 'lucide-react-native';
@@ -15,6 +15,7 @@ import {
   MAX_TRAIT_LENGTH,
   addTrait,
   loadPersonalizationSettings,
+  normalizeTrait,
   removeTrait,
   savePersonalizationSettings,
   type PersonalizationSettings,
@@ -32,6 +33,10 @@ const errorMessage = (error: unknown) =>
     ? error.message
     : '无法保存个性化设置，请稍后重试。';
 
+// Persisting on every keystroke would hit native storage per character
+// (Android uses a synchronous commit), so the draft is debounced instead.
+const INSTRUCTIONS_DEBOUNCE_MS = 500;
+
 export function PersonalizationScreen() {
   const navigation = useNavigation();
   const { colors } = useTheme();
@@ -41,20 +46,33 @@ export function PersonalizationScreen() {
   const [toneOpen, setToneOpen] = useState(false);
   const [traitModalOpen, setTraitModalOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  // While a load has failed the in-memory settings are defaults; editing must
+  // stay locked or a single save would overwrite the persisted values.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const toneLabel = toneOptions.find((option) => option.value === settings.tone)?.label ?? '';
+  const [instructionsDraft, setInstructionsDraft] = useState('');
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const instructionsDraftRef = useRef(instructionsDraft);
+  instructionsDraftRef.current = instructionsDraft;
+  const instructionsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
+  const loadSettings = useCallback(() => {
     let cancelled = false;
 
     void loadPersonalizationSettings()
       .then((loaded) => {
         if (cancelled) return;
         setSettings(loaded);
+        setInstructionsDraft(loaded.instructions);
         setPersistenceError(null);
+        setLoadFailed(false);
       })
       .catch((error) => {
-        if (!cancelled) setPersistenceError(errorMessage(error));
+        if (!cancelled) {
+          setPersistenceError(errorMessage(error));
+          setLoadFailed(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setHydrated(true);
@@ -65,6 +83,8 @@ export function PersonalizationScreen() {
     };
   }, []);
 
+  useEffect(() => loadSettings(), [loadSettings]);
+
   const applySettings = useCallback((next: PersonalizationSettings) => {
     setSettings(next);
     setPersistenceError(null);
@@ -73,7 +93,49 @@ export function PersonalizationScreen() {
     });
   }, []);
 
+  const persistInstructions = useCallback(() => {
+    if (instructionsDebounceRef.current) {
+      clearTimeout(instructionsDebounceRef.current);
+      instructionsDebounceRef.current = null;
+    }
+    if (instructionsDraftRef.current !== settingsRef.current.instructions) {
+      applySettings({ ...settingsRef.current, instructions: instructionsDraftRef.current });
+    }
+  }, [applySettings]);
+
+  const onChangeInstructions = useCallback(
+    (text: string) => {
+      setInstructionsDraft(text);
+      if (instructionsDebounceRef.current) clearTimeout(instructionsDebounceRef.current);
+      instructionsDebounceRef.current = setTimeout(persistInstructions, INSTRUCTIONS_DEBOUNCE_MS);
+    },
+    [persistInstructions],
+  );
+
+  // Leaving the screen must still flush the tail of an in-flight debounce;
+  // onEndEditing alone is not guaranteed to fire on navigation.
+  useEffect(() => {
+    return () => {
+      if (instructionsDebounceRef.current) {
+        clearTimeout(instructionsDebounceRef.current);
+        instructionsDebounceRef.current = null;
+      }
+      const text = instructionsDraftRef.current;
+      const current = settingsRef.current;
+      if (text !== current.instructions) {
+        // The screen is gone; a failure here can no longer be surfaced.
+        void savePersonalizationSettings({ ...current, instructions: text }).catch(
+          () => undefined,
+        );
+      }
+    };
+  }, []);
+
   if (!hydrated) return null;
+
+  const controlsLocked = loadFailed;
+  const traitsAtCap = settings.traits.length >= MAX_TRAITS;
+  const toneLabel = toneOptions.find((option) => option.value === settings.tone)?.label ?? '';
 
   return (
     <SafeAreaView
@@ -82,7 +144,25 @@ export function PersonalizationScreen() {
     >
       <SettingsPageHeader title="个性化" onConfirm={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {persistenceError ? (
+        {controlsLocked ? (
+          <View style={[styles.loadErrorBox, { backgroundColor: colors.status.errorBg }]}>
+            <Text style={[styles.loadErrorText, { color: colors.status.error }]}>
+              {`个性化设置读取失败：${persistenceError ?? ''}`}
+            </Text>
+            <Pressable
+              onPress={loadSettings}
+              style={({ pressed }) => [
+                styles.retryButton,
+                { backgroundColor: colors.bg.card },
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="重试加载个性化设置"
+            >
+              <Text style={[styles.retryLabel, { color: colors.text.ink }]}>重试</Text>
+            </Pressable>
+          </View>
+        ) : persistenceError ? (
           <Text style={[styles.help, { color: colors.status.error }]}>
             {`个性化设置保存失败：${persistenceError}`}
           </Text>
@@ -91,11 +171,14 @@ export function PersonalizationScreen() {
           style={({ pressed }) => [
             styles.surface,
             { backgroundColor: colors.bg.card },
+            controlsLocked && styles.disabledSurface,
             pressed && { opacity: 0.8 },
           ]}
           onPress={() => setToneOpen(true)}
+          disabled={controlsLocked}
           accessibilityRole="button"
           accessibilityLabel="基本风格和语调"
+          accessibilityState={{ disabled: controlsLocked }}
         >
           <View style={styles.flex}>
             <Text style={[styles.title, { color: colors.text.ink }]}>基本风格和语调</Text>
@@ -116,6 +199,7 @@ export function PersonalizationScreen() {
           <Switch
             value={settings.warmthEnabled}
             onValueChange={(value) => applySettings({ ...settings, warmthEnabled: value })}
+            disabled={controlsLocked}
             trackColor={{ false: colors.border.default, true: colors.primary }}
             thumbColor={colors.bg.elevated}
           />
@@ -127,10 +211,16 @@ export function PersonalizationScreen() {
               onPress={() =>
                 applySettings({ ...settings, traits: removeTrait(settings.traits, index) })
               }
-              style={({ pressed }) => [styles.traitRemove, pressed && { opacity: 0.6 }]}
+              style={({ pressed }) => [
+                styles.traitRemove,
+                controlsLocked && styles.disabledSurface,
+                pressed && { opacity: 0.6 },
+              ]}
               hitSlop={8}
+              disabled={controlsLocked}
               accessibilityRole="button"
               accessibilityLabel={`删除特征 ${trait}`}
+              accessibilityState={{ disabled: controlsLocked }}
             >
               <X size={18} color={colors.text.muted} />
             </Pressable>
@@ -140,16 +230,21 @@ export function PersonalizationScreen() {
           style={({ pressed }) => [
             styles.surface,
             { backgroundColor: colors.bg.card },
+            (controlsLocked || traitsAtCap) && styles.disabledSurface,
             pressed && { opacity: 0.8 },
           ]}
           onPress={() => setTraitModalOpen(true)}
+          disabled={controlsLocked || traitsAtCap}
           accessibilityRole="button"
           accessibilityLabel="添加特征"
+          accessibilityState={{ disabled: controlsLocked || traitsAtCap }}
         >
           <View style={styles.flex}>
             <Text style={[styles.title, { color: colors.text.ink }]}>添加特征</Text>
             <Text style={[styles.subtitle, { color: colors.text.muted }]}>
-              {`${settings.traits.length}/${MAX_TRAITS}`}
+              {traitsAtCap
+                ? `已达上限 ${MAX_TRAITS} 条`
+                : `${settings.traits.length}/${MAX_TRAITS}`}
             </Text>
           </View>
         </Pressable>
@@ -159,6 +254,7 @@ export function PersonalizationScreen() {
           <Switch
             value={settings.quickReplies}
             onValueChange={(value) => applySettings({ ...settings, quickReplies: value })}
+            disabled={controlsLocked}
             trackColor={{ false: colors.border.default, true: colors.primary }}
             thumbColor={colors.bg.elevated}
           />
@@ -169,10 +265,11 @@ export function PersonalizationScreen() {
 
         <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>自定义指令</Text>
         <TextInput
-          value={settings.instructions}
-          onChangeText={(text) => applySettings({ ...settings, instructions: text })}
+          value={instructionsDraft}
+          onChangeText={onChangeInstructions}
           multiline
           maxLength={MAX_INSTRUCTIONS_LENGTH}
+          editable={!controlsLocked}
           placeholder="讲话风格、体现风骚幽默、引人联想"
           placeholderTextColor={colors.text.placeholder}
           style={[styles.instructions, { color: colors.text.ink, backgroundColor: colors.bg.card }]}
@@ -192,6 +289,15 @@ export function PersonalizationScreen() {
         placeholder="例如：讲话简短"
         confirmLabel="添加"
         maxLength={MAX_TRAIT_LENGTH}
+        validate={(value) => {
+          if (settings.traits.length >= MAX_TRAITS) {
+            return `最多添加 ${MAX_TRAITS} 条特征。`;
+          }
+          if (settings.traits.includes(normalizeTrait(value))) {
+            return '该特征已存在，换一个试试。';
+          }
+          return null;
+        }}
         onSubmit={(value) => applySettings({ ...settings, traits: addTrait(settings.traits, value) })}
         onClose={() => setTraitModalOpen(false)}
       />
@@ -216,6 +322,22 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: fontSize.button, marginTop: spacing.xs },
   help: { fontSize: fontSize.button, lineHeight: 20 },
   sectionLabel: { fontSize: fontSize.button, marginTop: spacing.sm },
+  disabledSurface: { opacity: 0.5 },
+  loadErrorBox: {
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  loadErrorText: { fontSize: fontSize.button, lineHeight: 20 },
+  retryButton: {
+    minHeight: 40,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.full,
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+  },
+  retryLabel: { fontSize: fontSize.button, fontWeight: '600' },
   traitRemove: {
     width: 32,
     height: 32,

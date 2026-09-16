@@ -18,6 +18,8 @@ interface SettingsInputModalProps {
   placeholder?: string;
   confirmLabel: string;
   maxLength?: number;
+  /** Returns a user-facing rejection reason, or null when the value is acceptable. */
+  validate?: (value: string) => string | null;
   onSubmit: (value: string) => void;
   onClose: () => void;
 }
@@ -28,19 +30,30 @@ export function SettingsInputModal({
   placeholder,
   confirmLabel,
   maxLength,
+  validate,
   onSubmit,
   onClose,
 }: SettingsInputModalProps) {
   const { colors } = useTheme();
   const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const confirmed = text.trim().length > 0;
 
   useEffect(() => {
-    if (visible) setText('');
+    if (visible) {
+      setText('');
+      setError(null);
+    }
   }, [visible]);
 
   const submit = () => {
     if (!confirmed) return;
+    // A rejected value keeps the modal open so the reason stays visible.
+    const problem = validate ? validate(text.trim()) : null;
+    if (problem) {
+      setError(problem);
+      return;
+    }
     onSubmit(text.trim());
     onClose();
   };
@@ -59,7 +72,10 @@ export function SettingsInputModal({
             <Text style={[styles.title, { color: colors.text.ink }]}>{title}</Text>
             <TextInput
               value={text}
-              onChangeText={setText}
+              onChangeText={(value) => {
+                setText(value);
+                setError(null);
+              }}
               placeholder={placeholder}
               placeholderTextColor={colors.text.placeholder}
               maxLength={maxLength}
@@ -75,6 +91,9 @@ export function SettingsInputModal({
                 },
               ]}
             />
+            {error ? (
+              <Text style={[styles.error, { color: colors.status.error }]}>{error}</Text>
+            ) : null}
             <View style={styles.actions}>
               <Pressable
                 style={({ pressed }) => [
@@ -141,6 +160,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.md,
     fontSize: fontSize.bodyMd,
+  },
+  error: {
+    fontSize: fontSize.button,
+    lineHeight: 20,
   },
   actions: {
     flexDirection: 'row',
