@@ -861,3 +861,174 @@ describe('RemoteMiraHostClient abortable durable reads', () => {
     expect(requests[1]?.signal).toBe(controller.signal);
   });
 });
+
+// ─── Memory canonical Host surface ────────────────────────────
+// The Host memory API is not yet published in the Remote Gateway
+// allowlist, so the device contract here is "respect scope + manifest
+// route, surface a truthful REMOTE_SCOPE_REQUIRED / REMOTE_MEMORY_ROUTE_UNAVAILABLE
+// and never fake local state". These tests pin that contract.
+
+const memoryEnabledManifest = {
+  ...manifestPayload,
+  device: {
+    ...manifestPayload.device,
+    scopes: ['memory:read', 'memory:write'],
+  },
+  routes: {
+    ...manifestPayload.routes,
+    memory: [
+      'GET /memory',
+      'PUT /memory/settings',
+      'POST /memory',
+      'PATCH /memory/:id',
+      'DELETE /memory/:id',
+    ],
+  },
+};
+
+const memoryOverviewPayload = {
+  enabled: true,
+  records: [
+    {
+      id: 'm-1',
+      kind: 'preference',
+      content: '用户偏好 Markdown',
+      origin: 'manual',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    },
+  ],
+};
+
+describe('RemoteMiraHostClient memory surface', () => {
+  it('requires memory:read before reading the overview', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['memory:write'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const client = new RemoteMiraHostClient(store, jsonMock as JsonTransport);
+
+    await expect(client.getMemoryOverview()).rejects.toMatchObject({
+      code: 'REMOTE_SCOPE_REQUIRED',
+      status: 403,
+    });
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 when the Host manifest omits the memory routes', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['memory:read', 'memory:write'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async request => request.parse(manifestPayload);
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(client.getMemoryOverview()).rejects.toMatchObject({
+      code: 'REMOTE_MEMORY_ROUTE_UNAVAILABLE',
+      status: 403,
+    });
+  });
+
+  it('returns the overview when scope and manifest route are both present', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['memory:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async request => {
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(memoryEnabledManifest);
+      }
+      if (request.path === '/memory') {
+        return request.parse(memoryOverviewPayload);
+      }
+      throw new Error(`Unexpected path ${request.path}`);
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(client.getMemoryOverview()).resolves.toEqual(memoryOverviewPayload);
+  });
+
+  it('creates a memory record and returns the updated overview', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['memory:write'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const requests: RemoteJsonRequest<unknown>[] = [];
+    const json: JsonTransport = async request => {
+      requests.push(request);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(memoryEnabledManifest);
+      }
+      if (request.path === '/memory') {
+        return request.parse(memoryOverviewPayload);
+      }
+      throw new Error(`Unexpected path ${request.path}`);
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(
+      client.createMemory('preference', '用户偏好 Markdown'),
+    ).resolves.toEqual(memoryOverviewPayload);
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.path).toBe('/remote/v1/manifest');
+    expect(requests[1]?.path).toBe('/memory');
+    expect(requests[1]?.method).toBe('POST');
+    expect(requests[1]?.body).toEqual({
+      kind: 'preference',
+      content: '用户偏好 Markdown',
+    });
+  });
+
+  it('dispatches memory deletes once even when both transports are configured', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['memory:write'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    let directCalls = 0;
+    const direct: JsonTransport = async request => {
+      directCalls += 1;
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(memoryEnabledManifest);
+      }
+      return request.parse(memoryOverviewPayload);
+    };
+    let relayCalls = 0;
+    const relayJson: RelayJsonTransport = async () => {
+      relayCalls += 1;
+      return memoryOverviewPayload;
+    };
+    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+
+    await expect(client.deleteMemory('m-1')).resolves.toEqual(memoryOverviewPayload);
+
+    expect(directCalls).toBe(2);
+    expect(relayCalls).toBe(0);
+  });
+});

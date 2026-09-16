@@ -10,6 +10,8 @@ export const REMOTE_DEVICE_SCOPES = [
   'tools:approve',
   'tools:control',
   'artifacts:read',
+  'memory:read',
+  'memory:write',
 ] as const;
 
 export type RemoteDeviceScope = (typeof REMOTE_DEVICE_SCOPES)[number];
@@ -85,6 +87,7 @@ export interface RemoteManifest {
     agent: string[];
     tools: string[];
     artifacts: string[];
+    memory: string[];
   };
   reconnect: {
     mode: 'canonical-state-replay';
@@ -409,6 +412,90 @@ const stringArray = (value: unknown, context: string): string[] => {
   return value;
 };
 
+// ─── Memory (canonical Host /memory surface) ────────────────
+// Mirrors the Host memory route schema: kind is a closed enum, content is a
+// free-form string, origin distinguishes conversation-derived records from
+// records the user created through settings UIs like this one.
+export type RemoteMemoryKind =
+  | 'preference'
+  | 'fact'
+  | 'decision'
+  | 'constraint';
+
+export type RemoteMemoryOrigin = 'conversation' | 'manual';
+
+export interface RemoteMemoryRecord {
+  id: string;
+  kind: RemoteMemoryKind;
+  content: string;
+  origin: RemoteMemoryOrigin;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RemoteMemoryOverview {
+  enabled: boolean;
+  records: RemoteMemoryRecord[];
+}
+
+const REMOTE_MEMORY_KINDS: readonly RemoteMemoryKind[] = [
+  'preference',
+  'fact',
+  'decision',
+  'constraint',
+];
+
+const REMOTE_MEMORY_ORIGINS: readonly RemoteMemoryOrigin[] = [
+  'conversation',
+  'manual',
+];
+
+export const parseRemoteMemoryRecord = (
+  value: unknown,
+): RemoteMemoryRecord => {
+  if (!isRecord(value)) {
+    throw new Error('Remote memory record must be an object');
+  }
+
+  const kind = requiredString(value, 'kind', 'memoryRecord');
+  if (!(REMOTE_MEMORY_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`Unexpected memory record kind: ${kind}`);
+  }
+
+  const origin = requiredString(value, 'origin', 'memoryRecord');
+  if (!(REMOTE_MEMORY_ORIGINS as readonly string[]).includes(origin)) {
+    throw new Error(`Unexpected memory record origin: ${origin}`);
+  }
+
+  return {
+    id: requiredString(value, 'id', 'memoryRecord'),
+    kind: kind as RemoteMemoryKind,
+    content: requiredString(value, 'content', 'memoryRecord'),
+    origin: origin as RemoteMemoryOrigin,
+    createdAt: requiredString(value, 'createdAt', 'memoryRecord'),
+    updatedAt: requiredString(value, 'updatedAt', 'memoryRecord'),
+  };
+};
+
+export const parseRemoteMemoryOverview = (
+  value: unknown,
+): RemoteMemoryOverview => {
+  if (!isRecord(value)) {
+    throw new Error('Remote memory overview must be an object');
+  }
+  if (typeof value.enabled !== 'boolean') {
+    throw new Error('memoryOverview.enabled must be a boolean');
+  }
+  if (!Array.isArray(value.records)) {
+    throw new Error('memoryOverview.records must be an array');
+  }
+
+  return {
+    enabled: value.enabled,
+    records: value.records.map(parseRemoteMemoryRecord),
+  };
+};
+
 export const parseRemoteManifest = (value: unknown): RemoteManifest => {
   if (!isRecord(value)) {
     throw new Error('Remote manifest must be an object');
@@ -440,6 +527,12 @@ export const parseRemoteManifest = (value: unknown): RemoteManifest => {
           ? []
           : stringArray(value.routes.tools, 'manifest.routes.tools'),
       artifacts: stringArray(value.routes.artifacts, 'manifest.routes.artifacts'),
+      // Hosts that have not published the Memory remote contract yet omit
+      // this group entirely; treat it as "not advertised" like tools above.
+      memory:
+        typeof value.routes.memory === 'undefined'
+          ? []
+          : stringArray(value.routes.memory, 'manifest.routes.memory'),
     },
     reconnect: {
       mode: 'canonical-state-replay',
