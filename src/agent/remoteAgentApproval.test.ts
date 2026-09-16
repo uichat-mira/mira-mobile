@@ -1,6 +1,7 @@
 import { RemoteHostError } from '../api/remoteHttp';
 import type { RemoteMiraHostClient } from '../api/remoteMiraHost';
 import type { RemoteAgentRun } from '../protocol/remoteHostV1';
+import { DurableHostAgentRuntimeAdapter } from '../runtime/durableHostAgentRuntime';
 import {
   applyAgentRunAction,
   assertRunBelongsToThread,
@@ -38,18 +39,45 @@ const makeRun = (
 });
 
 const makeRemote = (run: RemoteAgentRun) => {
+  const getManifest = jest.fn(async () => ({
+    protocolVersion: 1 as const,
+    device: {
+      id: 'device-1',
+      name: 'Phone',
+      platform: 'ios',
+      scopes: ['agent:read', 'agent:approve', 'agent:control'] as const,
+    },
+    routes: {
+        threads: [],
+      messages: [],
+      agent: [
+        'GET /agent/runs/:runId',
+        'POST /agent/runs/:runId/approve',
+        'POST /agent/runs/:runId/reject',
+        'POST /agent/runs/:runId/cancel',
+      ],
+      tools: [],
+      artifacts: [],
+    },
+    reconnect: { mode: 'canonical-state-replay' as const, eventCursor: false as const },
+    serverTime: '2026-08-29T00:00:00.000Z',
+  }));
   const getAgentRun = jest.fn(async () => run);
   const approveAgentRun = jest.fn(async () => makeRun('running'));
-  const rejectAgentRun = jest.fn(async () => makeRun('cancelled'));
+  const rejectAgentRun = jest.fn(async () => makeRun('blocked'));
   const cancelAgentRun = jest.fn(async () => makeRun('cancelled'));
+  const remote = {
+    getManifest,
+    getAgentRun,
+    approveAgentRun,
+    rejectAgentRun,
+    cancelAgentRun,
+  } as unknown as RemoteMiraHostClient;
 
   return {
-    remote: {
-      getAgentRun,
-      approveAgentRun,
-      rejectAgentRun,
-      cancelAgentRun,
-    } as unknown as RemoteMiraHostClient,
+    remote,
+    runtime: new DurableHostAgentRuntimeAdapter(remote, 0),
+    getManifest,
     getAgentRun,
     approveAgentRun,
     rejectAgentRun,
@@ -66,6 +94,13 @@ describe('remoteAgentApproval', () => {
         { role: 'assistant', metadata: { agent: { runId: '  run-new  ' } } },
       ]),
     ).toBe('run-new');
+
+    expect(
+      getStableAgentRunId([
+        { role: 'assistant', metadata: { agent: { runId: 'run-old' } } },
+        { role: 'assistant', metadata: {} },
+      ]),
+    ).toBeNull();
   });
 
   test('loads canonical run and rejects a run from another thread', async () => {
@@ -74,7 +109,7 @@ describe('remoteAgentApproval', () => {
       loadAgentRunForMessages(
         'thread-1',
         [{ role: 'assistant', metadata: { agent: { runId: 'run-1' } } }],
-        valid.remote,
+        valid.runtime,
       ),
     ).resolves.toMatchObject({ id: 'run-1', threadId: 'thread-1' });
 
@@ -85,7 +120,7 @@ describe('remoteAgentApproval', () => {
       loadAgentRunForMessages(
         'thread-1',
         [{ role: 'assistant', metadata: { agent: { runId: 'run-1' } } }],
-        mismatch.remote,
+        mismatch.runtime,
       ),
     ).rejects.toMatchObject({ code: 'AGENT_RUN_THREAD_MISMATCH' });
   });
@@ -120,7 +155,7 @@ describe('remoteAgentApproval', () => {
     const fake = makeRemote(makeRun('completed'));
 
     await expect(
-      applyAgentRunAction('thread-1', 'run-1', 'approve', fake.remote),
+      applyAgentRunAction('thread-1', 'run-1', 'approve', fake.runtime),
     ).rejects.toMatchObject({ code: 'AGENT_RUN_ACTION_UNAVAILABLE' });
     expect(fake.approveAgentRun).not.toHaveBeenCalled();
   });
@@ -128,19 +163,19 @@ describe('remoteAgentApproval', () => {
   test('uses Host result as the returned state after approve, reject and cancel', async () => {
     const approve = makeRemote(makeRun('waiting_approval'));
     await expect(
-      applyAgentRunAction('thread-1', 'run-1', 'approve', approve.remote),
+      applyAgentRunAction('thread-1', 'run-1', 'approve', approve.runtime),
     ).resolves.toMatchObject({ status: 'running' });
     expect(approve.approveAgentRun).toHaveBeenCalledTimes(1);
 
     const reject = makeRemote(makeRun('waiting_approval'));
     await expect(
-      applyAgentRunAction('thread-1', 'run-1', 'reject', reject.remote),
-    ).resolves.toMatchObject({ status: 'cancelled' });
+      applyAgentRunAction('thread-1', 'run-1', 'reject', reject.runtime),
+    ).resolves.toMatchObject({ status: 'blocked' });
     expect(reject.rejectAgentRun).toHaveBeenCalledTimes(1);
 
     const cancel = makeRemote(makeRun('running'));
     await expect(
-      applyAgentRunAction('thread-1', 'run-1', 'cancel', cancel.remote),
+      applyAgentRunAction('thread-1', 'run-1', 'cancel', cancel.runtime),
     ).resolves.toMatchObject({ status: 'cancelled' });
     expect(cancel.cancelAgentRun).toHaveBeenCalledTimes(1);
   });

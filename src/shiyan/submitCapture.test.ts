@@ -92,6 +92,42 @@ describe('submitLocalCapture', () => {
     expect(localCaptures.markSubmitted).not.toHaveBeenCalled();
   });
 
+  it('can resume an interrupted upload through the same idempotent submission flow', async () => {
+    const submissions = new ShiyanSubmissionRepository(new MemoryLocalKeyValueStore());
+    const localCaptures = captures();
+    let uploadAttempts = 0;
+    const retryingClient = client(async () => {
+      uploadAttempts += 1;
+      if (uploadAttempts === 1) {
+        throw new ShiyanClientError('upload timeout', 'upload_timeout', true);
+      }
+    });
+
+    await expect(
+      submitLocalCapture(capture, {
+        client: retryingClient,
+        submissions,
+        captures: localCaptures,
+      }),
+    ).rejects.toMatchObject({ code: 'upload_timeout' });
+
+    await expect(
+      submitLocalCapture(capture, {
+        client: retryingClient,
+        submissions,
+        captures: localCaptures,
+      }),
+    ).resolves.toBe('task-1');
+
+    expect(uploadAttempts).toBe(2);
+    expect(await submissions.get(capture.id)).toMatchObject({
+      taskId: 'task-1',
+      assetId: 'asset-1',
+      uploadState: 'confirmed',
+    });
+    expect(localCaptures.markSubmitted).toHaveBeenCalledWith(capture.id);
+  });
+
   it('marks confirmed state and local capture only after upload and Cloud confirm succeed', async () => {
     const submissions = new ShiyanSubmissionRepository(new MemoryLocalKeyValueStore());
     const localCaptures = captures();

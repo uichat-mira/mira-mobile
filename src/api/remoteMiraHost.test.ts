@@ -51,6 +51,7 @@ const manifestPayload = {
     threads: ['GET /threads'],
     messages: [],
     agent: [],
+    tools: [],
     artifacts: [],
   },
   reconnect: {
@@ -391,6 +392,353 @@ describe('RemoteMiraHostClient transport selection', () => {
   });
 });
 
+describe('RemoteMiraHostClient tool gateway', () => {
+  const toolManifestPayload = {
+    ...manifestPayload,
+    device: {
+      ...manifestPayload.device,
+      scopes: [
+        'threads:read',
+        'tools:read',
+        'tools:invoke',
+        'tools:approve',
+        'tools:control',
+      ],
+    },
+    routes: {
+      ...manifestPayload.routes,
+      tools: [
+        'GET /remote/v1/tools',
+        'POST /remote/v1/tool-invocations/stream',
+        'POST /remote/v1/tool-invocations/:invocationId/approval',
+        'POST /remote/v1/tool-invocations/:invocationId/cancel',
+      ],
+    },
+  };
+
+  it('does not clear an existing pairing when the device lacks a tool scope', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const client = new RemoteMiraHostClient(store, jsonMock as JsonTransport);
+
+    await expect(client.listRemoteTools()).rejects.toMatchObject({
+      code: 'REMOTE_SCOPE_REQUIRED',
+      status: 403,
+    });
+    expect(jsonMock).not.toHaveBeenCalled();
+    await expect(store.load()).resolves.toMatchObject({
+      deviceId: 'device-1',
+      scopes: ['threads:read'],
+    });
+  });
+
+  it('keeps pairing when Host denies only the tool scope', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read', 'tools:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async _request => {
+      throw new RemoteHostError('HTTP_403', 'forbidden', 403);
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(client.listRemoteTools()).rejects.toMatchObject({
+      status: 403,
+    });
+    await expect(store.load()).resolves.toMatchObject({
+      deviceId: 'device-1',
+      scopes: ['threads:read', 'tools:read'],
+    });
+  });
+
+  it('lists tools through the paired-device credential', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const json: JsonTransport = async request => {
+      jsonMock(request);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(toolManifestPayload);
+      }
+      return request.parse([
+        {
+          id: 'web_search',
+          name: 'web_search',
+          description: 'Search the public web',
+          parameters: { type: 'object' },
+          destructive: false,
+          requiresApproval: false,
+        },
+      ]);
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(client.listRemoteTools()).resolves.toMatchObject([
+      { id: 'web_search', name: 'web_search' },
+    ]);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/remote/v1/tools',
+        credential: 'mira_device_device-1.secret',
+      }),
+    );
+  });
+
+  it('does not call tool routes that the Host manifest does not advertise', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:read', 'tools:invoke'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const json: JsonTransport = async request => {
+      jsonMock(request);
+      return request.parse(manifestPayload);
+    };
+    const sseMock = jest.fn();
+    const sse = <T>(request: PostSseRequest<T>): PostSseSession<T> => {
+      sseMock(request);
+      return {
+        abort: jest.fn(),
+        events: (async function* () {})(),
+      };
+    };
+    const client = new RemoteMiraHostClient(store, json, sse);
+
+    await expect(client.listRemoteTools()).rejects.toMatchObject({
+      code: 'REMOTE_TOOL_ROUTE_UNAVAILABLE',
+    });
+    expect(jsonMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/remote/v1/manifest',
+    ]);
+
+    await expect(
+      client.openToolInvocation({ toolId: 'web_search', args: {} }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_TOOL_ROUTE_UNAVAILABLE',
+    });
+    expect(sseMock).not.toHaveBeenCalled();
+  });
+
+  it('probes a reachable transport before opening the side-effecting tool stream', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:invoke'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const json: JsonTransport = async request => {
+      jsonMock(request);
+      return request.parse(toolManifestPayload);
+    };
+    const sseMock = jest.fn();
+    const sse = <T>(request: PostSseRequest<T>): PostSseSession<T> => {
+      sseMock(request);
+      return {
+        abort: jest.fn(),
+        events: (async function* () {})(),
+      };
+    };
+    const client = new RemoteMiraHostClient(store, json, sse);
+
+    await client.openToolInvocation({
+      toolId: 'web_search',
+      args: { query: 'mira' },
+    });
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/remote/v1/manifest' }),
+    );
+    expect(sseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/remote/v1/tool-invocations/stream',
+        body: {
+          toolId: 'web_search',
+          args: { query: 'mira' },
+        },
+      }),
+    );
+  });
+
+  it('requires tools:control before cancelling a remote tool invocation', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const jsonMock = jest.fn();
+    const client = new RemoteMiraHostClient(store, jsonMock as JsonTransport);
+
+    await expect(client.cancelToolInvocation('inv-1')).rejects.toMatchObject({
+      code: 'REMOTE_SCOPE_REQUIRED',
+      status: 403,
+    });
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed tool cancellation responses', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:control'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async request => {
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(toolManifestPayload);
+      }
+      return request.parse({
+        invocationId: 'inv-1',
+        status: 'cancelling',
+      });
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(client.cancelToolInvocation('inv-1')).rejects.toThrow(
+      'Tool cancellation response is incomplete',
+    );
+  });
+
+  it('falls back from Direct to Relay for idempotent tool cancellation', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:control'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(toolManifestPayload);
+      }
+      throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
+    };
+    const relayJsonMock = jest.fn();
+    const relayJson: RelayJsonTransport = async (_relay, request) => {
+      relayJsonMock(_relay, request);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(toolManifestPayload);
+      }
+      return request.parse({
+        invocationId: 'inv-1',
+        accepted: true,
+        status: 'cancelling',
+      });
+    };
+    const client = new RemoteMiraHostClient(
+      store,
+      direct,
+      undefined,
+      relayJson,
+    );
+
+    await expect(client.cancelToolInvocation('inv-1')).resolves.toEqual({
+      invocationId: 'inv-1',
+      accepted: true,
+      status: 'cancelling',
+    });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/remote/v1/manifest',
+      '/remote/v1/tool-invocations/inv-1/cancel',
+    ]);
+    expect(relayJsonMock).toHaveBeenCalledWith(
+      relay,
+      expect.objectContaining({
+        path: '/remote/v1/tool-invocations/inv-1/cancel',
+        method: 'POST',
+      }),
+    );
+  });
+
+  it('does not replay an uncertain approved invocation through another transport', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['tools:approve'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(toolManifestPayload);
+      }
+      throw new RemoteHostError('NETWORK_ERROR', 'response lost');
+    };
+    const relayJsonMock = jest.fn();
+    const relayJson: RelayJsonTransport = async (_relay, request) => {
+      relayJsonMock(_relay, request);
+      return request.parse(toolManifestPayload);
+    };
+    const client = new RemoteMiraHostClient(
+      store,
+      direct,
+      undefined,
+      relayJson,
+    );
+
+    await expect(
+      client.resolveToolApproval({
+        invocationId: 'inv-1',
+        decision: 'approved',
+        toolId: 'terminal_session',
+        args: { command: 'pwd' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'TOOL_APPROVAL_UNCERTAIN',
+    });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/remote/v1/manifest',
+      '/remote/v1/tool-invocations/inv-1/approval',
+    ]);
+    expect(relayJsonMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('RemoteMiraHostClient chat request', () => {
   it('forwards the supplied canonical history in the SSE request body', async () => {
     const store = new MemoryDeviceCredentialStore();
@@ -464,5 +812,52 @@ describe('RemoteMiraHostClient chat request', () => {
         }),
       }),
     );
+  });
+});
+
+
+describe('RemoteMiraHostClient abortable durable reads', () => {
+  it('forwards AbortSignal to manifest and Agent Run JSON requests', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['agent:read'],
+      savedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const requests: RemoteJsonRequest<unknown>[] = [];
+    const json: JsonTransport = async request => {
+      requests.push(request as RemoteJsonRequest<unknown>);
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse({
+          ...manifestPayload,
+          device: { ...manifestPayload.device, scopes: ['agent:read'] },
+          routes: {
+            ...manifestPayload.routes,
+            agent: ['GET /agent/runs/:runId'],
+          },
+        });
+      }
+      return request.parse({
+        id: 'run-1',
+        threadId: 'thread-1',
+        userId: 1,
+        status: 'running',
+        traceId: 'trace-1',
+        createdAt: '2026-09-07T00:00:00.000Z',
+        updatedAt: '2026-09-07T00:00:01.000Z',
+      });
+    };
+    const client = new RemoteMiraHostClient(store, json);
+    const controller = new AbortController();
+
+    await client.getManifest(controller.signal);
+    await client.getAgentRun('run-1', controller.signal);
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.signal).toBe(controller.signal);
+    expect(requests[1]?.signal).toBe(controller.signal);
   });
 });

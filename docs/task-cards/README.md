@@ -1,8 +1,8 @@
 # Mobile 任务卡索引
 
-本目录补充 `docs/work-ledger.md` 的 Mobile / 跨仓任务。旧任务编号不改号、不重开；拾言（Shiyan）虽然跨 `uichat-mira-mobile`、`mira-shiyan-cloud`、`mira-shiyan` 三仓施工，但任务编号、状态、依赖与验收统一回写 Mobile 总台账。
+本目录补充 `docs/workbench/00-work-ledger.md` 的 Mobile / 跨仓任务。旧任务编号不改号、不重开；拾言（Shiyan）虽然跨 `uichat-mira-mobile`、`mira-shiyan-cloud`、`mira-shiyan` 三仓施工，但任务编号、状态、依赖与验收统一回写 Mobile 总台账。
 
-> `docs/work-ledger.md` 是唯一状态台账。本页只做索引与快速状态镜像。2026-08-29 夜间临时放行规则已经到期，历史文件仅供追溯。
+> `docs/workbench/00-work-ledger.md` 是唯一状态台账。本页只做索引与快速状态镜像。
 
 ## 当前状态
 
@@ -10,7 +10,7 @@
 |---|---|---|---|
 | MOB-007 | 本机线程置顶 | **完成** | Mobile |
 | MOB-008 | 本机未读状态 | **完成** | Mobile |
-| MOB-009 | 简化桌面配对页与 Mira 链接兜底 | **有条件完成** | Mobile；真机五路径待验收 |
+| MOB-009 | 简化桌面配对页与 Mira 链接兜底 | **完成** | Mobile；2026-09-04 真机五路径人工验收通过 |
 | MOB-010 | Desktop Remote 合同接入收口 | **有条件完成** | Mobile；真实 Desktop 配对联调待验收 |
 | MOB-011 | 0.2.0 会话交互回归修复 | **有条件完成** | Mobile + Host；0.2.1 真机回归待验收 |
 | MOB-012 | Agent 手机审批闭环 | **有条件完成**：PR #57 已合入 | Mobile；真实 Desktop + Android / iOS 联调挂账 |
@@ -26,11 +26,23 @@
 | MOB-022 | 拾言 GitHub Destination | **核心已合入，最终接线待完成** | `mira-shiyan-cloud` + `mira-shiyan`；待 MOB-020 合入后接 Final Draft / public routes + real GitHub smoke |
 | MOB-023 | 拾言 MVP 端到端验收与加固 | **待启动** | 三仓；等 MOB-020 / 022 达到可联调基线 |
 | MOB-024 | Mobile 新建会话与动态 Remote Capability | **有条件完成**：Desktop #88 / Mobile #65 已合入 | Mobile + Desktop Host；真实已配对设备新建 Thread 跨端 smoke |
-| MOB-025 | 线程右滑操作与 Drawer 置顶分组修复 | **待实施** | Mobile；修复真机右滑并收口置顶分组 |
+| MOB-025 | 线程右滑操作与 Drawer 置顶分组修复 | **完成** | Mobile；2026-09-05 Android 真机 dogfood 验收通过（8 项全过） |
 | MOB-026 | 全局搜索命中消息正文 | **待实施** | Mobile；不新增虚构 Host search route |
 | MOB-027 | 设置页插件入口恢复可用 | **待实施** | Mobile；最小接线现有 `Plugins` route |
 | MOB-028 | 关于页版本更新检查与确认下载 | **待实施** | Mobile；release channel 隔离 + signed APK 下载 |
-| MOB-029 | 拾言确认页播放器 / 场景 Action Sheet / Cloud 配置入口 | **待实施** | Mobile；可能触碰双平台 native audio |
+| MOB-029 | 拾言确认页播放器 / 场景 Action Sheet / Cloud 配置入口 | **完成** | Mobile；2026-09-04 真机验收通过验收条目 1–9 |
+| MOB-037 | Mobile 双入口与 Local Provider Agent Runtime | **进行中** | 阶段 A：运行时抽象、Provider 适配边界与独立凭据存储；Tool Gateway/UI 接线待协议确认 |
+| MOB-038 | Local Provider 多配置与选定 Provider 新建对话 | **待验收** | Mobile；多配置、独立 Key、选定 Provider 创建会话与聊天来源展示 |
+| MOB-039 | 双入口来源选择与统一新建会话 | **待验收** | Mobile；主列表来源菜单、Drawer 双来源与统一新建入口 |
+| MOB-040 | 本地对话可靠发送与重试 | **待验收** | Mobile；本地消息幂等写入、取消/超时语义与失败重试 |
+| MOB-041 | Tool Gateway / MCP 协议与凭据合同确认 | **待开始** | Mobile + Host；确认工具发现、鉴权、审批、取消、结果和凭据边界 |
+| MOB-042 | 本地 Agent Loop UI 与运行状态呈现 | **待开始** | Mobile；工具调用、暂停、取消、超时和失败状态接入聊天 UI |
+| MOB-043 | Host / Pi 持久运行时适配 | **待开始** | Mobile + Host/Pi；长任务、后台继续、审批暂停与恢复 |
+| MOB-044 | 双入口真机验收与发布加固 | **待开始** | Android/iOS；真实 Provider、Host、凭据、网络和发布矩阵 |
+| MOB-045 | Local Provider 会话生命周期闭环 | **待验收** | Mobile；PR #99 已合入 `dev`，本地会话删除、pin/read 清理、Provider 删除解锁及 Review 修复已完成；真机验收挂 MOB-044 |
+| MOB-046 | OpenAI-compatible URL / SSE / Tool Call 兼容性修复 | **待验收** | Mobile；PR #100 已合入 `dev`，Base URL、finish/[DONE]、indexed/interleaved/split tool-call 兼容性与回归测试已完成；真实 Provider / 真机矩阵挂 MOB-044 |
+| MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
+| MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
 
 ## 既有产品决策
 
@@ -120,3 +132,15 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-027-settings-plugin-entry.md`
 - `MOB-028-app-update-check-download.md`
 - `MOB-029-shiyan-confirmation-ux.md`
+- `MOB-037-mobile-dual-entry-local-provider-agent-runtime.md`
+- `MOB-038-local-provider-profiles-and-session-creation.md`
+- `MOB-039-dual-entry-source-selection-and-session-creation.md`
+- `MOB-040-local-conversation-reliable-send-and-retry.md`
+- `MOB-041-tool-gateway-protocol-and-credential-contract.md`
+- `MOB-042-local-agent-loop-ui-and-run-state.md`
+- `MOB-043-durable-host-pi-runtime-adapter.md`
+- `MOB-044-dual-entry-device-acceptance-and-release-hardening.md`
+- `MOB-045-local-provider-session-lifecycle.md`
+- `MOB-046-openai-compatible-stream-compatibility.md`
+- `MOB-047-provider-credential-ux-safety.md`
+- `MOB-048-dual-entry-code-hygiene.md`

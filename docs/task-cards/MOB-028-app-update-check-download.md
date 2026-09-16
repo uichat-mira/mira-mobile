@@ -1,6 +1,6 @@
 # MOB-028：关于页版本更新检查与确认下载
 
-状态：**待实施**
+状态：**有条件完成**（代码已入 `dev`，release metadata / 下载 smoke 待验收）
 
 负责人：`mob_028_app_update_check_download`
 

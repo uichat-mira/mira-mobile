@@ -42,6 +42,9 @@ import {
   SettingsSectionHeader as SectionHeader,
 } from '../components/settings/SettingsComponents';
 import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
+import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+import { ProviderConfigStore } from '../provider/providerConfigStore';
+import { useHostStore } from '../store/hostStore';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
@@ -73,6 +76,30 @@ export function SettingsScreen() {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [accentOpen, setAccentOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const { config: hostConfig, connectionStatus } = useHostStore();
+  const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
+  const [localConfigured, setLocalConfigured] = useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void new ProviderConfigStore().load().then((configs) => {
+      if (!cancelled) setLocalConfigured(configs.length > 0);
+    }).catch(() => {
+      if (!cancelled) setLocalConfigured(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const remoteHasError = !['idle', 'probing', 'ready'].includes(remoteConnectivityState);
+  const remoteVisualStatus: ConnectionVisualStatus = remoteHasError
+    ? 'error'
+    : connectionStatus === 'connected'
+      ? 'connected'
+      : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+        ? 'connecting'
+        : hostConfig
+          ? 'disconnected'
+          : 'not-configured';
 
   const requestDisconnect = () => {
     if (disconnecting) return;
@@ -123,6 +150,9 @@ export function SettingsScreen() {
         break;
       case 'host-config':
         navigation.navigate('HostConfig');
+        break;
+      case 'local-provider':
+        navigation.navigate('LocalProviderConfig');
         break;
       case 'disconnect-host':
         requestDisconnect();
@@ -240,15 +270,26 @@ export function SettingsScreen() {
           />
         </RowGroup>
 
-        <SectionHeader>主机</SectionHeader>
+        <SectionHeader>连接</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row
             icon={MessageCircle}
-            title="Mira Host 配置"
-            subtitle="管理主机连接"
-            actionId="host-config"
+            title="本地连接"
+            subtitle="管理手机直连的 OpenAI-compatible Provider"
+            actionId="local-provider"
             isFirst
+            isLast={false}
+            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
+            showChevron={false}
+          />
+          <Row
+            icon={Monitor}
+            title="远程连接"
+            subtitle="管理 Mira Host 连接"
+            actionId="host-config"
             isLast
+            right={<ConnectionStatusDot status={remoteVisualStatus} />}
+            showChevron={false}
           />
         </RowGroup>
 

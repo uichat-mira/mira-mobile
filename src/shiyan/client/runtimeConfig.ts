@@ -4,6 +4,12 @@ import { localKeyValueStore } from '../../storage/localKeyValueStore';
 const API_BASE_URL_KEY = 'mira.shiyan.api-base-url.v1';
 const CREDENTIAL_SERVICE = 'io.tomz.mira.mobile.shiyan-device';
 
+export const SHIYAN_API_BASE_URL = 'https://shiyan-api.tomz.io';
+
+const LEGACY_SHIYAN_API_BASE_URLS = new Set([
+  'https://mira-shiyan-api.dangjingtao.workers.dev',
+]);
+
 interface NativeSecureCredentialModule {
   get(service: string): Promise<string | null>;
   set(service: string, value: string): Promise<void>;
@@ -35,18 +41,25 @@ const normalizeBaseUrl = (value: string) => {
   if (!/^https:\/\//iu.test(trimmed)) {
     throw new Error('拾言 Cloud 地址必须使用 HTTPS。');
   }
+  if (LEGACY_SHIYAN_API_BASE_URLS.has(trimmed.toLowerCase())) {
+    return SHIYAN_API_BASE_URL;
+  }
   return trimmed;
 };
 
 export async function loadShiyanRuntimeConfig(): Promise<ShiyanRuntimeConfig | null> {
   const module = secureModule();
   if (!module) return null;
-  const [baseUrl, credential] = await Promise.all([
+  const [storedBaseUrl, credential] = await Promise.all([
     localKeyValueStore.get(API_BASE_URL_KEY),
     module.get(CREDENTIAL_SERVICE),
   ]);
-  if (!baseUrl || !credential) return null;
-  return { baseUrl: normalizeBaseUrl(baseUrl), credential };
+  if (!storedBaseUrl || !credential) return null;
+  const baseUrl = normalizeBaseUrl(storedBaseUrl);
+  if (baseUrl !== storedBaseUrl) {
+    await localKeyValueStore.set(API_BASE_URL_KEY, baseUrl);
+  }
+  return { baseUrl, credential };
 }
 
 export async function saveShiyanRuntimeConfig(config: ShiyanRuntimeConfig): Promise<void> {

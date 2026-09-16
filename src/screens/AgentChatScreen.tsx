@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { AppState, StyleSheet, View } from 'react-native';
 import { useFocusEffect, useRoute, type RouteProp } from '@react-navigation/native';
 import {
   applyAgentRunAction,
@@ -11,29 +11,63 @@ import {
 import { miraHostClient } from '../api/miraHostClient';
 import { AgentRunApprovalCard } from '../components/AgentRunApprovalCard';
 import type { RemoteAgentRun } from '../protocol/remoteHostV1';
+import { durableHostAgentRuntime } from '../runtime/durableHostAgentRuntime';
 import { spacing } from '../theme/tokens';
 import type { ChatMessage } from '../types';
 import type { RootStackParamList } from '../types/navigation';
 import { ChatScreen } from './ChatScreen';
 
+const DISCOVERY_POLL_MS = 1_500;
 export function AgentChatScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId } = route.params;
+  const { sessionId, source } = route.params;
+
+  if (source === 'local-provider' || sessionId.startsWith('local-')) {
+    return <ChatScreen />;
+  }
+
+  return <RemoteAgentChatOverlay sessionId={sessionId} />;
+}
+
+function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RemoteAgentRun | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState<AgentRunAction | null>(null);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const [observationGeneration, setObservationGeneration] = useState(0);
+  const observationGenerationRef = useRef(0);
   const requestSequenceRef = useRef(0);
   const actionLockRef = useRef(false);
+  const runIdRef = useRef<string | null>(null);
+  const runRef = useRef<RemoteAgentRun | null>(null);
+
+  useEffect(() => {
+    runIdRef.current = runId;
+  }, [runId]);
+
+  useEffect(() => {
+    runRef.current = run;
+  }, [run]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      setAppActive(nextState === 'active');
+    });
+    return () => subscription.remove();
+  }, []);
 
   const syncAgentRun = useCallback(
     async (messages: readonly ChatMessage[]) => {
       const nextRunId = getStableAgentRunId(messages);
-      const sequence = requestSequenceRef.current + 1;
-      requestSequenceRef.current = sequence;
+      const previousRunId = runIdRef.current;
+      const existingRun = runRef.current;
 
       if (!nextRunId) {
+        requestSequenceRef.current += 1;
+        runIdRef.current = null;
+        runRef.current = null;
         setRunId(null);
         setRun(null);
         setError(null);
@@ -41,15 +75,30 @@ export function AgentChatScreen() {
         return;
       }
 
+      if (nextRunId === previousRunId && existingRun?.id === nextRunId) {
+        setError(null);
+        setLoading(false);
+        return;
+      }
+
+      const sequence = requestSequenceRef.current + 1;
+      requestSequenceRef.current = sequence;
+      runIdRef.current = nextRunId;
       setRunId(nextRunId);
       setLoading(true);
       setError(null);
       try {
         const nextRun = await loadAgentRunForMessages(sessionId, messages);
         if (requestSequenceRef.current !== sequence) return;
+        runRef.current = nextRun;
         setRun(nextRun);
+        if (nextRunId === previousRunId && !existingRun) {
+          observationGenerationRef.current += 1;
+          setObservationGeneration(observationGenerationRef.current);
+        }
       } catch (syncError) {
         if (requestSequenceRef.current !== sequence) return;
+        runRef.current = null;
         setRun(null);
         setError(getAgentRunErrorMessage(syncError));
       } finally {
@@ -72,32 +121,113 @@ export function AgentChatScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!appActive) return undefined;
+
       let active = true;
+      let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const refreshMessages = async () => {
+        try {
+          await miraHostClient.getMessages(sessionId);
+        } catch (refreshError) {
+          if (!active || !runIdRef.current) return;
+          setError(getAgentRunErrorMessage(refreshError));
+        }
+      };
+
+      const runDiscovery = async () => {
+        if (!active) return;
+        await refreshMessages();
+        if (active) {
+          discoveryTimer = setTimeout(() => {
+            void runDiscovery();
+          }, DISCOVERY_POLL_MS);
+        }
+      };
+
       void miraHostClient
         .getSession(sessionId)
-        .then(session => {
-          if (!active || !session.agentEnabled) return undefined;
-          return miraHostClient.getMessages(sessionId);
+        .then(async session => {
+          if (!active || !session.agentEnabled) return;
+          await refreshMessages();
+          if (active) {
+            discoveryTimer = setTimeout(() => {
+              void runDiscovery();
+            }, DISCOVERY_POLL_MS);
+          }
         })
         .catch(focusError => {
-          if (!active || !runId) return;
+          if (!active || !runIdRef.current) return;
           setError(getAgentRunErrorMessage(focusError));
         });
+
       return () => {
         active = false;
+        if (discoveryTimer) clearTimeout(discoveryTimer);
         requestSequenceRef.current += 1;
       };
-    }, [runId, sessionId]),
+    }, [appActive, sessionId]),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!appActive || !runId) return undefined;
+
+      const generation = observationGeneration;
+      const controller = new AbortController();
+      let active = true;
+
+      void (async () => {
+        try {
+          for await (const nextRun of durableHostAgentRuntime.observeRun(
+            sessionId,
+            runId,
+            controller.signal,
+          )) {
+            if (
+              !active ||
+              generation !== observationGenerationRef.current ||
+              runIdRef.current !== runId
+            ) return;
+            runRef.current = nextRun;
+            setRun(nextRun);
+            setLoading(false);
+            setError(null);
+          }
+
+          if (
+            active &&
+            !controller.signal.aborted &&
+            generation === observationGenerationRef.current &&
+            runIdRef.current === runId
+          ) {
+            await miraHostClient.getMessages(sessionId);
+          }
+        } catch (observeError) {
+          if (!active || controller.signal.aborted || runIdRef.current !== runId) return;
+          runRef.current = null;
+          setRun(null);
+          setError(getAgentRunErrorMessage(observeError));
+        }
+      })();
+
+      return () => {
+        active = false;
+        controller.abort();
+      };
+    }, [appActive, observationGeneration, runId, sessionId]),
   );
 
   const retry = useCallback(() => {
     setError(null);
     setLoading(true);
-    void miraHostClient.getMessages(sessionId).catch(retryError => {
-      setLoading(false);
-      if (runId) setError(getAgentRunErrorMessage(retryError));
-    });
-  }, [runId, sessionId]);
+    void miraHostClient
+      .getMessages(sessionId)
+      .catch(retryError => {
+        setLoading(false);
+        if (runIdRef.current) setError(getAgentRunErrorMessage(retryError));
+      });
+  }, [sessionId]);
 
   const handleAction = useCallback(
     async (action: AgentRunAction) => {
@@ -109,6 +239,8 @@ export function AgentChatScreen() {
 
       try {
         const updated = await applyAgentRunAction(sessionId, run.id, action);
+        runIdRef.current = updated.id;
+        runRef.current = updated;
         setRunId(updated.id);
         setRun(updated);
 

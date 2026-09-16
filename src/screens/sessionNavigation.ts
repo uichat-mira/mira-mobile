@@ -17,9 +17,13 @@ const hasNonEmptyId = (value: string | null | undefined): boolean =>
  * against the older navigation contract, but this resolver no longer emits it.
  */
 export const resolveSessionOpenTarget = (
-  session: Pick<Session, 'workspaceId' | 'agentEnabled'>,
+  session: Pick<Session, 'workspaceId' | 'agentEnabled' | 'source'>,
 ): SessionOpenTarget => {
-  if (session.agentEnabled === true && !hasNonEmptyId(session.workspaceId)) {
+  if (
+    session.agentEnabled === true &&
+    session.source !== 'local-provider' &&
+    !hasNonEmptyId(session.workspaceId)
+  ) {
     return {
       kind: 'contract-error',
       message: '该 Agent 会话缺少项目归属，无法在移动端打开。',

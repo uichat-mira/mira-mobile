@@ -25,6 +25,16 @@ describe('resolveSessionOpenTarget', () => {
     ).toEqual({ kind: 'chat' });
   });
 
+  it('opens local Agent sessions without Remote workspace ownership', () => {
+    expect(
+      resolveSessionOpenTarget({
+        workspaceId: null,
+        agentEnabled: true,
+        source: 'local-provider',
+      }),
+    ).toEqual({ kind: 'chat' });
+  });
+
   it('rejects Agent sessions that violate the workspace ownership contract', () => {
     expect(
       resolveSessionOpenTarget({ workspaceId: '   ', agentEnabled: true }),

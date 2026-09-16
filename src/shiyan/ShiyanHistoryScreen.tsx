@@ -1,53 +1,38 @@
 import React, { useCallback, useState } from 'react';
-import {
-  ActivityIndicator,
-  Linking,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import {
-  ArrowLeft,
-  ChevronRight,
-  ExternalLink,
-  FileText,
-} from 'lucide-react-native';
+import { ArrowLeft, FileText } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
-import { radius, spacing } from '../theme/tokens';
-import {
-  getShiyanHistoryDataSource,
-  type ShiyanHistoryTaskSummary,
-} from './history';
-import { shiyanStageLabel, shiyanStageStatusLabel } from './taskPresentation';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
+import { UnifiedRecordRow } from './UnifiedRecordRow';
+import { loadUnifiedRecords, type UnifiedRecordPresentation } from './unifiedRecords';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
 export function ShiyanHistoryScreen() {
   const navigation = useNavigation<NavProp>();
   const { colors } = useTheme();
-  const [tasks, setTasks] = useState<readonly ShiyanHistoryTaskSummary[]>([]);
+  const [records, setRecords] = useState<readonly UnifiedRecordPresentation[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState('');
+  const [cloudWarning, setCloudWarning] = useState('');
 
   const load = useCallback(() => {
     let active = true;
     setLoading(true);
     setErrorText('');
-    void getShiyanHistoryDataSource()
-      .listTasks()
-      .then((next) => {
-        if (active) setTasks(next);
+    setCloudWarning('');
+    void loadUnifiedRecords()
+      .then((result) => {
+        if (!active) return;
+        setRecords(result.records);
+        setCloudWarning(result.cloudError ? '部分 Cloud 记录暂时不可用，本地记录仍可继续查看。' : '');
       })
       .catch((error) => {
-        if (active) {
-          setErrorText(error instanceof Error ? error.message : '无法读取拾言历史任务。');
-        }
+        if (active) setErrorText(error instanceof Error ? error.message : '无法读取拾言记录。');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -59,92 +44,68 @@ export function ShiyanHistoryScreen() {
 
   useFocusEffect(load);
 
+  const openRecord = (record: UnifiedRecordPresentation) => {
+    if (record.taskId) {
+      navigation.navigate('ShiyanTaskDetail', {
+        taskId: record.taskId,
+        localCaptureId: record.localCaptureId,
+      });
+    } else {
+      navigation.navigate('ShiyanCaptureConfirm', { captureId: record.localCaptureId });
+    }
+  };
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bg.canvas }]}>
       <View style={styles.header}>
         <Pressable accessibilityRole="button" accessibilityLabel="返回" onPress={() => navigation.goBack()} style={styles.headerButton}>
           <ArrowLeft size={22} color={colors.text.ink} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: colors.text.ink }]}>历史任务</Text>
+        <Text style={[styles.headerTitle, { color: colors.text.ink }]}>全部记录</Text>
         <View style={styles.headerButton} />
       </View>
 
-      {loading && tasks.length === 0 ? (
+      {loading && records.length === 0 ? (
         <View style={styles.centerState}>
           <ActivityIndicator color={colors.primary} />
-          <Text style={{ color: colors.text.soft }}>正在读取 Cloud 任务…</Text>
+          <Text style={{ color: colors.text.soft }}>正在读取拾言记录…</Text>
         </View>
-      ) : errorText ? (
+      ) : errorText && records.length === 0 ? (
         <View style={styles.centerState}>
           <FileText size={34} color={colors.text.soft} />
-          <Text style={[styles.stateTitle, { color: colors.text.ink }]}>历史读取失败</Text>
+          <Text style={[styles.stateTitle, { color: colors.text.ink }]}>记录读取失败</Text>
           <Text style={[styles.stateText, { color: colors.text.soft }]}>{errorText}</Text>
-          <Pressable accessibilityRole="button" onPress={() => load()} style={[styles.retryButton, { borderColor: colors.border.default }] }>
+          <Pressable accessibilityRole="button" onPress={() => load()} style={[styles.retryButton, { borderColor: colors.border.default }]}>
             <Text style={{ color: colors.primary, fontWeight: '600' }}>重新加载</Text>
           </Pressable>
         </View>
-      ) : tasks.length === 0 ? (
+      ) : records.length === 0 ? (
         <View style={styles.centerState}>
           <FileText size={34} color={colors.text.soft} />
-          <Text style={[styles.stateTitle, { color: colors.text.ink }]}>还没有云端任务</Text>
-          <Text style={[styles.stateText, { color: colors.text.soft }]}>提交第一条本地录音后，这里会从 Cloud 读取真实 Stage 状态。</Text>
+          <Text style={[styles.stateTitle, { color: colors.text.ink }]}>
+            {cloudWarning ? 'Cloud 记录暂时不可用' : '还没有拾言记录'}
+          </Text>
+          {cloudWarning ? (
+            <>
+              <Text style={[styles.stateText, { color: colors.text.soft }]}>{cloudWarning}</Text>
+              <Pressable accessibilityRole="button" onPress={() => load()} style={[styles.retryButton, { borderColor: colors.border.default }]}>
+                <Text style={{ color: colors.primary, fontWeight: '600' }}>重新加载</Text>
+              </Pressable>
+            </>
+          ) : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
-          {tasks.map((task) => (
-            <View
-              key={task.id}
-              style={[
-                styles.card,
-                {
-                  backgroundColor: colors.bg.card,
-                  borderColor: task.stageStatus === 'failed' ? colors.status.error : colors.border.default,
-                },
-              ]}
-            >
-              <Pressable
-                accessibilityRole="button"
-                onPress={() =>
-                  navigation.navigate('ShiyanTaskDetail', {
-                    taskId: task.id,
-                    localCaptureId: task.localCaptureId,
-                  })
-                }
-                style={({ pressed }) => [
-                  styles.taskButton,
-                  pressed && { backgroundColor: colors.bg.soft },
-                ]}
-              >
-                <View style={styles.cardMain}>
-                  <Text style={[styles.cardTitle, { color: colors.text.ink }]}>{task.title}</Text>
-                  <Text style={[styles.meta, { color: colors.text.soft }]}>{task.sceneName} · {new Date(task.createdAt).toLocaleString()}</Text>
-                  <Text style={[styles.status, { color: task.stageStatus === 'failed' ? colors.status.error : colors.text.base }]}>
-                    {shiyanStageLabel(task.currentStage)} · {shiyanStageStatusLabel(task.stageStatus)}
-                  </Text>
-                </View>
-                <ChevronRight size={19} color={colors.text.soft} />
-              </Pressable>
-              {task.canonicalDestinationUrl ? (
-                <Pressable
-                  accessibilityRole="link"
-                  accessibilityLabel="打开真实投递去向"
-                  onPress={() => void Linking.openURL(task.canonicalDestinationUrl as string)}
-                  style={({ pressed }) => [
-                    styles.destinationButton,
-                    { borderTopColor: colors.border.default },
-                    pressed && { backgroundColor: colors.bg.soft },
-                  ]}
-                >
-                  <ExternalLink size={15} color={colors.primary} />
-                  <Text style={[styles.destination, { color: colors.primary }]}>打开真实投递去向</Text>
-                </Pressable>
-              ) : (
-                <View style={[styles.destinationButton, { borderTopColor: colors.border.default }]}>
-                  <Text style={[styles.meta, { color: colors.text.soft }]}>暂无真实投递链接</Text>
-                </View>
-              )}
+          {cloudWarning ? (
+            <View style={[styles.notice, { backgroundColor: colors.bg.soft }]}>
+              <Text style={[styles.noticeText, { color: colors.text.base }]}>{cloudWarning}</Text>
             </View>
-          ))}
+          ) : null}
+          <View style={[styles.recordGroup, { backgroundColor: colors.bg.card, borderColor: colors.border.default }]}>
+            {records.map((record, index) => (
+              <UnifiedRecordRow key={record.id} record={record} onPress={() => openRecord(record)} showDivider={index < records.length - 1} />
+            ))}
+          </View>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -158,15 +119,10 @@ const styles = StyleSheet.create({
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '600' },
   centerState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xl },
   stateTitle: { fontSize: 18, fontWeight: '600' },
-  stateText: { fontSize: 14, lineHeight: 21, textAlign: 'center' },
-  retryButton: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.full, paddingHorizontal: spacing.lg, alignItems: 'center', justifyContent: 'center' },
+  stateText: { fontSize: fontSize.button, lineHeight: 21, textAlign: 'center' },
+  retryButton: { minHeight: sizing.touchTarget, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.full, paddingHorizontal: spacing.lg, alignItems: 'center', justifyContent: 'center' },
   content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, overflow: 'hidden' },
-  taskButton: { minHeight: 94, padding: spacing.lg, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  cardMain: { flex: 1, gap: 5 },
-  cardTitle: { fontSize: 16, fontWeight: '700' },
-  meta: { fontSize: 12, lineHeight: 18 },
-  status: { fontSize: 13, fontWeight: '600' },
-  destinationButton: { minHeight: 42, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: spacing.lg, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  destination: { fontSize: 12, fontWeight: '600' },
+  notice: { borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  noticeText: { fontSize: fontSize.xs, lineHeight: 18 },
+  recordGroup: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, overflow: 'hidden' },
 });
