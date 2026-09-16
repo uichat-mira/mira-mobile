@@ -98,7 +98,3 @@ When relevant evidence is unavailable, call it out explicitly instead of inventi
 - cross-repository protocol behavior.
 
 A passing typecheck, lint, unit test, static review, simulator build, or one-platform build does not by itself prove those higher-level behaviors.
-
-## Historical reviewer compatibility
-
-The old local OpenCode review skill remains useful as migration reference, and CodeRabbit continues as an independent side reviewer during the pilot. The Organization reviewer does **not** retain the old `<!-- mira-mobile-review-skill:v1 -->` marker: that marker identifies the previous repository-local review output, while this profile preserves the Mobile-specific review semantics under the Organization output contract.

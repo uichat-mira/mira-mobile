@@ -19,7 +19,7 @@ Organization 通用 Review 制度、标准 verdict、finding 结构、stale / un
 
 Mobile 是 Organization AI Review 的首个真实仓库试点。当前已验证：
 
-- `.ai/review-profile.md` 已存在于 `dev` 的可信 base side；
+- `.ai/review-profile.md` 已存在于可信 base side；
 - `.github/workflows/mira-ai-review.yml` 是薄 caller，不 checkout、读取或执行 PR head 代码；
 - caller 只持有 purpose-specific `AI_REVIEW_GATEWAY_TOKEN`，不持有 GitHub publisher token 或模型 Provider 凭据；
 - `feat/* -> dev` 已完成真实 `CODE_REVIEW`；
@@ -53,7 +53,7 @@ Caller 只从 GitHub event 读取 repository identity 与 PR number，然后交�
 
 Control Room 会独立重新读取当前 PR、base/head、Organization policy、base-side profile/contracts 和 GitHub task relation，并在发布前再次检查 freshness。
 
-`mira-mobile` 的 GitHub default branch 当前仍是 `prod`。由于 `pull_request_target` 的 workflow 必须从 GitHub trusted/default-branch surface 可见，Pilot 曾将已经在 `dev` 验证过的同一份 dispatcher 最小化 bootstrap 到 `prod`；这不改变 `prod` 的生产环境语义，也没有把当前巨大且分叉的 `dev -> test` 产品差异一并晋级。
+`mira-mobile` 的 GitHub default branch 当前仍是 `prod`。`pull_request_target` 的可信 workflow surface 必须在默认分支可见，因此 Organization Review dispatcher 保持在 `prod`；这不改变 `prod` 的生产环境语义，也不授权绕过 `dev -> test -> prod` 的产品晋级链。
 
 ## Trusted work-item contract
 
@@ -132,16 +132,8 @@ PR #112 的安装后手动验证取得了真实独立 Review：
 
 所以 CodeRabbit 的 Organization 授权问题已经恢复，但**自动旁审等价性仍未恢复**。当前手动旁审只能作为临时可用路径和验证证据，不能视为与迁移前 Mobile 自动 Review 合同等价。Issue #109 保持打开，直到自动旁审恢复，或维护者明确决定接受并记录这一行为变化。Mira Review 与 CodeRabbit 仍是两条独立 Review 路径；两者结果都是维护者的审查证据，不拥有自动 merge、approve 或任务验收权。
 
-## Historical OpenCode reviewer
+## Legacy OpenCode retirement
 
-仓库历史上存在项目专用 OpenCode PR Review skill、脚本与 workflow。旧 OpenCode 自动 Review 已停用，不再承担当前正常 PR Review runtime。
+旧的 repository-local OpenCode PR Review runtime 已从当前仓库退役。旧 workflow、OpenCode runner、项目级 review skill、本地 `review:pull` handoff 与 `.ai/reviews/` inbox 不再是当前接口，也不应被新的施工线程重新启用。
 
-`.opencode/skills/mira-mobile-pr-review/SKILL.md` 等历史实现仍可作为 Mobile review knowledge 的迁移参考，但当前 Review 的事实来源已经变为：
-
-1. Organization AI Review policy / output contract；
-2. 当前 PR / Issue task contract；
-3. base-side `.ai/review-profile.md` 与 `AGENTS.md`；
-4. Control Room Review Gateway runtime；
-5. CodeRabbit 作为独立旁路证据；当前手动模式属于待解决的迁移回归状态，不是新的默认合同。
-
-历史 OpenCode runtime 如需最终删除或归档，应单独处理，不在普通产品 PR 中顺手清理。
+历史实现和迁移证据仍保留在 Git history 中；当前事实来源只有 Organization AI Review policy/output contract、当前 PR/Issue 合同、base-side `.ai/review-profile.md` 与 `AGENTS.md`、Control Room Review Gateway，以及 CodeRabbit 独立旁审证据。
