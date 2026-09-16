@@ -257,6 +257,18 @@ export function formatBytes(bytes: number): string {
     value /= 1024;
     unitIndex += 1;
   }
-  const formatted = value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1);
+  // 1024 B → 1 KB (显示整数)；1536 B → 1.5 KB。
+  let formatted: string;
+  if (unitIndex === 0) {
+    formatted = Math.round(value).toString();
+  } else if (value >= 100) {
+    formatted = Math.round(value).toString();
+  } else if (value >= 10) {
+    formatted = Math.round(value).toString();
+  } else if (Number.isInteger(value)) {
+    formatted = value.toString();
+  } else {
+    formatted = value.toFixed(1);
+  }
   return `${formatted} ${units[unitIndex]}`;
 }
