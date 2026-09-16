@@ -933,7 +933,8 @@ export class RemoteMiraHostClient {
     manifest: RemoteManifest,
     route: string,
   ) {
-    if (!manifest.routes.memory.includes(route)) {
+    const memoryRoutes = manifest.routes.memory ?? [];
+    if (!memoryRoutes.includes(route)) {
       throw new RemoteHostError(
         'REMOTE_MEMORY_ROUTE_UNAVAILABLE',
         `Mira Host does not advertise required memory route: ${route}`,

@@ -87,7 +87,10 @@ export interface RemoteManifest {
     agent: string[];
     tools: string[];
     artifacts: string[];
-    memory: string[];
+    // Older Hosts and existing test fixtures do not advertise this group;
+    // the mobile adapter treats the absent key as "not advertised" rather
+    // than failing the whole manifest parse.
+    memory?: string[];
   };
   reconnect: {
     mode: 'canonical-state-replay';
