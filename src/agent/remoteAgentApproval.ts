@@ -1,9 +1,10 @@
 import { RemoteHostError } from '../api/remoteHttp';
-import {
-  remoteMiraHostClient,
-  type RemoteMiraHostClient,
-} from '../api/remoteMiraHost';
 import type { RemoteAgentRun, RemoteMessage } from '../protocol/remoteHostV1';
+import {
+  DurableHostAgentRuntimeAdapter,
+  assertDurableHostRunBelongsToThread,
+  durableHostAgentRuntime,
+} from '../runtime/durableHostAgentRuntime';
 
 export type AgentRunAction = 'approve' | 'reject' | 'cancel';
 
@@ -27,22 +28,12 @@ export function getStableAgentRunId(
     if (typeof runId === 'string' && runId.trim().length > 0) {
       return runId.trim();
     }
+    return null;
   }
   return null;
 }
 
-export function assertRunBelongsToThread(
-  run: RemoteAgentRun,
-  threadId: string,
-): RemoteAgentRun {
-  if (run.threadId !== threadId) {
-    throw new RemoteHostError(
-      'AGENT_RUN_THREAD_MISMATCH',
-      'Mira Host returned an Agent Run that does not belong to this thread',
-    );
-  }
-  return run;
-}
+export const assertRunBelongsToThread = assertDurableHostRunBelongsToThread;
 
 export function canApplyAgentRunAction(
   run: RemoteAgentRun,
@@ -92,24 +83,20 @@ export function getAgentRunErrorMessage(error: unknown): string {
 export async function loadAgentRunForMessages(
   threadId: string,
   messages: readonly AgentRunMessage[],
-  remote: RemoteMiraHostClient = remoteMiraHostClient,
+  runtime: DurableHostAgentRuntimeAdapter = durableHostAgentRuntime,
 ): Promise<RemoteAgentRun | null> {
   const runId = getStableAgentRunId(messages);
   if (!runId) return null;
-
-  return assertRunBelongsToThread(await remote.getAgentRun(runId), threadId);
+  return runtime.readRun(threadId, runId);
 }
 
 export async function applyAgentRunAction(
   threadId: string,
   runId: string,
   action: AgentRunAction,
-  remote: RemoteMiraHostClient = remoteMiraHostClient,
+  runtime: DurableHostAgentRuntimeAdapter = durableHostAgentRuntime,
 ): Promise<RemoteAgentRun> {
-  const current = assertRunBelongsToThread(
-    await remote.getAgentRun(runId),
-    threadId,
-  );
+  const current = await runtime.readRun(threadId, runId);
   if (!canApplyAgentRunAction(current, action)) {
     throw new RemoteHostError(
       'AGENT_RUN_ACTION_UNAVAILABLE',
@@ -117,12 +104,5 @@ export async function applyAgentRunAction(
     );
   }
 
-  const updated =
-    action === 'approve'
-      ? await remote.approveAgentRun(runId)
-      : action === 'reject'
-        ? await remote.rejectAgentRun(runId)
-        : await remote.cancelAgentRun(runId);
-
-  return assertRunBelongsToThread(updated, threadId);
+  return runtime.resolve(threadId, runId, action);
 }

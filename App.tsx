@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar } from 'react-native';
+import { AppState, StatusBar, type AppStateStatus } from 'react-native';
 import {
   NavigationContainer,
   type LinkingOptions,
@@ -13,6 +13,7 @@ import { WorkspaceListScreen } from './src/screens/WorkspaceListScreen';
 import { WorkspaceDetailScreen } from './src/screens/WorkspaceDetailScreen';
 import { HostConfigScreen } from './src/screens/HostConfigScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { LocalProviderConfigScreen } from './src/screens/LocalProviderConfigScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { PersonalizationScreen } from './src/screens/PersonalizationScreen';
 import { ReportErrorScreen } from './src/screens/ReportErrorScreen';
@@ -31,12 +32,15 @@ import {
 import { ShiyanCaptureSubmitScreen } from './src/shiyan/ShiyanCaptureSubmitScreen';
 import { ShiyanCloudConfigScreen } from './src/shiyan/ShiyanCloudConfigScreen';
 import { ShiyanHistoryScreen } from './src/shiyan/ShiyanHistoryScreen';
+import { ShiyanOrganizeRulesScreen } from './src/shiyan/ShiyanOrganizeRulesScreen';
 import { ShiyanTaskDetailWithDeliveryScreen } from './src/shiyan/ShiyanTaskDetailWithDeliveryScreen';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import { TailscaleConnectivityLifecycle } from './src/connectivity/TailscaleConnectivityLifecycle';
 import { remoteMiraHostClient } from './src/api/remoteMiraHost';
 import { deviceCredentialStore } from './src/security/deviceCredentialStore';
 import { useHostStore } from './src/store/hostStore';
+import { runtimeRegistry } from './src/runtime/runtimeRegistry';
+import { ShareCardCaptureRoot } from './src/share/ShareCardCapture';
 import type { RootStackParamList } from './src/types/navigation';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -62,6 +66,38 @@ function StatusBarThemed() {
 function AppInner() {
   const [bootstrapChecked, setBootstrapChecked] = useState(false);
   const [hasDeviceCredential, setHasDeviceCredential] = useState(false);
+
+  useEffect(() => {
+    let previousState: AppStateStatus = AppState.currentState;
+    let resumeGeneration = 0;
+    const subscription = AppState.addEventListener('change', nextState => {
+      runtimeRegistry.local.setExecutionSuspended(nextState !== 'active');
+      if (nextState === 'active' && previousState !== 'active') {
+        remoteMiraHostClient.refreshRelayConnection();
+        if (useHostStore.getState().connectionStatus === 'connected') {
+          const generation = ++resumeGeneration;
+          useHostStore.getState().setConnectionStatus('reconnecting');
+          void remoteMiraHostClient
+            .restoreConnection()
+            .then(restored => {
+              if (generation !== resumeGeneration) return;
+              useHostStore
+                .getState()
+                .setConnectionStatus(restored ? 'connected' : 'disconnected');
+            })
+            .catch(() => {
+              if (generation !== resumeGeneration) return;
+              useHostStore.getState().setConnectionStatus('reconnecting');
+            });
+        }
+      }
+      previousState = nextState;
+    });
+    return () => {
+      resumeGeneration += 1;
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +165,7 @@ function AppInner() {
         <Stack.Screen name="WorkspaceDetail" component={WorkspaceDetailScreen} />
         <Stack.Screen name="HostConfig" component={HostConfigScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen name="LocalProviderConfig" component={LocalProviderConfigScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />
         <Stack.Screen name="Plugins" component={PluginsScreen} />
@@ -141,6 +178,7 @@ function AppInner() {
         <Stack.Screen name="ShiyanTaskDetail" component={ShiyanTaskDetailWithDeliveryScreen} />
         <Stack.Screen name="ShiyanCloudConfig" component={ShiyanCloudConfigScreen} />
         <Stack.Screen name="ShiyanSceneConfig" component={ShiyanSceneConfigScreen} />
+        <Stack.Screen name="ShiyanOrganizeRules" component={ShiyanOrganizeRulesScreen} />
         <Stack.Screen name="ReportError" component={ReportErrorScreen} />
         <Stack.Screen name="About" component={AboutScreen} />
         <Stack.Screen name="License" component={LicenseScreen} />
@@ -153,6 +191,7 @@ function App() {
   return (
     <ThemeProvider>
       <SafeAreaProvider>
+        <ShareCardCaptureRoot />
         <NavigationContainer linking={linking}>
           <StatusBarThemed />
           <AppInner />

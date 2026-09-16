@@ -1,335 +1,47 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Dimensions,
-  FlatList,
-  Modal,
-  PanResponder,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import {
-  Menu,
-  MessageSquare,
-  Pin,
-  Settings as SettingsIcon,
-  Trash2,
-} from 'lucide-react-native';
+import { Menu, Settings as SettingsIcon } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
 import { useHostStore } from '../store/hostStore';
 import { useThreadPinStore } from '../store/threadPinStore';
-import {
-  isThreadPinned,
-  sortSessionsByLocalPin,
-} from '../store/threadPinning';
-import {
-  selectThreadUnread,
-  useThreadReadStore,
-} from '../store/threadReadStore';
+import { isThreadPinned, sortSessionsByLocalPin } from '../store/threadPinning';
+import { selectThreadUnread, useThreadReadStore } from '../store/threadReadStore';
 import { miraHostClient } from '../api/miraHostClient';
+import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
 import { getSessionRoleName } from '../api/roleApi';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
+import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../components/ConnectionSourceDropdown';
+import { type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { CustomDrawer } from '../components/CustomDrawer';
+import { EmptyStateIllustration } from '../components/EmptyStateIllustration';
 import {
-  getSessionVisualKindLabel,
-  SessionKindIcon,
-} from '../components/SessionKindIcon';
-import {
-  getSessionLoadErrorMessage,
-  resolveSessionCollectionState,
-} from './sessionCollectionState';
+  classifySessionLoadFailure,
+  type RemoteConnectionDiagnostic,
+} from '../connectivity/remoteConnectionDiagnostics';
+import { resolveSessionCollectionState } from './sessionCollectionState';
 import { resolveSessionOpenTarget } from './sessionNavigation';
+import { SessionSwipeRow } from './SessionSwipeRow';
 
 const DRAWER_WIDTH = Math.floor(Dimensions.get('window').width * 0.82);
-const SWIPE_ACTION_WIDTH = 72;
-const SWIPE_ACTION_GAP = 8;
-const SWIPE_OPEN_THRESHOLD = 44;
 
-function formatTime(date: Date): string {
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const minutes = Math.floor(diff / (1000 * 60));
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes}分钟前`;
-  if (hours < 24) return `${hours}小时前`;
-  return `${days}天前`;
-}
-
-function getStatusColor(
-  status: string,
-  colors: ReturnType<typeof useTheme>['colors'],
-): string {
-  switch (status) {
-    case 'connected':
-      return colors.status.success;
-    case 'connecting':
-    case 'reconnecting':
-      return colors.status.warning;
-    default:
-      return colors.text.soft;
-  }
-}
-
-interface SessionRowProps {
-  item: Session;
-  roleName: string | null;
-  connectionStatus: string;
-  colors: ReturnType<typeof useTheme>['colors'];
-  isPinned: boolean;
-  isUnread: boolean;
-  canDelete: boolean;
-  isOpen: boolean;
-  onSwipeStateChange: (open: boolean) => void;
-  onOpen: () => void;
-  onTogglePin: () => void;
-  onDelete: () => void;
-}
-
-function SessionRow({
-  item,
-  roleName,
-  connectionStatus,
-  colors,
-  isPinned,
-  isUnread,
-  canDelete,
-  isOpen,
-  onSwipeStateChange,
-  onOpen,
-  onTogglePin,
-  onDelete,
-}: SessionRowProps) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const isOpenRef = useRef(false);
-  const actionsWidth =
-    (SWIPE_ACTION_WIDTH + SWIPE_ACTION_GAP) * (canDelete ? 2 : 1);
-  const belongsToWorkspace =
-    typeof item.workspaceId === 'string' && item.workspaceId.trim().length > 0;
-  const preview = belongsToWorkspace
-    ? `项目会话${roleName ? ` · ${roleName}` : ''}`
-    : roleName
-      ? `角色 · ${roleName}`
-      : connectionStatus === 'connected'
-        ? '继续与 Mira 对话'
-        : '连接 Mira Host 后继续对话';
-
-  const settle = useCallback(
-    (open: boolean) => {
-      const wasOpen = isOpenRef.current;
-      isOpenRef.current = open;
-      // Always animate, even for a redundant close: a terminated gesture can
-      // leave a closed row visually displaced mid-swipe, and skipping the
-      // animation here would strand it off its rest position.
-      Animated.spring(translateX, {
-        toValue: open ? actionsWidth : 0,
-        useNativeDriver: true,
-        friction: 9,
-        tension: 80,
-      }).start();
-      if (wasOpen !== open) onSwipeStateChange(open);
-    },
-    [actionsWidth, onSwipeStateChange, translateX],
-  );
-
-  // Close this row when another row opens. settle() only notifies on an
-  // actual state change, so this cannot loop.
-  useEffect(() => {
-    if (!isOpen && isOpenRef.current) {
-      settle(false);
-    }
-  }, [isOpen, settle]);
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        // Never steal the responder on touch-down so taps reach the row
-        // content and the list keeps its native press feedback.
-        onStartShouldSetPanResponder: () => false,
-        onStartShouldSetPanResponderCapture: () => false,
-        // Capture on move: the row content is a Pressable, which becomes the
-        // responder on Android as soon as it is touched. A non-capture
-        // onMoveShouldSetPanResponder never fires in that case, which is why
-        // swiping used to be unreliable on real devices. The capture phase
-        // lets the row take over once the gesture is clearly horizontal,
-        // while vertical movement still bubbles up to the FlatList scroll.
-        onMoveShouldSetPanResponderCapture: (_event, gesture) => {
-          if (Math.abs(gesture.dx) <= Math.abs(gesture.dy)) return false;
-          if (Math.abs(gesture.dx) < 6) return false;
-          return gesture.dx > 0 || isOpenRef.current;
-        },
-        onPanResponderMove: (_event, gesture) => {
-          const base = isOpenRef.current ? actionsWidth : 0;
-          const next = Math.max(0, Math.min(actionsWidth, base + gesture.dx));
-          translateX.setValue(next);
-        },
-        onPanResponderRelease: (_event, gesture) => {
-          if (isOpenRef.current) {
-            const shouldClose =
-              gesture.dx <= -SWIPE_OPEN_THRESHOLD || gesture.vx < -0.5;
-            settle(!shouldClose);
-            return;
-          }
-          const shouldOpen =
-            gesture.dx >= SWIPE_OPEN_THRESHOLD || gesture.vx > 0.5;
-          settle(shouldOpen);
-        },
-        onPanResponderTerminate: () => settle(isOpenRef.current),
-      }),
-    [actionsWidth, settle, translateX],
-  );
-
-  const handleOpen = useCallback(() => {
-    if (isOpenRef.current) {
-      settle(false);
-      return;
-    }
-    onOpen();
-  }, [onOpen, settle]);
-
-  const handleTogglePin = useCallback(() => {
-    settle(false);
-    onTogglePin();
-  }, [onTogglePin, settle]);
-
-  const handleDelete = useCallback(() => {
-    settle(false);
-    onDelete();
-  }, [onDelete, settle]);
-
-  return (
-    <View style={[styles.swipeRow, { borderColor: colors.border.soft }]}>
-      <View style={styles.swipeActions}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={isPinned ? `取消置顶：${item.title}` : `置顶：${item.title}`}
-          accessibilityState={{ selected: isPinned }}
-          onPress={handleTogglePin}
-          style={({ pressed }) => [
-            styles.swipeAction,
-            { backgroundColor: pressed ? colors.primaryActive : colors.primary },
-          ]}
-        >
-          <Pin size={18} color={colors.onPrimary} strokeWidth={2} />
-          <Text style={[styles.swipeActionLabel, { color: colors.onPrimary }]}>
-            {isPinned ? '取消置顶' : '置顶'}
-          </Text>
-        </Pressable>
-        {canDelete ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`删除：${item.title}`}
-            onPress={handleDelete}
-            style={({ pressed }) => [
-              styles.swipeAction,
-              { backgroundColor: colors.status.error },
-              pressed && { opacity: 0.82 },
-            ]}
-          >
-            <Trash2 size={18} color={colors.onPrimary} strokeWidth={2} />
-            <Text style={[styles.swipeActionLabel, { color: colors.onPrimary }]}>删除</Text>
-          </Pressable>
-        ) : null}
-      </View>
-
-      <Animated.View
-        {...panResponder.panHandlers}
-        style={[
-          styles.sessionItem,
-          {
-            backgroundColor: colors.bg.canvas,
-            transform: [{ translateX }],
-          },
-        ]}
-      >
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${getSessionVisualKindLabel(item)}：${item.title}${roleName ? `，角色${roleName}` : ''}${belongsToWorkspace ? '，项目会话' : ''}${isPinned ? '，已在本机置顶' : ''}${isUnread ? '，未读' : ''}`}
-          style={({ pressed }) => [
-            styles.sessionOpen,
-            pressed && { backgroundColor: colors.bg.soft },
-          ]}
-          onPress={handleOpen}
-        >
-          <View
-            style={[
-              styles.avatar,
-              {
-                backgroundColor: colors.bg.card,
-                borderColor: colors.border.default,
-              },
-            ]}
-          >
-            <SessionKindIcon
-              session={item}
-              size={22}
-              strokeWidth={1.7}
-              color={colors.primary}
-            />
-          </View>
-          <View style={styles.sessionContent}>
-            <View style={styles.sessionTopRow}>
-              <View style={styles.sessionTitleGroup}>
-                {isUnread ? (
-                  <View
-                    accessibilityElementsHidden
-                    style={[styles.unreadDot, { backgroundColor: colors.primary }]}
-                  />
-                ) : null}
-                <Text
-                  style={[styles.sessionTitle, { color: colors.text.ink }]}
-                  numberOfLines={1}
-                >
-                  {item.title}
-                </Text>
-                {isPinned ? (
-                  <Pin
-                    accessibilityElementsHidden
-                    size={14}
-                    strokeWidth={1.7}
-                    color={colors.text.soft}
-                  />
-                ) : null}
-              </View>
-              <Text style={[styles.sessionTime, { color: colors.text.soft }]}>
-                {formatTime(item.updatedAt)}
-              </Text>
-            </View>
-            <Text
-              style={[styles.sessionPreview, { color: colors.text.muted }]}
-              numberOfLines={1}
-            >
-              {preview}
-            </Text>
-          </View>
-        </Pressable>
-      </Animated.View>
-    </View>
-  );
-}
+const getEmptyDescription = (source: SessionSourceFilter): string => {
+  if (source === 'local-provider') return '尚未创建本地连接会话';
+  if (source === 'remote-host') return '远程连接当前没有可用会话';
+  return '远程连接与本地连接当前都没有会话';
+};
 
 export function SessionListScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { colors } = useTheme();
-  const { connectionStatus } = useHostStore();
+  const { connectionStatus, config } = useHostStore();
   const roleNames = useRoleNameMap();
   const pinnedAtByThreadId = useThreadPinStore((state) => state.pinnedAtByThreadId);
   const hydratePins = useThreadPinStore((state) => state.hydrate);
@@ -341,13 +53,48 @@ export function SessionListScreen() {
   const clearThreadRead = useThreadReadStore((state) => state.clearThread);
   const insets = useSafeAreaInsets();
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sourceFilter, setSourceFilter] = useState<SessionSourceFilter>('all');
+  const [localConfigured, setLocalConfigured] = useState(false);
   const [canDeleteSessions, setCanDeleteSessions] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadDiagnostic, setLoadDiagnostic] =
+    useState<RemoteConnectionDiagnostic | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openSwipeRowId, setOpenSwipeRowId] = useState<string | null>(null);
   const drawerAnim = useState(new Animated.Value(-DRAWER_WIDTH))[0];
   const backdropAnim = useState(new Animated.Value(0))[0];
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void new ProviderConfigStore().load().then((configs) => {
+      if (!cancelled) setLocalConfigured(configs.length > 0);
+    }).catch(() => {
+      if (!cancelled) setLocalConfigured(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const remoteStatus: ConnectionVisualStatus = loadDiagnostic
+    ? 'error'
+    : connectionStatus === 'connected'
+      ? 'connected'
+      : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+        ? 'connecting'
+        : config
+          ? 'disconnected'
+          : 'not-configured';
+  const sourceOptions: ConnectionSourceOption<SessionSourceFilter>[] = [
+    { value: 'all', label: '全部任务', description: '同时显示远程和本地会话', status: localConfigured || !!config ? 'connected' : 'not-configured' },
+    { value: 'remote-host', label: '远程连接', description: '来自已配对 Mira Host 的会话', status: remoteStatus, disabled: remoteStatus !== 'connected' && remoteStatus !== 'connecting' },
+    { value: 'local-provider', label: '本地连接', description: '保存在当前设备的直连会话', status: localConfigured ? 'connected' : 'not-configured' },
+  ];
+
+  React.useEffect(() => {
+    const remoteUnavailable = remoteStatus !== 'connected' && remoteStatus !== 'connecting';
+    if (sourceFilter === 'remote-host' && remoteUnavailable) {
+      setSourceFilter('all');
+    }
+  }, [remoteStatus, sourceFilter]);
 
   const openDrawer = useCallback(() => {
     setDrawerOpen(true);
@@ -382,29 +129,31 @@ export function SessionListScreen() {
 
   const loadSessions = useCallback(async () => {
     setIsLoading(true);
-    setLoadError(null);
+    setLoadDiagnostic(null);
     try {
       const [list, canDelete] = await Promise.all([
-        miraHostClient.listSessions(),
-        miraHostClient.canDeleteSession().catch(() => false),
+        runtimeRegistry.listSessions(sourceFilter),
+        sourceFilter === 'local-provider' ? Promise.resolve(false) : miraHostClient.canDeleteSession().catch(() => false),
       ]);
       setSessions(list);
       setCanDeleteSessions(canDelete);
-      void syncUnreadSessions(list).catch(() => undefined);
+      void syncUnreadSessions(
+        list.filter((session) => session.source !== 'local-provider'),
+      ).catch(() => undefined);
     } catch (error) {
-      setSessions([]);
       setCanDeleteSessions(false);
-      setLoadError(getSessionLoadErrorMessage(error));
+      setLoadDiagnostic(await classifySessionLoadFailure(error));
     } finally {
       setIsLoading(false);
     }
-  }, [syncUnreadSessions]);
+  }, [sourceFilter, syncUnreadSessions]);
 
   useFocusEffect(
     useCallback(() => {
-      void hydratePins().catch(() => undefined);
-      void hydrateReads().catch(() => undefined);
-      void loadSessions();
+      void Promise.allSettled([
+        Promise.resolve().then(hydratePins),
+        Promise.resolve().then(hydrateReads),
+      ]).then(() => loadSessions());
     }, [hydratePins, hydrateReads, loadSessions]),
   );
 
@@ -422,7 +171,7 @@ export function SessionListScreen() {
 
   const collectionState = resolveSessionCollectionState(
     isLoading,
-    loadError,
+    loadDiagnostic?.title ?? null,
     sessions.length,
   );
 
@@ -444,6 +193,9 @@ export function SessionListScreen() {
     navigation.navigate('Chat', {
       sessionId: session.id,
       title: session.title,
+      source: session.source,
+      providerName: session.providerName,
+      providerModel: session.providerModel,
     });
   };
 
@@ -461,12 +213,18 @@ export function SessionListScreen() {
 
   const deleteSession = async (session: Session) => {
     try {
-      await miraHostClient.deleteSession(session.id);
+      await runtimeRegistry.deleteSession(session.id, session.source);
       setSessions((current) => current.filter((item) => item.id !== session.id));
-      await Promise.allSettled([
+      const cleanupResults = await Promise.allSettled([
         unpinThread(session.id),
         clearThreadRead(session.id),
       ]);
+      if (cleanupResults.some((result) => result.status === 'rejected')) {
+        Alert.alert(
+          '会话已删除',
+          '会话已删除，但本机置顶或未读状态清理未完成，请重新打开应用后检查。',
+        );
+      }
     } catch (error) {
       const message =
         error instanceof Error && error.message
@@ -477,7 +235,10 @@ export function SessionListScreen() {
   };
 
   const confirmDelete = (session: Session) => {
-    Alert.alert('删除会话', `确定删除“${session.title}”吗？此操作会同步删除桌面端线程。`, [
+    const message = session.source === 'local-provider'
+      ? `确定删除“${session.title}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      : `确定删除“${session.title}”吗？此操作会同步删除桌面端线程。`;
+    Alert.alert('删除会话', message, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -504,13 +265,7 @@ export function SessionListScreen() {
           <Menu size={20} color={colors.text.ink} />
         </Pressable>
         <View style={styles.headerCenter}>
-          <Text style={[styles.headerTitle, { color: colors.text.ink }]}>Mira</Text>
-          <View
-            style={[
-              styles.statusDot,
-              { backgroundColor: getStatusColor(connectionStatus, colors) },
-            ]}
-          />
+          <ConnectionSourceDropdown value={sourceFilter} options={sourceOptions} onChange={setSourceFilter} />
         </View>
         <Pressable
           onPress={() => navigation.navigate('Settings')}
@@ -528,6 +283,10 @@ export function SessionListScreen() {
         data={orderedSessions}
         keyExtractor={(item) => item.id}
         contentContainerStyle={listContentStyle}
+        onScrollBeginDrag={() => setOpenSwipeRowId(null)}
+        ListHeaderComponent={
+          null
+        }
         renderItem={({ item, index }) => (
           <>
             {index === 0 && pinnedCount > 0 ? (
@@ -536,14 +295,14 @@ export function SessionListScreen() {
             {index === pinnedCount && pinnedCount > 0 && pinnedCount < orderedSessions.length ? (
               <Text style={[styles.recentSectionLabel, { color: colors.text.soft }]}>最近对话</Text>
             ) : null}
-            <SessionRow
+            <SessionSwipeRow
               item={item}
               roleName={getSessionRoleName(item, roleNames)}
               connectionStatus={connectionStatus}
               colors={colors}
               isPinned={isThreadPinned(pinnedAtByThreadId, item.id)}
               isUnread={selectThreadUnread(progressByThreadId, item.id)}
-              canDelete={canDeleteSessions}
+              canDelete={item.source === 'local-provider' || canDeleteSessions}
               isOpen={openSwipeRowId === item.id}
               onSwipeStateChange={(open) =>
                 setOpenSwipeRowId(open ? item.id : (current) =>
@@ -569,47 +328,17 @@ export function SessionListScreen() {
             );
           }
 
-          if (collectionState === 'error') {
-            return (
-              <View style={styles.emptyState}>
-                <Text style={[styles.emptyTitle, { color: colors.text.ink }]}>加载会话失败</Text>
-                <Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>
-                  {loadError}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="重试加载会话"
-                  onPress={() => void loadSessions()}
-                  style={({ pressed }) => [
-                    styles.retryButton,
-                    { backgroundColor: pressed ? colors.primaryActive : colors.primary },
-                  ]}
-                >
-                  <Text style={[styles.retryButtonLabel, { color: colors.onPrimary }]}>重试</Text>
-                </Pressable>
-              </View>
-            );
+          if (collectionState === 'error' && loadDiagnostic) {
+            return <View style={styles.emptyState}><Text style={[styles.emptyTitle, { color: colors.text.ink }]}>连接不可用</Text><Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>请在“连接”中检查远程连接状态</Text></View>;
           }
 
           return (
             <View style={styles.emptyState}>
-              <View
-                style={[
-                  styles.emptyIllustration,
-                  {
-                    backgroundColor: colors.bg.card,
-                    borderColor: colors.border.default,
-                  },
-                ]}
-              >
-                <MessageSquare
-                  size={48}
-                  strokeWidth={1.25}
-                  color={colors.border.default}
-                />
+              <View style={styles.emptyIllustration}>
+                <EmptyStateIllustration size={168} />
               </View>
               <Text style={[styles.emptyTitle, { color: colors.text.ink }]}>暂无会话</Text>
-              <Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>Remote Host V1 当前只展示桌面端已有会话</Text>
+              <Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>{getEmptyDescription(sourceFilter)}</Text>
             </View>
           );
         }}
@@ -661,14 +390,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    marginLeft: spacing.xs,
   },
-  statusDot: {
-    width: spacing.sm,
-    height: spacing.sm,
-    borderRadius: radius.full,
-    marginLeft: spacing.sm,
-  },
-  headerTitle: { fontSize: fontSize.titleLg, fontWeight: '600' },
   settingsBtn: {
     width: sizing.buttonHeight,
     height: sizing.buttonHeight,
@@ -689,77 +412,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
     fontSize: fontSize.captionUppercase,
   },
-  swipeRow: {
-    minHeight: 72,
-    overflow: 'hidden',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  swipeActions: {
-    ...StyleSheet.absoluteFill,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    justifyContent: 'flex-start',
-    paddingVertical: 6,
-    paddingLeft: SWIPE_ACTION_GAP,
-    gap: SWIPE_ACTION_GAP,
-  },
-  swipeAction: {
-    width: SWIPE_ACTION_WIDTH,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-  },
-  swipeActionLabel: { fontSize: fontSize.xs, fontWeight: '600' },
-  sessionItem: {
-    minHeight: 72,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  sessionOpen: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xs,
-    paddingVertical: spacing.md,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: radius.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  sessionContent: { flex: 1, minWidth: 0 },
-  sessionTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.xs,
-  },
-  sessionTitleGroup: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginRight: spacing.sm,
-    gap: spacing.xs,
-  },
-  sessionTitle: { fontSize: fontSize.bodyMd, fontWeight: '600', flex: 1 },
-  unreadDot: {
-    width: 7,
-    height: 7,
-    borderRadius: radius.full,
-    flexShrink: 0,
-  },
-  sessionTime: { fontSize: fontSize.xs },
-  sessionPreview: { fontSize: fontSize.button },
   emptyState: {
     flex: 1,
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'center',
     paddingHorizontal: spacing.section,
     paddingBottom: 80,
@@ -771,30 +426,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   emptyIllustration: {
-    width: 112,
-    height: 112,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.lg,
+    alignSelf: 'center',
   },
   emptyTitle: {
     fontSize: fontSize.titleLg,
     fontWeight: '600',
     marginBottom: spacing.sm,
+    textAlign: 'center',
   },
   emptySubtitle: { fontSize: fontSize.button, textAlign: 'center' },
-  retryButton: {
-    minHeight: sizing.touchTarget,
-    minWidth: 96,
-    marginTop: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  retryButtonLabel: { fontSize: fontSize.bodyMd, fontWeight: '600' },
   drawerBackdrop: { ...StyleSheet.absoluteFill },
   drawerPanel: {
     position: 'absolute',

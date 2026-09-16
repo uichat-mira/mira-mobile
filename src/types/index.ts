@@ -1,5 +1,7 @@
 import type { RemoteMessagePart } from '../protocol/remoteHostV1';
 
+export type SessionSource = 'remote-host' | 'local-provider';
+
 export interface MiraHostConfig {
   hostUrl: string;
   token: string;
@@ -9,6 +11,9 @@ export interface Session {
   id: string;
   title: string;
   updatedAt: Date;
+  source?: SessionSource;
+  providerName?: string | null;
+  providerModel?: string | null;
   /** Canonical Host ownership metadata. Optional for legacy mock/story sessions. */
   workspaceId?: string | null;
   knowledgeBaseId?: string | null;

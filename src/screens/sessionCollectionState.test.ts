@@ -12,7 +12,12 @@ describe('session collection truth state', () => {
     expect(resolveSessionCollectionState(false, null, 2)).toBe('data');
   });
 
-  it('distinguishes authorization, not-found and network failures', () => {
+  it('keeps previously loaded sessions visible during refresh and refresh failure', () => {
+    expect(resolveSessionCollectionState(true, null, 2)).toBe('data');
+    expect(resolveSessionCollectionState(false, 'failed', 2)).toBe('data');
+  });
+
+  it('keeps legacy message mapping for screens outside the MOB-035 migration', () => {
     expect(
       getSessionLoadErrorMessage(
         new RemoteHostError('HTTP_401', 'unauthorized', 401),

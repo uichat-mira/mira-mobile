@@ -2,7 +2,8 @@
 
 ## 当前工程主线
 
-- [Mobile 工作台账](work-ledger.md)
+- [Mobile Canonical Work Ledger](workbench/00-work-ledger.md)
+- [Mobile 工作台账详细镜像](work-ledger.md)
 
 `docs/work-ledger.md` 是当前移动端线程、项目与角色展示工作的任务事实来源。任务状态、Host 依赖、产品决定和验收结果统一在台账维护。
 
@@ -17,6 +18,7 @@ Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop /
 
 - [GitHub Actions 构建与发布](github-build-release.md)
 - [依赖安全技术债务](dependency-security-debt.md)
+- [iOS 模拟器 Metro 代理排障](ios-metro-proxy-troubleshooting.md)
 
 ## 历史工程归档
 
@@ -33,19 +35,7 @@ Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop /
 
 ## 设计体系
 
-本文档目录同时维护 `uichat-mira-mobile` 的视觉规范和设计 Token。
-
-### 目录
-
-- [品牌规范](branding.md)
-- [设计原则](design-principles.md)
-- [颜色系统](colors.md)
-- [排版与字号](typography.md)
-- [间距与布局](spacing.md)
-- [图标规范](icons.md)
-- [圆角与阴影](shape.md)
-- [组件规范](components.md)
-- [使用方式](usage.md)
+统一视觉规范、组件约束、Token 用法和设计评审清单见根目录的 [DESIGN.md](../DESIGN.md)。
 
 ### 快速参考
 
@@ -71,4 +61,5 @@ Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop /
 
 - **Token 源码**: `src/theme/tokens.ts`
 - **Tailwind 配置**: `tailwind.config.js`
+- **统一设计说明**: `DESIGN.md`
 - **全局样式入口**: `global.css`

@@ -9,9 +9,9 @@ on:
 permissions:
   contents: read
 
-# MOB-028: predev is a dev-channel rolling buffer.
+# MOB-028A: predev builds carry an explicit predev release identity.
 env:
-  MIRA_RELEASE_CHANNEL: dev
+  MIRA_RELEASE_CHANNEL: predev
 
 concurrency:
   group: predev-ci-${{ github.ref }}
@@ -104,6 +104,7 @@ jobs:
           cd android
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8" \
+            -PreactNativeArchitectures=arm64-v8a \
             assembleRelease \
             --no-daemon \
             --no-parallel \
@@ -119,6 +120,18 @@ jobs:
           unzip -Z1 "$apk" > "$entries"
           grep -Fxq 'assets/index.android.bundle' "$entries"
           grep -Fxq 'lib/arm64-v8a/libreact_codegen_rnsvg.so' "$entries"
+          bad_abis=$(awk -F/ '$1 == "lib" && $2 != "arm64-v8a" { print $2 }' "$entries" | sort -u)
+          if [ -n "$bad_abis" ]; then
+            echo "Release APK contains non-arm64 native libraries: $bad_abis" >&2
+            exit 1
+          fi
+          apk_size_bytes=$(stat -c '%s' "$apk")
+          apk_size_mib=$(awk -v bytes="$apk_size_bytes" 'BEGIN { printf "%.2f", bytes / 1048576 }')
+          {
+            echo "### Android signed release"
+            echo "ABI: arm64-v8a only"
+            echo "APK size: ${apk_size_mib} MiB (${apk_size_bytes} bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
           release_dir=android/app/build/outputs/apk/release
           cp "$apk" "$release_dir/uichat-mira-mobile-release.apk"
@@ -249,7 +262,7 @@ jobs:
           entries="$RUNNER_TEMP/ios-unsigned-device-entries.txt"
           unzip -Z1 "$ipa" > "$entries"
           grep -Eq '^Payload/[^/]+\.app/Info\.plist$' "$entries"
-          grep -Eq '^Payload/[^/]+\.app/main\.jsbundle$' "$entries"
+          grep -Eq '^Payload/[^/]+\.app/main.jsbundle$' "$entries"
           if grep -Eq '^Payload/[^/]+\.app/embedded\.mobileprovision$' "$entries"; then
             echo 'Unsigned IPA unexpectedly contains an embedded provisioning profile.' >&2
             exit 1

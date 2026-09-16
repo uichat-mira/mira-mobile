@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ArrowLeft, Cloud, KeyRound, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, KeyRound, Trash2 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { radius, spacing } from '../theme/tokens';
@@ -114,14 +114,6 @@ export function ShiyanCloudConfigScreen() {
         <View style={styles.headerButton} />
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={[styles.hero, { backgroundColor: colors.bg.soft }]}>
-          <Cloud size={24} color={colors.primary} />
-          <View style={styles.heroText}>
-            <Text style={[styles.title, { color: colors.text.ink }]}>独立于 Desktop Host</Text>
-            <Text style={[styles.description, { color: colors.text.soft }]}>拾言使用自己的 HTTPS Cloud 地址与设备凭证。这里的配置不会读取或覆盖 Desktop 配对信息。</Text>
-          </View>
-        </View>
-
         <Text style={[styles.label, { color: colors.text.base }]}>Cloud API 地址</Text>
         <TextInput
           value={baseUrl}
@@ -180,9 +172,6 @@ const styles = StyleSheet.create({
   headerButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '600' },
   content: { padding: spacing.lg, paddingBottom: 56, gap: spacing.md },
-  hero: { borderRadius: radius.lg, padding: spacing.lg, flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
-  heroText: { flex: 1, gap: spacing.xs },
-  title: { fontSize: 16, fontWeight: '700' },
   description: { fontSize: 13, lineHeight: 19 },
   label: { fontSize: 13, fontWeight: '600', marginTop: spacing.sm },
   input: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: spacing.md, fontSize: 14 },

@@ -8,7 +8,7 @@
  * - Single brand accent: coral clay (#cc785c), used sparingly.
  * - Warm-toned cream canvas, never pure white or cold gray.
  * - Hierarchy through surface color contrast, not shadows.
- * - Serif display fonts with negative letter-spacing.
+ * - Platform text defaults with restrained, explicit tracking.
  */
 
 // ─── Brand & Text ──────────────────────────────────────────
@@ -203,11 +203,11 @@ export const lineHeight = {
 
 export const letterSpacing = {
   /** display-lg */
-  displayLg: -1.5,
+  displayLg: 0,
   /** display-sm */
-  displaySm: -1,
+  displaySm: 0,
   /** title-xl */
-  titleXl: -0.3,
+  titleXl: 0,
   /** 大写标签 */
   captionUppercase: 1.5,
   /** 默认 */
