@@ -1020,9 +1020,9 @@ describe('RemoteMiraHostClient memory surface', () => {
       return request.parse(memoryOverviewPayload);
     };
     let relayCalls = 0;
-    const relayJson: RelayJsonTransport = async (_relay, _request) => {
+    const relayJson: RelayJsonTransport = async (_relay, request) => {
       relayCalls += 1;
-      return memoryOverviewPayload;
+      return request.parse(memoryOverviewPayload);
     };
     const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
 
