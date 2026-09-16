@@ -10,48 +10,32 @@ import {
   MemoryProviderCredentialStore,
   type ProviderCredentialStore,
 } from '../security/providerCredentialStore';
-import { LocalKeyValueStore } from '../storage/localKeyValueStore';
+import {
+  MemoryLocalKeyValueStore,
+  localKeyValueStore as defaultLocalKeyValueStore,
+  type LocalKeyValueStore,
+} from '../storage/localKeyValueStore';
 import { formatSavedAt, loadSecurityStatus, type SecurityStatus } from './securityStatus';
 
-class MemoryLocalKeyValueStore implements LocalKeyValueStore {
-  private readonly values = new Map<string, string>();
-  async get(key: string) {
-    return this.values.has(key) ? (this.values.get(key) as string) : null;
-  }
-  async set(key: string, value: string) {
-    this.values.set(key, value);
-  }
-  async remove(key: string) {
-    this.values.delete(key);
-  }
-}
-
-const installStores = () => {
-  const deviceStore: DeviceCredentialStore = new MemoryDeviceCredentialStore();
-  const desktopStore: DesktopCredentialStore = new MemoryDesktopCredentialStore();
-  const providerStore: ProviderCredentialStore = new MemoryProviderCredentialStore();
-  // 通过 jest.mock 的方式替换默认导出模块，下面 mutate the module cache.
-  // 这里我们直接改写运行时单例：jest.mock 之外的方案是动态 require 并替换。
-  // 为保持测试干净，我们仅在每个 case 内 monkey-patch 模块导出对象。
-  return { deviceStore, desktopStore, providerStore };
-};
-
-// 由于模块使用具名导出单例，本文件采用 jest.mock 风格不便（jest 在 RN 中已启用）。
-// 直接改写模块对象即可，运行时单例是 ES module 绑定。
+// We re-bind the default `deviceCredentialStore` / `desktopCredentialStore` /
+// `providerCredentialStore` / `localKeyValueStore` module-level singletons to
+// fresh Memory* instances so each test starts with an empty credential surface.
+// The production code never sees these bindings, but the test does.
 const setRemoteDeviceStore = (store: DeviceCredentialStore) => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require('../security/deviceCredentialStore') as typeof import('../security/deviceCredentialStore');
   (mod.deviceCredentialStore as unknown as DeviceCredentialStore) = store;
 };
 const setRemoteDesktopStore = (store: DesktopCredentialStore) => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require('../security/desktopCredentialStore') as typeof import('../security/desktopCredentialStore');
   (mod.desktopCredentialStore as unknown as DesktopCredentialStore) = store;
 };
 const setProviderStore = (store: ProviderCredentialStore) => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require('../security/providerCredentialStore') as typeof import('../security/providerCredentialStore');
   (mod.providerCredentialStore as unknown as ProviderCredentialStore) = store;
+};
+const setLocalKeyValueStore = (store: LocalKeyValueStore) => {
+  const mod = require('../storage/localKeyValueStore') as typeof import('../storage/localKeyValueStore');
+  (mod.localKeyValueStore as unknown as LocalKeyValueStore) = store;
 };
 
 describe('loadSecurityStatus', () => {
@@ -59,13 +43,14 @@ describe('loadSecurityStatus', () => {
     setRemoteDeviceStore(new MemoryDeviceCredentialStore());
     setRemoteDesktopStore(new MemoryDesktopCredentialStore());
     setProviderStore(new MemoryProviderCredentialStore());
+    setLocalKeyValueStore(new MemoryLocalKeyValueStore());
   });
 
   it('reports no remote host credential when store is empty', async () => {
-    const stores = installStores();
-    setRemoteDeviceStore(stores.deviceStore);
-    setRemoteDesktopStore(stores.desktopStore);
-    setProviderStore(stores.providerStore);
+    setRemoteDeviceStore(new MemoryDeviceCredentialStore());
+    setRemoteDesktopStore(new MemoryDesktopCredentialStore());
+    setProviderStore(new MemoryProviderCredentialStore());
+    setLocalKeyValueStore(new MemoryLocalKeyValueStore());
 
     const status: SecurityStatus = await loadSecurityStatus();
     expect(status.remoteHost.available).toBe(false);
@@ -76,12 +61,13 @@ describe('loadSecurityStatus', () => {
   });
 
   it('surfaces a stored remote host credential without leaking its secret', async () => {
-    const stores = installStores();
-    setRemoteDeviceStore(stores.deviceStore);
-    setRemoteDesktopStore(stores.desktopStore);
-    setProviderStore(stores.providerStore);
+    const deviceStore = new MemoryDeviceCredentialStore();
+    setRemoteDeviceStore(deviceStore);
+    setRemoteDesktopStore(new MemoryDesktopCredentialStore());
+    setProviderStore(new MemoryProviderCredentialStore());
+    setLocalKeyValueStore(new MemoryLocalKeyValueStore());
 
-    await stores.deviceStore.save({
+    await deviceStore.save({
       hostUrl: 'https://host.example.com',
       relay: null,
       credential: 'mira_device_super_secret',
@@ -99,15 +85,14 @@ describe('loadSecurityStatus', () => {
   });
 
   it('counts stored provider API keys without exposing them', async () => {
-    const stores = installStores();
-    setRemoteDeviceStore(stores.deviceStore);
-    setRemoteDesktopStore(stores.desktopStore);
-    setProviderStore(stores.providerStore);
-
-    await stores.providerStore.save('prov-a', 'sk-test-A');
-    // prov-b 故意不存
-    // 直接写 local KV：仿照 ProviderConfigStore 的存储键
+    const providerStore = new MemoryProviderCredentialStore();
+    setRemoteDeviceStore(new MemoryDeviceCredentialStore());
+    setRemoteDesktopStore(new MemoryDesktopCredentialStore());
+    setProviderStore(providerStore);
     const kv = new MemoryLocalKeyValueStore();
+    setLocalKeyValueStore(kv);
+
+    await providerStore.save('prov-a', 'sk-test-A');
     await kv.set(
       'mira.local-provider.configs.v1',
       JSON.stringify([
@@ -115,10 +100,6 @@ describe('loadSecurityStatus', () => {
         { id: 'prov-b', name: 'B', baseUrl: 'https://b.example.com', model: 'm', protocol: 'chat-completions' },
       ]),
     );
-    // 覆盖 localKeyValueStore 模块导出
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const kvMod = require('../storage/localKeyValueStore') as typeof import('../storage/localKeyValueStore');
-    (kvMod.localKeyValueStore as unknown as LocalKeyValueStore) = kv;
 
     const status = await loadSecurityStatus();
     expect(status.providers.total).toBe(2);
@@ -126,17 +107,20 @@ describe('loadSecurityStatus', () => {
     expect(status.providers.items.find((item) => item.id === 'prov-a')?.hasApiKey).toBe(true);
     expect(status.providers.items.find((item) => item.id === 'prov-b')?.hasApiKey).toBe(false);
 
-    // 恢复默认 KV 单例，避免污染其它测试
-    (kvMod.localKeyValueStore as unknown as LocalKeyValueStore) = new MemoryLocalKeyValueStore();
+    // 聚合结果不应泄露任何 Provider 凭据本身
+    for (const item of status.providers.items) {
+      expect(Object.keys(item)).toEqual(['id', 'name', 'baseUrl', 'hasApiKey']);
+    }
   });
 
   it('marks desktop host credential as available when stored', async () => {
-    const stores = installStores();
-    setRemoteDeviceStore(stores.deviceStore);
-    setRemoteDesktopStore(stores.desktopStore);
-    setProviderStore(stores.providerStore);
+    const desktopStore = new MemoryDesktopCredentialStore();
+    setRemoteDeviceStore(new MemoryDeviceCredentialStore());
+    setRemoteDesktopStore(desktopStore);
+    setProviderStore(new MemoryProviderCredentialStore());
+    setLocalKeyValueStore(new MemoryLocalKeyValueStore());
 
-    await stores.desktopStore.save({
+    await desktopStore.save({
       hostUrl: 'https://desktop.example.com',
       token: 'jwt-placeholder',
       username: 'dang',
@@ -147,7 +131,6 @@ describe('loadSecurityStatus', () => {
     expect(status.desktopHost.available).toBe(true);
     expect(status.desktopHost.username).toBe('dang');
     expect(status.desktopHost.hostUrl).toBe('https://desktop.example.com');
-    // 不允许把 token 写入聚合结果
     expect('token' in status.desktopHost).toBe(false);
   });
 
@@ -161,6 +144,7 @@ describe('loadSecurityStatus', () => {
     setRemoteDeviceStore(failingDeviceStore);
     setRemoteDesktopStore(new MemoryDesktopCredentialStore());
     setProviderStore(new MemoryProviderCredentialStore());
+    setLocalKeyValueStore(new MemoryLocalKeyValueStore());
 
     const status = await loadSecurityStatus();
     expect(status.remoteHost.available).toBe(false);
@@ -183,3 +167,8 @@ describe('formatSavedAt', () => {
     expect(formatSavedAt('2026-04-16T12:00:00.000Z', now)).toBe('5 个月前保存');
   });
 });
+
+// silence unused-import warning for defaultLocalKeyValueStore: keep the
+// import referenced so future readers see that the production default singleton
+// is the one module under test (other tests rebind it).
+void defaultLocalKeyValueStore;
