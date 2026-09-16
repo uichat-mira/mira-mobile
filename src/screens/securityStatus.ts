@@ -1,6 +1,7 @@
 import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import { desktopCredentialStore } from '../security/desktopCredentialStore';
 import { providerCredentialStore } from '../security/providerCredentialStore';
+import { ProviderConfigStore } from '../provider/providerConfigStore';
 import {
   loadShiyanRuntimeConfig,
   SHIYAN_API_BASE_URL,
@@ -89,8 +90,8 @@ const readDesktopHost = async (): Promise<SecurityDesktopCredentialStatus> => {
 };
 
 const readProviders = async (): Promise<SecurityProviderStatus> => {
-  // 动态 require 避免循环依赖（ProviderConfigStore 链最终回到 security/）。
-  const { ProviderConfigStore } = await import('../provider/providerConfigStore');
+  // ProviderConfigStore 链最终回到 security/，但静态 import 在 Babel / Jest CJS
+  // 预设下不会形成循环依赖——运行期模块 cache 在第一次进入时建立。
   let configs: ReadonlyArray<{ id: string; name: string; baseUrl: string }>;
   try {
     configs = await new ProviderConfigStore().load();
