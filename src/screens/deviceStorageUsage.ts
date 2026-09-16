@@ -4,7 +4,10 @@
 // 真实设备字节数通过 Native 模块拿，不在本模块伪造。
 
 import type { LocalKeyValueStore } from '../storage/localKeyValueStore';
-import { localCaptureRepository, type LocalCaptureMetadata } from '../shiyan/recording/localCaptureRepository';
+import {
+  localCaptureRepository,
+  type LocalCaptureMetadata,
+} from '../shiyan/recording/localCaptureRepository';
 
 export interface StorageCategoryBreakdown {
   /** 类目 id，对应 SettingsScreen → 存储 的展开行。 */
@@ -24,11 +27,17 @@ export interface DeviceStorageUsage {
   totalBytes: number;
   /** 按类目拆分。 */
   categories: StorageCategoryBreakdown[];
-  /** 录音文件总数 + 已提交数量（方便 UI 给出明确的"清理多少条"提示）。 */
+  /** 拾言录音元数据总条数（草稿 + 已提交，仅作为信息）。 */
   audioFileCount: number;
-  /** status === 'submitted' 的录音文件数量。 */
+  /**
+   * 本地仍存在可清理文件的已提交拾言录音条数；只有 size > 0 时才递增。
+   * 提交但文件已不存在的记录会从分类中排除，但元数据保留（与 MOB-050 用例 5 一致）。
+   */
   submittedAudioFileCount: number;
-  /** 是否所有 Native 模块都可用；false 时只展示键值存储占用。 */
+  /**
+   * 是否所有 Native 模块都可用；false 时只展示键值存储占用与基于元数据的文件大小估算，
+   * 并且不允许执行清理操作。
+   */
   audioFilesAvailable: boolean;
 }
 
@@ -92,30 +101,44 @@ const OTHER_CATEGORY: KeyValueCategorySpec = {
   keys: [],
 };
 
-const utf8ByteLength = (value: string): number => {
-  // StorageAdapter / RN Settings 自身有容量开销，但本统计不假装能拿到精确字节数；
-  // 这里只对键和 JSON 化后的字符串做 UTF-8 估算，足以让 UI 给出相对量级。
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(value).length;
+/**
+ * 自实现的 UTF-8 字节数计算，刻意不依赖全局 `TextEncoder` / `Buffer`，
+ * 以保证在 Hermes、JSC 与 Node 测试环境下结果一致。
+ */
+export const utf8ByteLength = (value: string): number => {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    let codePoint = value.charCodeAt(i);
+    if (codePoint >= 0xd800 && codePoint <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codePoint =
+          ((codePoint - 0xd800) * 0x400) + (next - 0xdc00) + 0x10000;
+        i += 1;
+      } else {
+        codePoint = 0xfffd;
+      }
+    }
+    if (codePoint < 0x80) {
+      bytes += 1;
+    } else if (codePoint < 0x800) {
+      bytes += 2;
+    } else if (codePoint < 0x10000) {
+      bytes += 3;
+    } else {
+      bytes += 4;
+    }
   }
-  return value.length;
+  return bytes;
 };
 
-const buildOtherKeys = (knownKeys: ReadonlySet<string>): readonly string[] => {
-  // 调用方传入扫描到的 key 列表以推断"其它"；这里不直接 enumerate，调用方决定。
-  return [];
-};
-
-const safeReadKey = async (
+const readKeyOrNull = async (
   store: LocalKeyValueStore,
   key: string,
 ): Promise<string | null> => {
-  try {
-    const value = await store.get(key);
-    return typeof value === 'string' ? value : null;
-  } catch {
-    return null;
-  }
+  // 读取失败必须向上抛：UI 层需要进入读取失败 / 重试状态，而不是把"读不到"当成"不存在"。
+  const value = await store.get(key);
+  return typeof value === 'string' ? value : null;
 };
 
 export interface DeviceStorageUsageOptions {
@@ -124,7 +147,10 @@ export interface DeviceStorageUsageOptions {
   knownKeys?: readonly string[];
   /** 注入的拾言录音元数据，便于在无 Native 模块时测试。 */
   captures?: readonly LocalCaptureMetadata[];
-  /** 注入的文件大小（captureId → bytes）；native 不可用或测试时使用。 */
+  /**
+   * 注入的文件大小（captureId → bytes）。Native 探测成功后传真实值；
+   * Native 不可用时省略，让调用方在 `includeAudioFiles=false` 下走元数据估算分支。
+   */
   fileSizesByCaptureId?: ReadonlyMap<string, number>;
   /** 是否启用拾言文件占用统计；native 不可用时必须传 false。 */
   includeAudioFiles: boolean;
@@ -145,7 +171,7 @@ export async function computeDeviceStorageUsage(
   for (const spec of KEY_VALUE_CATEGORIES) {
     let keyValueBytes = 0;
     for (const key of spec.keys) {
-      const value = await safeReadKey(store, key);
+      const value = await readKeyOrNull(store, key);
       if (value == null) continue;
       keyValueBytes += utf8ByteLength(key) + utf8ByteLength(value);
     }
@@ -159,7 +185,6 @@ export async function computeDeviceStorageUsage(
     });
   }
 
-  // 其它：把所有已知 key 中未归入上述类目的字节数算到 "其它"。
   const knownByCategory = new Set<string>();
   for (const spec of KEY_VALUE_CATEGORIES) {
     for (const key of spec.keys) knownByCategory.add(key);
@@ -168,25 +193,22 @@ export async function computeDeviceStorageUsage(
   let otherKeyValueBytes = 0;
   for (const key of knownKeys) {
     if (knownByCategory.has(key)) continue;
-    const value = await safeReadKey(store, key);
+    const value = await readKeyOrNull(store, key);
     if (value == null) continue;
     otherKeyValueBytes += utf8ByteLength(key) + utf8ByteLength(value);
   }
   totalKeyValue += otherKeyValueBytes;
-  if (otherKeyValueBytes > 0 || categories.length > 0) {
-    categories.push({
-      id: OTHER_CATEGORY.id,
-      label: OTHER_CATEGORY.label,
-      description: OTHER_CATEGORY.description,
-      keyValueBytes: otherKeyValueBytes,
-      fileBytes: 0,
-    });
-  }
-  // 让 TS 不抱怨 unused（buildOtherKeys 是未来扩展占位，不在此调用）。
-  void buildOtherKeys;
+  categories.push({
+    id: OTHER_CATEGORY.id,
+    label: OTHER_CATEGORY.label,
+    description: OTHER_CATEGORY.description,
+    keyValueBytes: otherKeyValueBytes,
+    fileBytes: 0,
+  });
 
   let audioFileCount = 0;
   let submittedAudioFileCount = 0;
+  let submittedAudioBytes = 0;
   let audioFilesAvailable = false;
 
   if (options.includeAudioFiles) {
@@ -195,17 +217,24 @@ export async function computeDeviceStorageUsage(
     for (const capture of captures) {
       audioFileCount += 1;
       if (capture.status !== 'submitted') continue;
+      // 先解析实际文件大小：0 / 缺失时不计入可清理数量与字节数，但仍保留元数据。
+      const resolvedSize = options.fileSizesByCaptureId?.get(capture.id);
+      const size =
+        typeof resolvedSize === 'number' && resolvedSize > 0
+          ? resolvedSize
+          : 0;
+      if (size <= 0) continue;
       submittedAudioFileCount += 1;
-      const size = options.fileSizesByCaptureId?.get(capture.id) ?? capture.fileSizeBytes;
-      totalFile += size > 0 ? size : 0;
+      submittedAudioBytes += size;
     }
+    totalFile = submittedAudioBytes;
     if (submittedAudioFileCount > 0) {
       categories.push({
         id: 'shiyan-submitted-audio',
         label: '已提交拾言原始录音',
         description: '提交后保留在本地的原始录音文件；可在下方清理，云端 R2 归档不受影响',
         keyValueBytes: 0,
-        fileBytes: totalFile,
+        fileBytes: submittedAudioBytes,
       });
     }
   }

@@ -2,6 +2,7 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   computeDeviceStorageUsage,
   formatBytes,
+  utf8ByteLength,
 } from './deviceStorageUsage';
 import type { LocalCaptureMetadata } from '../shiyan/recording/localCaptureRepository';
 
@@ -67,10 +68,15 @@ describe('computeDeviceStorageUsage', () => {
       }),
       baseCaptures({ id: 'ready-1', status: 'ready_for_submission', fileSizeBytes: 16384 }),
     ];
+    const fileSizes = new Map<string, number>([
+      ['submitted-1', 2048],
+      ['submitted-2', 4096],
+    ]);
 
     const usage = await computeDeviceStorageUsage({
       store,
       captures,
+      fileSizesByCaptureId: fileSizes,
       includeAudioFiles: true,
     });
 
@@ -96,6 +102,28 @@ describe('computeDeviceStorageUsage', () => {
     expect(usage.categories.find((c) => c.id === 'shiyan-submitted-audio')).toBeUndefined();
   });
 
+  it('excludes submitted captures whose file is missing from the count and bytes', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    const captures: LocalCaptureMetadata[] = [
+      baseCaptures({ id: 'submitted-kept', status: 'submitted', fileSizeBytes: 1024 }),
+      baseCaptures({ id: 'submitted-missing', status: 'submitted', fileSizeBytes: 4096 }),
+    ];
+    const fileSizes = new Map<string, number>([
+      ['submitted-kept', 1024],
+      // submitted-missing 不在 map 中 → 由调用方视为文件缺失 / 0 字节
+    ]);
+    const usage = await computeDeviceStorageUsage({
+      store,
+      captures,
+      fileSizesByCaptureId: fileSizes,
+      includeAudioFiles: true,
+    });
+    expect(usage.audioFileCount).toBe(2);
+    expect(usage.submittedAudioFileCount).toBe(1);
+    const audio = usage.categories.find((c) => c.id === 'shiyan-submitted-audio');
+    expect(audio!.fileBytes).toBe(1024);
+  });
+
   it('groups unknown keys under "other"', async () => {
     const store = new MemoryLocalKeyValueStore();
     await store.set('mira.experimental.telemetry.v1', 'ping-pong');
@@ -111,7 +139,7 @@ describe('computeDeviceStorageUsage', () => {
     expect(other!.keyValueBytes).toBeGreaterThan(0);
   });
 
-  it('treats read failures as missing values rather than throwing', async () => {
+  it('propagates read failures so the UI can show a retry state', async () => {
     const broken = {
       get: () => Promise.reject(new Error('storage offline')),
       set: () => Promise.reject(new Error('storage offline')),
@@ -119,11 +147,27 @@ describe('computeDeviceStorageUsage', () => {
       isAvailable: () => false,
     };
 
-    const usage = await computeDeviceStorageUsage({
-      store: broken,
-      includeAudioFiles: false,
-    });
-    expect(usage.totalBytes).toBe(0);
+    await expect(
+      computeDeviceStorageUsage({
+        store: broken,
+        includeAudioFiles: false,
+      }),
+    ).rejects.toThrow('storage offline');
+  });
+});
+
+describe('utf8ByteLength', () => {
+  it.each([
+    ['', 0],
+    ['a', 1],
+    ['hello', 5],
+    ['中文', 6],
+    ['Mira 会议', 11],
+    ['😀', 4],
+    ['a😀b', 6],
+    ['🎙️', 7],
+  ])('counts %j as %i bytes', (input, expected) => {
+    expect(utf8ByteLength(input)).toBe(expected);
   });
 });
 

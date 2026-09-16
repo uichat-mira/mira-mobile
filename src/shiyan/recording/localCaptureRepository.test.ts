@@ -6,13 +6,17 @@ import {
 
 class FakeRecordingFileStore implements RecordingFileStore {
   readonly files = new Map<string, number>();
+  readonly failDeletePaths = new Set<string>();
+  readonly failInfoPaths = new Set<string>();
 
   async fileInfo(path: string) {
+    if (this.failInfoPaths.has(path)) throw new Error('native info failed');
     const size = this.files.get(path);
     return { exists: size != null, size: size ?? 0 };
   }
 
   async deleteFile(path: string) {
+    if (this.failDeletePaths.has(path)) throw new Error('native delete failed');
     this.files.delete(path);
   }
 }
@@ -203,7 +207,7 @@ describe('LocalCaptureRepository', () => {
 
     const result = await repository.purgeSubmittedAudioFiles();
 
-    expect(result).toEqual({ purgedCount: 2, missingCount: 0 });
+    expect(result).toEqual({ purgedCount: 2, missingCount: 0, failedCount: 0 });
     expect(files.files.has('/private/shiyan/submitted-1.m4a')).toBe(false);
     expect(files.files.has('/private/shiyan/submitted-2.m4a')).toBe(false);
     expect(files.files.has('/private/shiyan/draft.m4a')).toBe(true);
@@ -244,6 +248,44 @@ describe('LocalCaptureRepository', () => {
     await repository.markSubmitted('submitted-missing');
 
     const result = await repository.purgeSubmittedAudioFiles();
-    expect(result).toEqual({ purgedCount: 0, missingCount: 1 });
+    expect(result).toEqual({ purgedCount: 0, missingCount: 1, failedCount: 0 });
+  });
+
+  it('reports a separate failed count when delete throws', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    const files = new FakeRecordingFileStore();
+    files.files.set('/private/shiyan/good.m4a', 2048);
+    files.files.set('/private/shiyan/broken.m4a', 4096);
+    files.failDeletePaths.add('/private/shiyan/broken.m4a');
+    const repository = new LocalCaptureRepository(store, files);
+
+    const completed = async (id: string, path: string) => {
+      await repository.saveCompleted({
+        id,
+        sceneId: 'meeting',
+        sceneName: '会议采集',
+        recording: {
+          filePath: path,
+          startedAt: '2026-08-29T03:00:00.000Z',
+          endedAt: '2026-08-29T03:10:00.000Z',
+          durationMs: 600000,
+          fileSizeBytes: 2048,
+        },
+      });
+      await repository.confirm({
+        id,
+        title: id,
+        sceneId: 'meeting',
+        sceneName: '会议采集',
+      });
+      await repository.markSubmitted(id);
+    };
+    await completed('good', '/private/shiyan/good.m4a');
+    await completed('broken', '/private/shiyan/broken.m4a');
+
+    const result = await repository.purgeSubmittedAudioFiles();
+    expect(result).toEqual({ purgedCount: 1, missingCount: 0, failedCount: 1 });
+    expect(files.files.has('/private/shiyan/good.m4a')).toBe(false);
+    expect(files.files.has('/private/shiyan/broken.m4a')).toBe(true);
   });
 });

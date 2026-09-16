@@ -9,8 +9,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Database,
   HardDrive,
@@ -19,7 +17,6 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react-native';
-import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
@@ -33,13 +30,8 @@ import {
   formatBytes,
   type DeviceStorageUsage,
 } from './deviceStorageUsage';
-import { localKeyValueStore, MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
-import {
-  localCaptureRepository,
-  type LocalCaptureMetadata,
-} from '../shiyan/recording/localCaptureRepository';
-
-type NavProp = NativeStackNavigationProp<RootStackParamList>;
+import { localKeyValueStore } from '../storage/localKeyValueStore';
+import { localCaptureRepository } from '../shiyan/recording/localCaptureRepository';
 
 interface CategoryIconMap {
   [key: string]: React.ComponentType<{ size?: number; color?: string }>;
@@ -54,48 +46,56 @@ const STORAGE_KEY_GROUPS_TO_RESET: readonly string[][] = [
   ['mira.shiyan.api-base-url.v1'],
 ];
 
-const isNativeAudioRecorderAvailable = (): boolean => {
+interface AudioSupportProbe {
+  /** 探测返回的录音模块；null 表示不可用。 */
+  module: typeof import('../shiyan/recording/nativeAudioRecorder').nativeAudioRecorder | null;
+  /** 探测过程中抛出的错误。 */
+  error: unknown;
+}
+
+const probeNativeAudioRecorder = async (): Promise<AudioSupportProbe> => {
   try {
-    // 只探测文件元信息；如果 native module 不存在，这里会抛错并被 catch 降级。
-    return typeof require !== 'undefined';
-  } catch {
-    return false;
+    const mod = await import('../shiyan/recording/nativeAudioRecorder');
+    // 主动调一次 fileInfo 用一个不存在的路径；如果 module 不存在会抛错。
+    await mod.nativeAudioRecorder.fileInfo('__storage_probe__');
+    return { module: mod.nativeAudioRecorder, error: null };
+  } catch (error) {
+    return { module: null, error };
   }
 };
 
-const nativeFileSize = async (capture: LocalCaptureMetadata): Promise<number> => {
-  try {
-    const { nativeAudioRecorder } = await import(
-      '../shiyan/recording/nativeAudioRecorder'
-    );
-    const info = await nativeAudioRecorder.fileInfo(capture.filePath);
-    return info.exists && info.size > 0 ? info.size : 0;
-  } catch {
-    return 0;
-  }
-};
-
-const removeKeys = async (keys: readonly string[]): Promise<number> => {
-  let count = 0;
+const removeKeys = async (
+  keys: readonly string[],
+): Promise<{ removed: string[]; failed: string[] }> => {
+  const removed: string[] = [];
+  const failed: string[] = [];
   for (const key of keys) {
     try {
       await localKeyValueStore.remove(key);
-      count += 1;
+      removed.push(key);
     } catch {
-      // 单个 key 删除失败不应阻塞其它 key；继续即可。
+      failed.push(key);
     }
   }
-  return count;
+  return { removed, failed };
 };
 
 export function StorageScreen() {
-  const navigation = useNavigation<NavProp>();
   const { colors } = useTheme();
   const [usage, setUsage] = useState<DeviceStorageUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<'purge-audio' | 'reset-ui' | null>(null);
+  const [audioSupport, setAudioSupport] = useState<AudioSupportProbe>({
+    module: null,
+    error: null,
+  });
+
+  const audioSupportMessage =
+    audioSupport.module == null && audioSupport.error instanceof Error
+      ? audioSupport.error.message
+      : null;
 
   const categoryIcons: CategoryIconMap = {
     appearance: HardDrive,
@@ -108,24 +108,42 @@ export function StorageScreen() {
     other: HardDrive,
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    probeNativeAudioRecorder().then((probe) => {
+      if (!cancelled) setAudioSupport(probe);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const refresh = useCallback(async () => {
     setErrorText(null);
     try {
       const captures = await localCaptureRepository.listAll();
-      const includeAudioFiles = isNativeAudioRecorderAvailable();
+      const recorder = audioSupport.module;
       let fileSizesByCaptureId: Map<string, number> | undefined;
-      if (includeAudioFiles) {
+      // 只有当 Native 模块可用、且至少有 submitted capture 时才探测真实大小；
+      // 否则基于元数据估算（这样 UI 仍展示，但不允许清理）。
+      const submittedCaptures = captures.filter((c) => c.status === 'submitted');
+      if (recorder && submittedCaptures.length > 0) {
         fileSizesByCaptureId = new Map<string, number>();
-        for (const capture of captures) {
-          if (capture.status !== 'submitted') continue;
-          fileSizesByCaptureId.set(capture.id, await nativeFileSize(capture));
+        for (const capture of submittedCaptures) {
+          try {
+            const info = await recorder.fileInfo(capture.filePath);
+            fileSizesByCaptureId.set(capture.id, info.size);
+          } catch {
+            fileSizesByCaptureId.set(capture.id, 0);
+          }
         }
       }
       const result = await computeDeviceStorageUsage({
         store: localKeyValueStore,
         captures,
         fileSizesByCaptureId,
-        includeAudioFiles,
+        // 只有 Native 真可用时才计入可清理的拾言文件占用。
+        includeAudioFiles: recorder !== null,
       });
       setUsage(result);
     } catch (error) {
@@ -136,7 +154,7 @@ export function StorageScreen() {
           : '读取存储占用失败，请稍后重试。',
       );
     }
-  }, []);
+  }, [audioSupport.module]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,13 +183,14 @@ export function StorageScreen() {
     try {
       const result = await localCaptureRepository.purgeSubmittedAudioFiles();
       await refresh();
+      const summaryParts: string[] = [];
+      if (result.purgedCount > 0) summaryParts.push(`清理 ${result.purgedCount} 条`);
+      if (result.missingCount > 0) summaryParts.push(`${result.missingCount} 条原本不存在文件`);
+      if (result.failedCount > 0) summaryParts.push(`${result.failedCount} 条因 I/O 错误未清理`);
+      const summary = summaryParts.length > 0 ? summaryParts.join('；') : '没有需要清理的文件';
       Alert.alert(
-        '已清理拾言录音',
-        `清理了 ${result.purgedCount} 条已提交录音文件${
-          result.missingCount > 0
-            ? `；另有 ${result.missingCount} 条原本已不存在文件。`
-            : '。'
-        }云端归档与历史记录保持不变。`,
+        '已处理拾言录音',
+        `${summary}。云端归档与历史记录保持不变。`,
       );
     } catch (error) {
       Alert.alert(
@@ -208,17 +227,28 @@ export function StorageScreen() {
 
   const resetUiState = useCallback(async () => {
     setBusyAction('reset-ui');
-    let totalRemoved = 0;
+    const removed: string[] = [];
+    const failed: string[] = [];
     try {
       for (const group of STORAGE_KEY_GROUPS_TO_RESET) {
-        totalRemoved += await removeKeys(group);
+        const result = await removeKeys(group);
+        removed.push(...result.removed);
+        failed.push(...result.failed);
       }
-      // 清空后让 ThemeProvider 重新拉默认值：设置一次性临时 store 并不合适，
-      // 这里只清掉客户端 UI 状态键。下一次进入个性化 / 主题会回到默认值。
-      Alert.alert(
-        '已清空本地 UI 状态',
-        `共清除 ${totalRemoved} 个本地键。设备配对凭据、Provider API Key 与拾云端 R2 数据不受影响。`,
-      );
+      const title =
+        failed.length === 0
+          ? '已清空本地 UI 状态'
+          : failed.length === removed.length
+            ? '清空失败'
+            : '已清空本地 UI 状态（部分失败）';
+      const lines = [
+        `共清除 ${removed.length} 个本地键；${failed.length} 个失败。`,
+        '设备配对凭据、Provider API Key 与拾云端 R2 数据不受影响。',
+      ];
+      if (failed.length > 0 && failed.length < removed.length) {
+        lines.push(`未清除：${failed.join('、')}`);
+      }
+      Alert.alert(title, lines.join('\n\n'));
     } catch (error) {
       Alert.alert(
         '清空失败',
@@ -259,6 +289,22 @@ export function StorageScreen() {
           }`
         : '—';
 
+  const purgeDisabled =
+    busyAction !== null ||
+    !usage ||
+    usage.submittedAudioFileCount === 0 ||
+    !audioSupport.module;
+
+  const purgeSubtitle = !audioSupport.module
+    ? '当前构建未提供录音原生模块，无法读取或清理本地原始录音文件'
+    : usage && usage.submittedAudioFileCount > 0
+      ? `共 ${usage.submittedAudioFileCount} 条，可释放 ${formatBytes(
+          usage.categories
+            .filter((c) => c.id === 'shiyan-submitted-audio')
+            .reduce((sum, c) => sum + c.fileBytes, 0),
+        )}；不影响云端 R2 与历史`
+      : '当前没有可清理的已提交录音';
+
   return (
     <SafeAreaView
       style={[styles.screen, { backgroundColor: colors.bg.canvas }]}
@@ -294,6 +340,14 @@ export function StorageScreen() {
             isLast
           />
         </RowGroup>
+
+        {audioSupportMessage ? (
+          <View style={[styles.noticeCard, { backgroundColor: colors.bg.card, borderColor: colors.status.warning }]}>
+            <Text style={[styles.noticeText, { color: colors.status.warning }]}>
+              {`录音原生模块不可用：${audioSupportMessage}。可继续浏览占用，但「清理已提交拾言原始录音」被禁用。`}
+            </Text>
+          </View>
+        ) : null}
 
         <SectionHeader>分类占用</SectionHeader>
         <RowGroup onAction={() => undefined}>
@@ -351,34 +405,19 @@ export function StorageScreen() {
           <Row
             icon={Mic}
             title="清理已提交拾言原始录音"
-            subtitle={
-              usage && usage.submittedAudioFileCount > 0
-                ? `共 ${usage.submittedAudioFileCount} 条，可释放 ${formatBytes(
-                    usage.categories
-                      .filter((c) => c.id === 'shiyan-submitted-audio')
-                      .reduce((sum, c) => sum + c.fileBytes, 0),
-                  )}；不影响云端 R2 与历史`
-                : '当前没有可清理的已提交录音'
-            }
+            subtitle={purgeSubtitle}
             right={
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="清理已提交拾言原始录音"
                 onPress={confirmPurgeSubmittedAudio}
-                disabled={
-                  busyAction !== null ||
-                  !usage ||
-                  usage.submittedAudioFileCount === 0
-                }
+                disabled={purgeDisabled}
                 style={({ pressed }) => [
                   styles.actionBtn,
                   {
-                    backgroundColor:
-                      busyAction !== null ||
-                      !usage ||
-                      usage.submittedAudioFileCount === 0
-                        ? colors.bg.soft
-                        : colors.bg.elevated,
+                    backgroundColor: purgeDisabled
+                      ? colors.bg.soft
+                      : colors.bg.elevated,
                     borderColor: colors.border.default,
                   },
                   pressed && styles.iconButtonPressed,
@@ -386,24 +425,13 @@ export function StorageScreen() {
               >
                 <Trash2
                   size={16}
-                  color={
-                    busyAction !== null ||
-                    !usage ||
-                    usage.submittedAudioFileCount === 0
-                      ? colors.text.soft
-                      : colors.status.warning
-                  }
+                  color={purgeDisabled ? colors.text.soft : colors.status.warning}
                 />
                 <Text
                   style={[
                     styles.actionText,
                     {
-                      color:
-                        busyAction !== null ||
-                        !usage ||
-                        usage.submittedAudioFileCount === 0
-                          ? colors.text.soft
-                          : colors.text.ink,
+                      color: purgeDisabled ? colors.text.soft : colors.text.ink,
                     },
                   ]}
                 >
@@ -477,10 +505,6 @@ export function StorageScreen() {
     </SafeAreaView>
   );
 }
-
-// 兜底导出，让 MemoryLocalKeyValueStore 这样的实现可被引用，避免误删时无差别被识别为"未知"。
-const _memoryFallback = MemoryLocalKeyValueStore;
-void _memoryFallback;
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
