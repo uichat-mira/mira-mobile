@@ -15,8 +15,7 @@ jobs:
       github.event.issue.pull_request == null &&
       contains(github.event.comment.body, '<!-- mira:start-work ') &&
       (github.event.comment.author_association == 'OWNER' ||
-       github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR')
+       github.event.comment.author_association == 'MEMBER')
     uses: uichat-mira/.github/.github/workflows/mira-start-work.yml@main
     with:
       issue_number: ${{ github.event.issue.number }}
