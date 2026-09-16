@@ -91,6 +91,3 @@ Thumbs.db
 
 # NativeWind cache
 .nativewind/
-
-# Local AI review inbox
-.ai/reviews/
