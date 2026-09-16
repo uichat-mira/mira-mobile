@@ -12,7 +12,11 @@ import type {
   ToolGatewayClient,
 } from '../tools/toolGatewayClient';
 
-const createMessageId = () => `local-message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+let localMessageIdSequence = 0;
+const createMessageId = () => {
+  localMessageIdSequence += 1;
+  return `local-message-${Date.now()}-${localMessageIdSequence.toString(36)}`;
+};
 const MAX_SESSION_TITLE_LENGTH = 30;
 
 const deriveSessionTitle = (input: string): string => {

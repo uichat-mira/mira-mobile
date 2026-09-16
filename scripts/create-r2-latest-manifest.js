@@ -18,6 +18,29 @@ const assertVersion = version => {
   }
 };
 
+const resolveRepositoryAssetDirectory = assetDir => {
+  if (typeof assetDir !== 'string' || !assetDir.trim()) {
+    throw new Error('Release asset directory must be a non-empty relative path');
+  }
+  const candidate = assetDir.trim();
+  if (path.isAbsolute(candidate)) {
+    throw new Error('Release asset directory must stay inside the repository');
+  }
+
+  const repositoryRoot = path.resolve(process.cwd());
+  const resolved = path.resolve(repositoryRoot, candidate);
+  const relative = path.relative(repositoryRoot, resolved);
+  if (
+    relative === '' ||
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error('Release asset directory must stay inside the repository');
+  }
+  return resolved;
+};
+
 const displayVersionForChannel = (version, channel) => {
   assertVersion(version);
   assertChannel(channel);
@@ -79,15 +102,15 @@ const writeManifestFromBuild = ({
   );
   const version = packageJson.version;
   assertVersion(version);
+  const assetRoot = resolveRepositoryAssetDirectory(assetDir);
 
-  const checksumPath = path.resolve(
-    process.cwd(),
-    assetDir,
+  const checksumPath = path.join(
+    assetRoot,
     `${RELEASED_APK_NAME}.sha256`,
   );
   const sha256 = parseSha256File(readFileSync(checksumPath, 'utf8'));
   const manifest = createLatestManifest({ version, channel, sha256, commit });
-  const outputPath = path.resolve(process.cwd(), assetDir, 'latest.json');
+  const outputPath = path.join(assetRoot, 'latest.json');
   writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return { manifest, outputPath };
 };
@@ -109,5 +132,6 @@ module.exports = {
   r2LatestPrefixFor,
   r2ReleasePrefixFor,
   releaseApkPathFor,
+  resolveRepositoryAssetDirectory,
   writeManifestFromBuild,
 };
