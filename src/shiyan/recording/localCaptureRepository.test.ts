@@ -139,4 +139,111 @@ describe('LocalCaptureRepository', () => {
     expect(files.files.has('/private/shiyan/c.m4a')).toBe(false);
     await expect(repository.get('c')).resolves.toBeNull();
   });
+
+  it('purges submitted audio files without touching metadata or pending drafts', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    const files = new FakeRecordingFileStore();
+    files.files.set('/private/shiyan/submitted-1.m4a', 2048);
+    files.files.set('/private/shiyan/submitted-2.m4a', 4096);
+    files.files.set('/private/shiyan/draft.m4a', 8192);
+    const repository = new LocalCaptureRepository(store, files);
+
+    await repository.saveCompleted({
+      id: 'submitted-1',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+      recording: {
+        filePath: '/private/shiyan/submitted-1.m4a',
+        startedAt: '2026-08-29T03:00:00.000Z',
+        endedAt: '2026-08-29T03:10:00.000Z',
+        durationMs: 600000,
+        fileSizeBytes: 2048,
+      },
+    });
+    await repository.confirm({
+      id: 'submitted-1',
+      title: '已提交会议 1',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+    });
+    await repository.markSubmitted('submitted-1');
+
+    await repository.saveCompleted({
+      id: 'submitted-2',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+      recording: {
+        filePath: '/private/shiyan/submitted-2.m4a',
+        startedAt: '2026-08-29T04:00:00.000Z',
+        endedAt: '2026-08-29T04:10:00.000Z',
+        durationMs: 600000,
+        fileSizeBytes: 4096,
+      },
+    });
+    await repository.confirm({
+      id: 'submitted-2',
+      title: '已提交会议 2',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+    });
+    await repository.markSubmitted('submitted-2');
+
+    await repository.saveCompleted({
+      id: 'draft',
+      sceneId: 'reflection',
+      sceneName: '个人复盘',
+      recording: {
+        filePath: '/private/shiyan/draft.m4a',
+        startedAt: '2026-08-29T05:00:00.000Z',
+        endedAt: '2026-08-29T05:01:00.000Z',
+        durationMs: 60000,
+        fileSizeBytes: 8192,
+      },
+    });
+
+    const result = await repository.purgeSubmittedAudioFiles();
+
+    expect(result).toEqual({ purgedCount: 2, missingCount: 0 });
+    expect(files.files.has('/private/shiyan/submitted-1.m4a')).toBe(false);
+    expect(files.files.has('/private/shiyan/submitted-2.m4a')).toBe(false);
+    expect(files.files.has('/private/shiyan/draft.m4a')).toBe(true);
+    await expect(repository.get('submitted-1')).resolves.toEqual(
+      expect.objectContaining({ status: 'submitted', title: '已提交会议 1' }),
+    );
+    await expect(repository.get('submitted-2')).resolves.toEqual(
+      expect.objectContaining({ status: 'submitted' }),
+    );
+    await expect(repository.get('draft')).resolves.toEqual(
+      expect.objectContaining({ status: 'pending_confirmation' }),
+    );
+  });
+
+  it('reports missing submitted files instead of throwing on purge', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    const files = new FakeRecordingFileStore();
+    const repository = new LocalCaptureRepository(store, files);
+
+    await repository.saveCompleted({
+      id: 'submitted-missing',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+      recording: {
+        filePath: '/private/shiyan/gone.m4a',
+        startedAt: '2026-08-29T03:00:00.000Z',
+        endedAt: '2026-08-29T03:10:00.000Z',
+        durationMs: 600000,
+        fileSizeBytes: 0,
+      },
+    });
+    await repository.confirm({
+      id: 'submitted-missing',
+      title: '已删除会议',
+      sceneId: 'meeting',
+      sceneName: '会议采集',
+    });
+    await repository.markSubmitted('submitted-missing');
+
+    const result = await repository.purgeSubmittedAudioFiles();
+    expect(result).toEqual({ purgedCount: 0, missingCount: 1 });
+  });
 });

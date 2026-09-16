@@ -160,6 +160,9 @@ export function SettingsScreen() {
       case 'plugins':
         navigation.navigate('Plugins');
         break;
+      case 'storage':
+        navigation.navigate('Storage');
+        break;
       case 'report-error':
         navigation.navigate('ReportError');
         break;
@@ -299,7 +302,7 @@ export function SettingsScreen() {
           <Row icon={Bell} title="通知" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" isLast={false} />
-          <Row icon={HardDrive} title="存储" isLast={false} />
+          <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
           <Row icon={Bug} title="报告错误" actionId="report-error" isLast={false} />
           <Row icon={Info} title="关于" actionId="about" isLast />
         </RowGroup>
