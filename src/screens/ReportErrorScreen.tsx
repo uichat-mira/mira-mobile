@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -34,13 +34,14 @@ export function ReportErrorScreen() {
   const [sending, setSending] = useState(false);
   const [openedHint, setOpenedHint] = useState(false);
   const remotePaired = useHostStore((state) => state.config !== null);
+  const pendingEditRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const loadDraft = async () => {
       const value = await localKeyValueStore.get(DRAFT_KEY).catch(() => null);
       if (cancelled) return;
-      if (value) setDescription(value);
+      if (pendingEditRef.current === null && value) setDescription(value);
       setDraftReady(true);
     };
     void loadDraft();
@@ -52,6 +53,7 @@ export function ReportErrorScreen() {
   const hasDescription = description.trim().length > 0;
 
   const updateDescription = (value: string) => {
+    pendingEditRef.current = value;
     setDescription(value);
     setOpenedHint(false);
     if (!draftReady) return;
