@@ -41,7 +41,6 @@ const STORAGE_KEY_GROUPS_TO_RESET: readonly string[][] = [
   ['mira.mobile.theme.mode', 'mira.mobile.theme.accent'],
   ['mira.mobile.personalization.v1'],
   ['thread-pins-v1', 'thread-read-progress-v1'],
-  ['mira.local-provider.configs.v1', 'mira.local-provider.sessions.v1'],
   ['mira.shiyan.local-captures.v1', 'mira.shiyan.submissions.v1'],
   ['mira.shiyan.api-base-url.v1'],
 ];
@@ -49,8 +48,8 @@ const STORAGE_KEY_GROUPS_TO_RESET: readonly string[][] = [
 interface AudioSupportProbe {
   /** 探测返回的录音模块；null 表示不可用。 */
   module: typeof import('../shiyan/recording/nativeAudioRecorder').nativeAudioRecorder | null;
-  /** 探测过程中抛出的错误。 */
-  error: unknown;
+  /** 探测是否已结束；结束前不渲染任何可用性提示，避免初始态闪现。 */
+  settled: boolean;
 }
 
 const probeNativeAudioRecorder = async (): Promise<AudioSupportProbe> => {
@@ -58,9 +57,10 @@ const probeNativeAudioRecorder = async (): Promise<AudioSupportProbe> => {
     const mod = await import('../shiyan/recording/nativeAudioRecorder');
     // 主动调一次 fileInfo 用一个不存在的路径；如果 module 不存在会抛错。
     await mod.nativeAudioRecorder.fileInfo('__storage_probe__');
-    return { module: mod.nativeAudioRecorder, error: null };
-  } catch (error) {
-    return { module: null, error };
+    return { module: mod.nativeAudioRecorder, settled: true };
+  } catch {
+    // 原始错误不进入 UI；用户只看到固定中文提示。
+    return { module: null, settled: true };
   }
 };
 
@@ -89,12 +89,15 @@ export function StorageScreen() {
   const [busyAction, setBusyAction] = useState<'purge-audio' | 'reset-ui' | null>(null);
   const [audioSupport, setAudioSupport] = useState<AudioSupportProbe>({
     module: null,
-    error: null,
+    settled: false,
   });
+  // 每次进入 refresh 递增；过期的刷新完成后不得再写回 usage / errorText，
+  // 否则探测前启动的那次刷新（不含音频占用）会晚到并覆盖最新结果。
+  const refreshGenerationRef = React.useRef(0);
 
   const audioSupportMessage =
-    audioSupport.module == null && audioSupport.error instanceof Error
-      ? audioSupport.error.message
+    audioSupport.settled && audioSupport.module == null
+      ? '录音功能当前不可用，无法统计或清理本地原始录音文件。'
       : null;
 
   const categoryIcons: CategoryIconMap = {
@@ -119,6 +122,7 @@ export function StorageScreen() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current;
     setErrorText(null);
     try {
       const captures = await localCaptureRepository.listAll();
@@ -145,8 +149,10 @@ export function StorageScreen() {
         // 只有 Native 真可用时才计入可清理的拾言文件占用。
         includeAudioFiles: recorder !== null,
       });
+      if (generation !== refreshGenerationRef.current) return;
       setUsage(result);
     } catch (error) {
+      if (generation !== refreshGenerationRef.current) return;
       setUsage(null);
       setErrorText(
         error instanceof Error
@@ -166,6 +172,8 @@ export function StorageScreen() {
       });
     return () => {
       cancelled = true;
+      // 卸载 / 依赖变化后，仍在飞的旧刷新不得再写状态。
+      refreshGenerationRef.current += 1;
     };
   }, [refresh]);
 
@@ -236,16 +244,16 @@ export function StorageScreen() {
         failed.push(...result.failed);
       }
       const title =
-        failed.length === 0
-          ? '已清空本地 UI 状态'
-          : failed.length === removed.length
-            ? '清空失败'
-            : '已清空本地 UI 状态（部分失败）';
+        failed.length > 0 && removed.length === 0
+          ? '清空失败'
+          : failed.length > 0
+            ? '已清空本地 UI 状态（部分失败）'
+            : '已清空本地 UI 状态';
       const lines = [
         `共清除 ${removed.length} 个本地键；${failed.length} 个失败。`,
-        '设备配对凭据、Provider API Key 与拾云端 R2 数据不受影响。',
+        '本地 Provider 配置与会话、设备配对凭据、Provider API Key 与拾云端 R2 数据均不受影响。',
       ];
-      if (failed.length > 0 && failed.length < removed.length) {
+      if (failed.length > 0) {
         lines.push(`未清除：${failed.join('、')}`);
       }
       Alert.alert(title, lines.join('\n\n'));
@@ -265,7 +273,7 @@ export function StorageScreen() {
   const confirmResetUiState = useCallback(() => {
     Alert.alert(
       '清空本地 UI 状态？',
-      '将清空外观、个性化、线程本地置顶 / 未读、本地 Provider 配置与会话、拾言草稿与提交元数据，并清空拾言 Cloud 自定义 API 地址。\n\n设备配对凭据、Provider API Key 与拾言云端 R2 / 历史记录不受影响。',
+      '将清空外观、个性化、线程本地置顶 / 未读、拾言草稿与提交元数据，并清空拾言 Cloud 自定义 API 地址。\n\n本地 Provider 配置与会话、设备配对凭据、Provider API Key 与拾言云端 R2 / 历史记录均不受影响。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -446,7 +454,7 @@ export function StorageScreen() {
           <Row
             icon={Trash2}
             title="清空本地 UI 状态"
-            subtitle="重置外观 / 个性化 / 线程本地状态 / 本地 Provider / 拾言草稿；不影响配对凭据、Provider Key、拾云端数据"
+            subtitle="重置外观 / 个性化 / 线程本地状态 / 拾言草稿；不影响本地 Provider 配置、配对凭据、Provider Key、拾云端数据"
             right={
               <Pressable
                 accessibilityRole="button"
@@ -495,7 +503,7 @@ export function StorageScreen() {
         <View style={[styles.noticeCard, { backgroundColor: colors.bg.card, borderColor: colors.border.soft }]}>
           <Text style={[styles.noticeText, { color: colors.text.muted }]}>
             本页只统计设备本地的客户端存储，不包含 Mira Host / 拾云端的远端数据。
-            设备安全存储里的配对凭据与 Provider API Key 不会出现在统计中，也不会被「清空本地 UI 状态」清除。
+            设备安全存储里的配对凭据与 Provider API Key 不会出现在统计中；本地 Provider 配置与会话仅作占用展示，不会被「清空本地 UI 状态」清除。
           </Text>
           <Text style={[styles.noticeText, { color: colors.text.muted }]}>
             「清理已提交拾言原始录音」只删除已成功提交到 Cloud 的本地原始音频，云端 R2 归档、拾言历史与任务状态不受影响。如需清空未提交草稿，请到「拾言 → 全部记录」逐条删除。
