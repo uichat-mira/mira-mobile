@@ -43,6 +43,7 @@
 | MOB-046 | OpenAI-compatible URL / SSE / Tool Call 兼容性修复 | **待验收** | Mobile；PR #100 已合入 `dev`，Base URL、finish/[DONE]、indexed/interleaved/split tool-call 兼容性与回归测试已完成；真实 Provider / 真机矩阵挂 MOB-044 |
 | MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
 | MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
+| MOB-054 | 璁剧疆 鈫?閫氱煡 鐪熷疄鍔熻兘涓庣湡鏈洪獙鏀?| **寰呴獙鏀?* | Mobile锛涜缃〉銆岄€氱煡銆嶇敱鍗犱綅鍗囩骇涓虹郴缁熼€氱煡璁剧疆鐩磋揪锛圓ndroid 搴旂敤閫氱煡璁剧疆椤?/ iOS 搴旂敤璁剧疆椤碉級+ Android 13+ 鐪熷疄鎺堟潈鐘舵€佸壇鏍囬锛汚ndroid 鐪熸満 + iOS 蹇呮祴 |
 
 ## 既有产品决策
 
@@ -144,3 +145,4 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-046-openai-compatible-stream-compatibility.md`
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
+- `MOB-054-settings-notification-system-entry.md`
