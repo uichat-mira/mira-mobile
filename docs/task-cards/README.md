@@ -144,3 +144,4 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-046-openai-compatible-stream-compatibility.md`
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
+- `MOB-055-report-error-feedback-mailto.md`
