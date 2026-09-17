@@ -16,6 +16,7 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { LocalProviderConfigScreen } from './src/screens/LocalProviderConfigScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { PersonalizationScreen } from './src/screens/PersonalizationScreen';
+import { StorageScreen } from './src/screens/StorageScreen';
 import { ReportErrorScreen } from './src/screens/ReportErrorScreen';
 import { AboutScreen } from './src/screens/AboutScreen';
 import { LicenseScreen } from './src/screens/LicenseScreen';
@@ -168,6 +169,7 @@ function AppInner() {
         <Stack.Screen name="LocalProviderConfig" component={LocalProviderConfigScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />
+        <Stack.Screen name="Storage" component={StorageScreen} />
         <Stack.Screen name="Plugins" component={PluginsScreen} />
         <Stack.Screen name="ShiyanHome" component={ShiyanHomeScreen} />
         <Stack.Screen name="ShiyanSceneSelect" component={ShiyanSceneSelectScreen} />

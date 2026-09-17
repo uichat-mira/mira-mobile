@@ -183,6 +183,48 @@ export class LocalCaptureRepository {
     await this.mutate((captures) => captures.filter((item) => item.id !== id));
   }
 
+  /**
+   * 删除所有已提交（status === 'submitted'）拾言录音对应的本地原始音频文件。
+   * 仅删除文件本身，不修改元数据；提交记录、历史列表与 Cloud 事实不受影响，
+   * 这些仍然依赖 `mira.shiyan.submissions.v1` 与 Cloud 任务本身。
+   *
+   * 返回值细分三种结果，让 UI 能明确告诉用户"已清理 N / 已不存在 M / 失败 F"，
+   * 避免把仍然存在的文件冒充为缺失或清理成功。
+   */
+  async purgeSubmittedAudioFiles(): Promise<{
+    purgedCount: number;
+    missingCount: number;
+    failedCount: number;
+  }> {
+    const captures = await this.readAll();
+    let purgedCount = 0;
+    let missingCount = 0;
+    let failedCount = 0;
+
+    for (const capture of captures) {
+      if (capture.status !== 'submitted') continue;
+      let info;
+      try {
+        info = await this.files.fileInfo(capture.filePath);
+      } catch {
+        failedCount += 1;
+        continue;
+      }
+      if (!info.exists || info.size <= 0) {
+        missingCount += 1;
+        continue;
+      }
+      try {
+        await this.files.deleteFile(capture.filePath);
+        purgedCount += 1;
+      } catch {
+        failedCount += 1;
+      }
+    }
+
+    return { purgedCount, missingCount, failedCount };
+  }
+
   private async readAll(): Promise<LocalCaptureMetadata[]> {
     const raw = await this.store.get(STORAGE_KEY);
     if (!raw) return [];
