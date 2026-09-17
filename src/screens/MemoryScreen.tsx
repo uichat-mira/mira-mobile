@@ -111,9 +111,18 @@ export function MemoryScreen() {
         applyResult(await miraHostClient.createMemory(kind, content));
       } catch (error) {
         setActionError(errorMessage(error));
+        // MEMORY_CREATE_UNCERTAIN means the request may have already created
+        // the record on the Host while we lost the response; reload before
+        // the user is allowed to try again so we do not post duplicates.
+        if (
+          error instanceof RemoteHostError &&
+          error.code === 'MEMORY_CREATE_UNCERTAIN'
+        ) {
+          await reload();
+        }
       }
     },
-    [applyResult],
+    [applyResult, reload],
   );
 
   const handleEdit = useCallback(
@@ -144,6 +153,15 @@ export function MemoryScreen() {
                 applyResult(await miraHostClient.deleteMemory(record.id));
               } catch (error) {
                 setActionError(errorMessage(error));
+                // MEMORY_DELETE_UNCERTAIN means the Host may have already
+                // removed the record while we lost the response; reload so
+                // the list no longer offers ghost actions against it.
+                if (
+                  error instanceof RemoteHostError &&
+                  error.code === 'MEMORY_DELETE_UNCERTAIN'
+                ) {
+                  await reload();
+                }
               } finally {
                 setPendingDeleteId(null);
               }
@@ -152,7 +170,7 @@ export function MemoryScreen() {
         ],
       );
     },
-    [applyResult],
+    [applyResult, reload],
   );
 
   const renderDisabled = useCallback(() => {
