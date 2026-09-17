@@ -5,6 +5,7 @@ import {
   parseRemoteAgentRun,
   parseRemoteChatStreamEvent,
   parseRemoteManifest,
+  parseRemoteMemoryOverview,
   parseRemoteMessage,
   parseRemoteThread,
   parseRemoteToolGatewayStreamEvent,
@@ -16,6 +17,8 @@ import {
   type RemoteChatStreamEvent,
   type RemoteDeviceScope,
   type RemoteManifest,
+  type RemoteMemoryKind,
+  type RemoteMemoryOverview,
   type RemoteMessage,
   type RemoteThread,
   type RemoteToolGatewayStreamEvent,
@@ -183,6 +186,18 @@ const REMOTE_TOOL_ROUTES = {
   invoke: 'POST /remote/v1/tool-invocations/stream',
   approval: 'POST /remote/v1/tool-invocations/:invocationId/approval',
   cancel: 'POST /remote/v1/tool-invocations/:invocationId/cancel',
+} as const;
+
+// Canonical Host memory surface. The Host has not published these routes to
+// the Remote Gateway allowlist yet; every memory call below therefore also
+// requires the device scope plus the advertised manifest route before it is
+// dispatched, and unadvertised routes surface as a 403-style capability miss.
+const REMOTE_MEMORY_ROUTES = {
+  overview: 'GET /memory',
+  settings: 'PUT /memory/settings',
+  create: 'POST /memory',
+  update: 'PATCH /memory/:id',
+  delete: 'DELETE /memory/:id',
 } as const;
 
 export class RemoteMiraHostClient {
@@ -636,7 +651,9 @@ export class RemoteMiraHostClient {
           args: input.args ?? {},
         },
         parse: parseRemoteToolInvocationProjection,
-      }, 'TOOL_APPROVAL_UNCERTAIN', REMOTE_TOOL_ROUTES.approval),
+      }, 'TOOL_APPROVAL_UNCERTAIN', manifest =>
+        this.assertRemoteToolRoute(manifest, REMOTE_TOOL_ROUTES.approval),
+      ),
     );
   }
 
@@ -686,6 +703,115 @@ export class RemoteMiraHostClient {
 
   async cancelAgentRun(runId: string): Promise<RemoteAgentRun> {
     return this.agentRequest(runId, 'POST', '/cancel');
+  }
+
+  // ─── Memory (canonical Host /memory surface) ───────────────
+
+  async getMemoryOverview(signal?: AbortSignal): Promise<RemoteMemoryOverview> {
+    return this.withCredentialScope('memory:read', async credential => {
+      const manifest = await this.getManifestWithCredential(credential, signal);
+      this.assertMemoryRoute(manifest, REMOTE_MEMORY_ROUTES.overview);
+      return this.requestCredentialJson(credential, {
+        path: '/memory',
+        credential: credential.credential,
+        signal,
+        parse: parseRemoteMemoryOverview,
+      });
+    });
+  }
+
+  async updateMemorySettings(enabled: boolean): Promise<RemoteMemoryOverview> {
+    // PUT is idempotent, so the normal transport fallback is safe here.
+    return this.withCredentialScope('memory:write', async credential => {
+      const manifest = await this.getManifestWithCredential(credential);
+      this.assertMemoryRoute(manifest, REMOTE_MEMORY_ROUTES.settings);
+      return this.requestCredentialJson(credential, {
+        path: '/memory/settings',
+        method: 'PUT',
+        credential: credential.credential,
+        body: { enabled },
+        parse: parseRemoteMemoryOverview,
+      });
+    });
+  }
+
+  async createMemory(
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    // A replayed POST could create a duplicate memory record, so this
+    // mutation is dispatched on a single probed transport without retry.
+    return this.withCredentialScope('memory:write', async credential =>
+      this.dispatchCredentialJsonMutationOnce(
+        credential,
+        {
+          path: '/memory',
+          method: 'POST',
+          credential: credential.credential,
+          body: { kind, content },
+          parse: parseRemoteMemoryOverview,
+        },
+        'MEMORY_CREATE_UNCERTAIN',
+        manifest => this.assertMemoryRoute(manifest, REMOTE_MEMORY_ROUTES.create),
+      ),
+    );
+  }
+
+  async updateMemory(
+    id: string,
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    const memoryId = id.trim();
+    if (!memoryId) {
+      throw new RemoteHostError(
+        'MEMORY_ID_REQUIRED',
+        'A memory id is required to update a memory record',
+      );
+    }
+
+    // PATCHing the same body twice converges, but a lost response also loses
+    // the resulting overview, so it still dispatches exactly once.
+    return this.withCredentialScope('memory:write', async credential =>
+      this.dispatchCredentialJsonMutationOnce(
+        credential,
+        {
+          path: `/memory/${encodeURIComponent(memoryId)}`,
+          method: 'PATCH',
+          credential: credential.credential,
+          body: { kind, content },
+          parse: parseRemoteMemoryOverview,
+        },
+        'MEMORY_UPDATE_UNCERTAIN',
+        manifest => this.assertMemoryRoute(manifest, REMOTE_MEMORY_ROUTES.update),
+      ),
+    );
+  }
+
+  async deleteMemory(id: string): Promise<RemoteMemoryOverview> {
+    const memoryId = id.trim();
+    if (!memoryId) {
+      throw new RemoteHostError(
+        'MEMORY_ID_REQUIRED',
+        'A memory id is required to delete a memory record',
+      );
+    }
+
+    // A replayed DELETE would surface a misleading "not found" after the
+    // first transport already succeeded, so it also dispatches once.
+    return this.withCredentialScope('memory:write', async credential =>
+      this.dispatchCredentialJsonMutationOnce(
+        credential,
+        {
+          path: `/memory/${encodeURIComponent(memoryId)}`,
+          method: 'DELETE',
+          credential: credential.credential,
+          parse: parseRemoteMemoryOverview,
+        },
+        'MEMORY_DELETE_UNCERTAIN',
+        manifest => this.assertMemoryRoute(manifest, REMOTE_MEMORY_ROUTES.delete),
+      ),
+    );
   }
 
   getThreadMediaRequest(threadId: string, mediaId: string) {
@@ -803,6 +929,21 @@ export class RemoteMiraHostClient {
     }
   }
 
+  private assertMemoryRoute(
+    manifest: RemoteManifest,
+    route: string,
+  ) {
+    const memoryRoutes = manifest.routes.memory ?? [];
+    if (!memoryRoutes.includes(route)) {
+      throw new RemoteHostError(
+        'REMOTE_MEMORY_ROUTE_UNAVAILABLE',
+        `Mira Host does not advertise required memory route: ${route}`,
+        403,
+        { route },
+      );
+    }
+  }
+
   private async withCredentialScope<T>(
     scope: RemoteDeviceScope,
     operation: (credential: StoredDeviceCredential) => Promise<T>,
@@ -835,7 +976,7 @@ export class RemoteMiraHostClient {
     credential: StoredDeviceCredential,
     operation: JsonOperation<T>,
     uncertainCode: string,
-    requiredToolRoute?: string,
+    assertManifestRoute?: (manifest: RemoteManifest) => void,
   ): Promise<T> {
     const order = this.transportOrder(credential);
     let lastError: unknown = new RemoteHostError(
@@ -851,8 +992,8 @@ export class RemoteMiraHostClient {
           credential: credential.credential,
           parse: parseRemoteManifest,
         });
-        if (requiredToolRoute) {
-          this.assertRemoteToolRoute(manifest, requiredToolRoute);
+        if (assertManifestRoute) {
+          assertManifestRoute(manifest);
         }
         if (transport === 'direct') this.directRetryAfter = 0;
       } catch (error) {
@@ -878,7 +1019,7 @@ export class RemoteMiraHostClient {
         ) {
           throw new RemoteHostError(
             uncertainCode,
-            'Mira Host may have accepted the tool control request; refresh the invocation state before retrying',
+            'Mira Host may have accepted the request; refresh the current state before retrying',
             undefined,
             error,
           );
