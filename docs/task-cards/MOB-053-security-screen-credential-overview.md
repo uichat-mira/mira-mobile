@@ -54,7 +54,7 @@ PR 在不引入新协议 / 不改动任何安全存储的前提下，把"安全"
 | 3 | 总览语义（Remote 与 Desktop 互斥） | a) 未配对任意 Host 时 b) 仅配对 Remote Host 后重进 c) 仅 Desktop Host JWT 存在时 | a) 显示"尚未连接 Mira Host"且副标题指向"远程连接"；b) 显示"已配对 Mira Host"且副标题含 hostUrl；c) 显示"已登录 Desktop Mira Host"且副标题含 username + hostUrl |
 | 4 | 总览：Provider 计数 | a) 0 Provider b) 2 Provider 但只 1 个有 API Key | a) "尚未配置 Local Provider"且副标题指向"本地连接"；b) "1/2 个 Provider 已保存 API Key"且副标题说明需前往"本地连接"补全 |
 | 5 | 总览：Shiyan | a) 未配置拾言 Cloud b) 已配置 | a) "拾言 Cloud 未配置"且副标题指向 Plugins；b) "拾言 Cloud 已配置"且副标题含 baseUrl + "已在设备安全存储中保存" |
-| 6 | 「安全凭据」段四行 | 每行副标题与状态一致：未保存 → "尚未保存"；已保存 → hostUrl/username + savedAt | 四行均正确渲染；「关于设备安全存储」行可跳到 About |
+| 6 | 「安全凭据」段四行 | 每行副标题与该类凭据**实际可展示字段**一致：Remote Host / Desktop Host 行显示 hostUrl（或"仅 Relay"）、username、savedAt；Local Provider 行显示 "x/y 个 Provider 已保存" 计数（无 savedAt / baseUrl）；拾言 Cloud 行显示 baseUrl + "已在设备安全存储中保存"（无 savedAt）；任一未保存 → "尚未保存" | 四行均按上述字段渲染，不出现该类别不存在的字段；「关于设备安全存储」行可跳到 About |
 | 7 | 跳转管理页 | 点 "Local Provider API Key" 行；点 "Remote Host 设备凭据" 行；点 "拾言 Cloud 设备凭证" 行 | 分别进入对应管理页并能正常返回（不修改任何凭据） |
 | 8 | 外观联动 | 切深色模式与不同重点色 | 卡片边框、文字、图标色在深 / 浅色下均可读；无穿帮 |
 | 9 | 凭据泄露检测（developer-only） | 在真机 logcat / 调试器中确认 `SecurityScreen` 不打印 token / API Key | 只允许打印 hostUrl / username / savedAt / Provider id / Provider name / baseUrl；任何凭据本身字段名出现都算 ❌。无 logcat 条件时可标"未验证"，不阻塞 PASS |
@@ -85,4 +85,6 @@ PR 在不引入新协议 / 不改动任何安全存储的前提下，把"安全"
 
 ## Handoff
 
-1–8 全部 ✅（iOS 按上述最小集）+ 用例 9、10 至少一个 ✅ / 已标注未验证 → 本卡标 PASS，PR #149 可合入 `dev`，状态回写 `docs/workbench/00-work-ledger.md`。任一核心项 ❌ → 失败项回到施工方修复，本卡重新进入待验收。
+1–8 全部 ✅（iOS 按上述最小集）+ **用例 9 为 ✅ 或已标注"未验证"** + **用例 10 为 ✅** → 本卡标 PASS，PR #149 可合入 `dev`，状态回写 `docs/workbench/00-work-ledger.md`。
+
+用例 10 若在调试环境无法注入 load 抛错：标注"未验证"，此时**不自动 PASS**——由验收人显式标注并将放行决定交给维护者；维护者可选择放行（记录在卡内）或要求补做。任一核心项 ❌ → 失败项回到施工方修复，本卡重新进入待验收。
