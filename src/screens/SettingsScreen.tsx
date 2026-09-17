@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Alert,
-  AppState,
   Image,
   Pressable,
   ScrollView,
@@ -46,25 +45,28 @@ import { SettingsChoiceModal, type SettingsChoice } from '../components/settings
 import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
-import {
-  notificationStatusSubtitle,
-  openNotificationSettings,
-  readNotificationStatus,
-  type NotificationSettingsStatus,
-} from './notificationSettings';
+import { openNotificationSettings } from './notificationSettings';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
 
+let notificationSettingsInFlight = false;
+
 const openSystemNotificationSettings = () => {
-  // 跳转失败（设备无对应系统页面，如 API < 26）时提示一次，
-  // 避免"按了按钮什么都没发生"。
-  openNotificationSettings().catch(() => {
-    Alert.alert(
-      '无法打开通知设置',
-      '请在系统「设置 → 应用 → Mira → 通知」中手动管理通知。',
-    );
-  });
+  // 跳转失败（设备无对应系统页面，如 API < 26）时提示一次；
+  // 进行中忽略连按，避免失败路径上叠出多个 Alert。
+  if (notificationSettingsInFlight) return;
+  notificationSettingsInFlight = true;
+  openNotificationSettings()
+    .catch(() => {
+      Alert.alert(
+        '无法打开通知设置',
+        '请在系统「设置 → 应用 → Mira → 通知」中手动管理通知。',
+      );
+    })
+    .finally(() => {
+      notificationSettingsInFlight = false;
+    });
 };
 
 const appearanceOptions: readonly SettingsChoice<ThemeMode>[] = [
@@ -97,9 +99,6 @@ export function SettingsScreen() {
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
   const [localConfigured, setLocalConfigured] = useState(false);
-  const [notificationStatus, setNotificationStatus] = useState<NotificationSettingsStatus>({
-    kind: 'unknown',
-  });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -109,28 +108,6 @@ export function SettingsScreen() {
       if (!cancelled) setLocalConfigured(false);
     });
     return () => { cancelled = true; };
-  }, []);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const refreshNotificationStatus = () => {
-      void readNotificationStatus()
-        .then((status) => {
-          if (!cancelled) setNotificationStatus(status);
-        })
-        .catch(() => {
-          if (!cancelled) setNotificationStatus({ kind: 'unknown' });
-        });
-    };
-    refreshNotificationStatus();
-    // 用户从系统通知设置页返回（应用回到前台）时刷新，副标题才能反映最新授权状态。
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refreshNotificationStatus();
-    });
-    return () => {
-      cancelled = true;
-      subscription.remove();
-    };
   }, []);
 
   const remoteHasError = !['idle', 'probing', 'ready'].includes(remoteConnectivityState);
@@ -345,7 +322,7 @@ export function SettingsScreen() {
           <Row
             icon={Bell}
             title="通知"
-            subtitle={notificationStatusSubtitle(notificationStatus)}
+            subtitle="在系统设置中管理"
             actionId="notifications"
             isLast={false}
           />
