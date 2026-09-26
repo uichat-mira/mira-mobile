@@ -24,6 +24,7 @@ import {
   type AppRelease,
 } from '../update/appUpdate';
 import { parseSemver } from '../update/semver';
+import { installedDisplayVersion, presentUpdatePrompt } from '../update/updatePrompt';
 
 type UpdateCheckStatus =
   | 'idle'
@@ -38,17 +39,6 @@ const channelLabel = {
   test: '测试',
   prod: '正式',
 }[releaseChannel];
-const installedDisplayVersion =
-  releaseChannel === 'prod' ? version : `${version}-${releaseChannel}`;
-
-const releaseNotesPreview = (notes: string | null): string => {
-  const firstLine = notes
-    ?.split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstLine) return '';
-  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine;
-};
 
 export function AboutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -84,44 +74,12 @@ export function AboutScreen() {
     void checkForUpdate();
   }, [checkForUpdate]);
 
-  const openDownload = (latest: AppRelease) => {
-    const notes = releaseNotesPreview(latest.notes);
-
-    if (Platform.OS !== 'android') {
-      Alert.alert(
-        '发现新版本',
-        `当前版本 ${installedDisplayVersion}\n最新版本 ${latest.displayVersion}${
-          notes ? `\n\n${notes}` : ''
-        }\n\niOS 当前没有可直接安装的已签名分发产物。`,
-      );
-      return;
-    }
-
-    Alert.alert(
-      '下载新版本',
-      `当前版本 ${installedDisplayVersion}\n最新版本 ${latest.displayVersion}${
-        notes ? `\n\n${notes}` : ''
-      }\n\n确认后将使用系统下载。`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '下载',
-          onPress: () => {
-            Linking.openURL(latest.apkUrl).catch(() => {
-              Alert.alert('打开下载失败', '请稍后重试。');
-            });
-          },
-        },
-      ],
-    );
-  };
-
   const handleUpdateAction = () => {
     switch (updateStatus) {
       case 'checking':
         return;
       case 'available':
-        if (latestRelease) openDownload(latestRelease);
+        if (latestRelease) presentUpdatePrompt(latestRelease);
         return;
       case 'failed':
         Alert.alert('检查更新失败', updateError ?? '请稍后重试。', [

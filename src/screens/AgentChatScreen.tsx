@@ -16,11 +16,22 @@ import { spacing } from '../theme/tokens';
 import type { ChatMessage } from '../types';
 import type { RootStackParamList } from '../types/navigation';
 import { ChatScreen } from './ChatScreen';
+import { saveLastOpenedSession } from './lastOpenedSession';
 
 const DISCOVERY_POLL_MS = 1_500;
 export function AgentChatScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId, source } = route.params;
+  const { sessionId, title, source, providerName, providerModel } = route.params;
+
+  useEffect(() => {
+    void saveLastOpenedSession({
+      sessionId,
+      title,
+      source,
+      providerName: providerName ?? null,
+      providerModel: providerModel ?? null,
+    }).catch(() => undefined);
+  }, [sessionId, title, source, providerName, providerModel]);
 
   if (source === 'local-provider' || sessionId.startsWith('local-')) {
     return <ChatScreen />;

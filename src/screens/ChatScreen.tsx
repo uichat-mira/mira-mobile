@@ -53,6 +53,7 @@ import {
 } from '../components/LocalAgentRunCard';
 import { buildShareCardModel } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
+import { lightImpact } from '../haptics/haptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
@@ -566,6 +567,7 @@ export function ChatScreen() {
       setIsLoading(true);
       setStreamingText('');
       abortRef.current = false;
+      void lightImpact();
       const useLocalAgent = supportsLocalAgent && agentEnabled;
       if (useLocalAgent) {
         setAgentActivities([]);

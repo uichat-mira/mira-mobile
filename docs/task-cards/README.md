@@ -46,6 +46,8 @@
 | MOB-050 | 设置 → 存储 真实功能与真机验收 | **待验收** | Mobile；设置页「存储」由无 actionId 占位升级为本地占用分类展示 + 已提交拾言录音清理 + 本地 UI 状态清空；不动设备安全存储凭据与远端数据 |
 | MOB-052 | 设置 → 电子邮件 真实功能与真机验收 | **待验收** | Mobile；设置页「电子邮件」由无 actionId 占位升级为系统 `mailto:` 唤起，邮箱地址收敛到 `CONTACT_EMAIL` 常量，无邮件客户端时 Alert 兜底；Android 真机 + iOS 必测 |
 
+| MOB-056 | 设置 → 常规偏好页（默认来源 / 启动恢复 / 文本大小 / 触感 / 自动更新检查）真机验收 | **待验收** | Mobile；Android 真机用例 1–8 必测，用例 9–11 按条件标注 |
+
 ## 既有产品决策
 
 - 线程置顶与未读首轮均为**设备级本地状态**，不伪装成账户级 / 跨设备状态。
@@ -147,4 +149,4 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
 - `MOB-050-storage-screen-and-recovery.md`
-- `MOB-052-email-contact-mailto.md`
+- MOB-052-email-contact-mailto.md`n- MOB-056-general-settings-device-acceptance.md`

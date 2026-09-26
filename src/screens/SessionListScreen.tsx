@@ -27,6 +27,7 @@ import {
 } from '../connectivity/remoteConnectionDiagnostics';
 import { resolveSessionCollectionState } from './sessionCollectionState';
 import { resolveSessionOpenTarget } from './sessionNavigation';
+import { removeLastOpenedSession } from './lastOpenedSession';
 import { SessionSwipeRow } from './SessionSwipeRow';
 
 const DRAWER_WIDTH = Math.floor(Dimensions.get('window').width * 0.82);
@@ -214,6 +215,7 @@ export function SessionListScreen() {
   const deleteSession = async (session: Session) => {
     try {
       await runtimeRegistry.deleteSession(session.id, session.source);
+      void removeLastOpenedSession(session.id).catch(() => undefined);
       setSessions((current) => current.filter((item) => item.id !== session.id));
       const cleanupResults = await Promise.allSettled([
         unpinThread(session.id),

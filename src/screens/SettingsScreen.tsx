@@ -192,6 +192,9 @@ export function SettingsScreen() {
       case 'security':
         navigation.navigate('Security');
         break;
+      case 'general':
+        navigation.navigate('General');
+        break;
     }
   };
 
@@ -322,7 +325,14 @@ export function SettingsScreen() {
 
         <SectionHeader>通用</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
-          <Row icon={GearIcon} title="常规" isFirst isLast={false} />
+          <Row
+            icon={GearIcon}
+            title="常规"
+            subtitle="启动 · 显示 · 更新"
+            actionId="general"
+            isFirst
+            isLast={false}
+          />
           <Row icon={Bell} title="通知" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
