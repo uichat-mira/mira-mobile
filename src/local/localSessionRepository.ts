@@ -17,8 +17,14 @@ interface StoredLocalSession {
 
 const STORAGE_KEY = 'mira.local-provider.sessions.v1';
 const writeQueues = new WeakMap<LocalKeyValueStore, Promise<void>>();
+let localSessionIdSequence = 0;
 
 export const DEFAULT_LOCAL_SESSION_TITLE = 'New local conversation';
+
+const createLocalSessionId = (): string => {
+  localSessionIdSequence += 1;
+  return `local-${Date.now()}-${localSessionIdSequence.toString(36)}`;
+};
 
 const toSession = (value: StoredLocalSession): Session => ({
   id: value.id,
@@ -115,7 +121,7 @@ export class LocalSessionRepository {
       const values = await this.loadStored();
       const now = new Date().toISOString();
       const value: StoredLocalSession = {
-        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: createLocalSessionId(),
         providerId,
         title: title.trim() || DEFAULT_LOCAL_SESSION_TITLE,
         updatedAt: now,

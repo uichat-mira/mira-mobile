@@ -131,7 +131,7 @@ jobs:
 
       - name: Set up Android SDK for test release
         if: env.RELEASE_CHANNEL == 'test'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
       - name: Install Android SDK packages for test release
         if: env.RELEASE_CHANNEL == 'test'
@@ -139,7 +139,7 @@ jobs:
 
       - name: Install dependencies for test release
         if: env.RELEASE_CHANNEL == 'test'
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Prepare test release signing
         if: env.RELEASE_CHANNEL == 'test'
