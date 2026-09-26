@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -18,6 +18,10 @@ interface SettingsInputModalProps {
   placeholder?: string;
   confirmLabel: string;
   maxLength?: number;
+  /** Pre-fills the input when the modal opens (edit flows). */
+  initialValue?: string;
+  /** Allows longer multi-line content such as memory text. */
+  multiline?: boolean;
   /** Returns a user-facing rejection reason, or null when the value is acceptable. */
   validate?: (value: string) => string | null;
   onSubmit: (value: string) => void;
@@ -30,6 +34,8 @@ export function SettingsInputModal({
   placeholder,
   confirmLabel,
   maxLength,
+  initialValue,
+  multiline = false,
   validate,
   onSubmit,
   onClose,
@@ -38,10 +44,14 @@ export function SettingsInputModal({
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const confirmed = text.trim().length > 0;
+  // Captured at open time so a parent re-render with a different
+  // initialValue never clobbers text the user is already editing.
+  const initialTextRef = useRef(initialValue ?? '');
+  initialTextRef.current = initialValue ?? '';
 
   useEffect(() => {
     if (visible) {
-      setText('');
+      setText(initialTextRef.current);
       setError(null);
     }
   }, [visible]);
@@ -80,10 +90,12 @@ export function SettingsInputModal({
               placeholderTextColor={colors.text.placeholder}
               maxLength={maxLength}
               autoFocus
-              onSubmitEditing={submit}
-              returnKeyType="done"
+              multiline={multiline}
+              onSubmitEditing={multiline ? undefined : submit}
+              returnKeyType={multiline ? 'default' : 'done'}
               style={[
                 styles.input,
+                multiline && styles.inputMultiline,
                 {
                   backgroundColor: colors.bg.card,
                   color: colors.text.ink,
@@ -160,6 +172,11 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.md,
     fontSize: fontSize.bodyMd,
+  },
+  inputMultiline: {
+    minHeight: 120,
+    paddingTop: spacing.sm,
+    textAlignVertical: 'top',
   },
   error: {
     fontSize: fontSize.button,
