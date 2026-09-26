@@ -43,6 +43,7 @@
 | MOB-046 | OpenAI-compatible URL / SSE / Tool Call 兼容性修复 | **待验收** | Mobile；PR #100 已合入 `dev`，Base URL、finish/[DONE]、indexed/interleaved/split tool-call 兼容性与回归测试已完成；真实 Provider / 真机矩阵挂 MOB-044 |
 | MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
 | MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
+| MOB-052 | 设置 → 电子邮件 真实功能与真机验收 | **待验收** | Mobile；设置页「电子邮件」由无 actionId 占位升级为系统 `mailto:` 唤起，邮箱地址收敛到 `CONTACT_EMAIL` 常量，无邮件客户端时 Alert 兜底；Android 真机 + iOS 必测 |
 
 ## 既有产品决策
 
@@ -144,3 +145,4 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-046-openai-compatible-stream-compatibility.md`
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
+- `MOB-052-email-contact-mailto.md`

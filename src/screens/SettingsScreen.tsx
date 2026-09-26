@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Alert,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -48,6 +49,22 @@ import { useHostStore } from '../store/hostStore';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
+
+// 客服 / 反馈邮箱。设置页"电子邮件"按钮通过系统 mailto: 唤起原生邮件客户端，
+// 用户最终选哪个客户端由系统决定，移动端不强绑定具体 Provider。
+const CONTACT_EMAIL = 'dangjingtao@gmail.com';
+const contactEmailUrl = `mailto:${CONTACT_EMAIL}`;
+
+const openContactEmail = () => {
+  // mailto: 没有可用 handler 时（设备无邮件客户端、桌面模拟器等）回退到一次提示，
+  // 避免按了按钮"看起来什么都没发生"。
+  Linking.openURL(contactEmailUrl).catch(() => {
+    Alert.alert(
+      '无法打开邮件客户端',
+      `未找到可用的邮件应用。可手动发送邮件至 ${CONTACT_EMAIL}。`,
+    );
+  });
+};
 
 const appearanceOptions: readonly SettingsChoice<ThemeMode>[] = [
   { value: 'system', label: '系统（默认）' },
@@ -160,6 +177,9 @@ export function SettingsScreen() {
       case 'plugins':
         navigation.navigate('Plugins');
         break;
+      case 'contact-email':
+        openContactEmail();
+        break;
       case 'report-error':
         navigation.navigate('ReportError');
         break;
@@ -226,7 +246,8 @@ export function SettingsScreen() {
           <Row
             icon={Mail}
             title="电子邮件"
-            subtitle="dangjingtao@gmail.com"
+            subtitle={`${CONTACT_EMAIL} · 发送反馈`}
+            actionId="contact-email"
             isFirst
             isLast
           />
