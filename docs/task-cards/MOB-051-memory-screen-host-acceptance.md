@@ -6,7 +6,9 @@
 
 执行仓库：`uichat-mira/mira-mobile`
 
-首次派卡基线：PR（feat/memory-screen → dev，待提交）
+首次派卡基线：`feat/mob-051-memory-host-integration @ e3f9f4c`（PR #158）
+
+关联 PR：https://github.com/uichat-mira/mira-mobile/pull/158
 
 关联 Issue / 合同：
 - `mira-desktop/dev:server/src/routes/memory.ts`（Host `/memory` 5 个路由，已存在）
