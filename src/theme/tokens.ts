@@ -158,39 +158,95 @@ export const spacing = {
 } as const;
 
 // ─── Typography ────────────────────────────────────────────
+export type TextScaleId = 'compact' | 'standard' | 'large';
+
+const TEXT_SCALE_FACTORS: Record<TextScaleId, number> = {
+  compact: 0.9,
+  standard: 1,
+  large: 1.15,
+};
+
+let textScaleFactor = TEXT_SCALE_FACTORS.standard;
+
+export function setTextScale(scale: TextScaleId): void {
+  textScaleFactor = TEXT_SCALE_FACTORS[scale] ?? TEXT_SCALE_FACTORS.standard;
+}
+
+const scaledFontSize = (base: number): number => Math.round(base * textScaleFactor);
+
+// Values are exposed as getters so a scale applied before App modules load
+// (see index.js) is picked up when module-level StyleSheet.create calls run.
 export const fontSize = {
   /** 展示级 — 64px */
-  displayLg: 64,
+  get displayLg() {
+    return scaledFontSize(64);
+  },
   /** 区块标题 — 40px */
-  displaySm: 40,
+  get displaySm() {
+    return scaledFontSize(40);
+  },
   /** 卡片大标题 — 28px */
-  titleXl: 28,
+  get titleXl() {
+    return scaledFontSize(28);
+  },
   /** 卡片标题 — 20px */
-  titleLg: 20,
+  get titleLg() {
+    return scaledFontSize(20);
+  },
   /** 组件标题 — 17px */
-  titleMd: 17,
+  get titleMd() {
+    return scaledFontSize(17);
+  },
   /** 正文段落 — 16px */
-  bodyMd: 16,
+  get bodyMd() {
+    return scaledFontSize(16);
+  },
   /** 导航链接 / 按钮文字 — 14px */
-  button: 14,
+  get button() {
+    return scaledFontSize(14);
+  },
   /** 小号标签 — 13px */
-  caption: 13,
+  get caption() {
+    return scaledFontSize(13);
+  },
   /** 大写标签 — 12px */
-  captionUppercase: 12,
+  get captionUppercase() {
+    return scaledFontSize(12);
+  },
   /** 代码块 — 13px */
-  code: 13,
+  get code() {
+    return scaledFontSize(13);
+  },
 
   // Backwards-compatible aliases
-  xs: 12,
-  sm: 13,
-  base: 14,
-  md: 15,
-  lg: 16,
-  xl: 17,
-  '2xl': 18,
-  '3xl': 20,
-  '4xl': 28,
-} as const;
+  get xs() {
+    return scaledFontSize(12);
+  },
+  get sm() {
+    return scaledFontSize(13);
+  },
+  get base() {
+    return scaledFontSize(14);
+  },
+  get md() {
+    return scaledFontSize(15);
+  },
+  get lg() {
+    return scaledFontSize(16);
+  },
+  get xl() {
+    return scaledFontSize(17);
+  },
+  get '2xl'() {
+    return scaledFontSize(18);
+  },
+  get '3xl'() {
+    return scaledFontSize(20);
+  },
+  get '4xl'() {
+    return scaledFontSize(28);
+  },
+};
 
 export const lineHeight = {
   /** 正文段落行高 */

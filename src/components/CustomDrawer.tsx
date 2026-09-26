@@ -38,6 +38,8 @@ import {
   selectThreadUnread,
   useThreadReadStore,
 } from '../store/threadReadStore';
+import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../screens/generalSettings';
+import { lightImpact } from '../haptics/haptics';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
@@ -210,8 +212,18 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     }
   }, [navigation, onClose]);
 
-  const handleCreateChat = useCallback(() => {
+  const handleCreateChat = useCallback(async () => {
     if (creatingChat) return;
+    void lightImpact();
+    const settings = await loadGeneralSettings().catch(() => DEFAULT_GENERAL_SETTINGS);
+    if (settings.defaultSessionSource === 'remote-host') {
+      void createRemoteChat();
+      return;
+    }
+    if (settings.defaultSessionSource === 'local-provider') {
+      handleOpenLocalProvider();
+      return;
+    }
     Alert.alert('新建会话', '选择会话来源', [
       {
         text: '远程连接',
