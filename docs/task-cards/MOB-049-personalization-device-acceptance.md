@@ -1,18 +1,18 @@
 # MOB-049：个性化设置真机验收
 
-状态：**待验收**（代码已随 PR #142 进入 review；本卡只负责真机人工验收，不包含新施工）
+状态：**待验收**（代码已随 PR #157 进入 review；本卡只负责真机人工验收，不包含新施工）
 
 负责人：待指派（真机验收人）
 
 执行仓库：`uichat-mira/mira-mobile`
 
-首次派卡基线：`feat/personalization-settings-persistence @ 038b4cb`（PR #142，含 review fix commit）
+首次派卡基线：`feat/mob-049-personalization-persistence @ ac08e9d`（PR #157，含 review fix commit）
 
-关联 PR：https://github.com/uichat-mira/mira-mobile/pull/142
+关联 PR：https://github.com/uichat-mira/mira-mobile/pull/157
 
 ## 背景
 
-「设置 → 个性化」页在上游一直是静态样板：控件无交互、设置不持久化。PR #142 补全了全部控件接线并接入设备本地持久化（`localKeyValueStore`，key `mira.mobile.personalization.v1`），自动化证据（typecheck / lint / Jest / 双平台构建 / AI Review / SonarCloud）已在 PR CI 通过。
+「设置 → 个性化」页在上游一直是静态样板：控件无交互、设置不持久化。PR #157 补全了全部控件接线并接入设备本地持久化（`localKeyValueStore`，key `mira.mobile.personalization.v1`），自动化证据（typecheck / lint / Jest / 双平台构建 / AI Review / SonarCloud）已在 PR CI 通过。
 
 但按仓库规则，**自动化不能替代真机交互与持久化验收**。本卡把剩余的人工验收项显式列出，验收通过前 PR 不得合入 `dev`。
 
