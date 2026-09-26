@@ -159,9 +159,6 @@ export function SettingsScreen() {
       case 'personalization':
         navigation.navigate('Personalization');
         break;
-      case 'memory':
-        navigation.navigate('Memory');
-        break;
       case 'appearance':
         setAppearanceOpen(true);
         break;
@@ -182,6 +179,9 @@ export function SettingsScreen() {
         break;
       case 'contact-email':
         openContactEmail();
+        break;
+      case 'storage':
+        navigation.navigate('Storage');
         break;
       case 'report-error':
         navigation.navigate('ReportError');
@@ -243,7 +243,7 @@ export function SettingsScreen() {
         <SectionHeader>我的 Mira</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row icon={Smile} title="个性化" actionId="personalization" isFirst isLast={false} />
-          <Row icon={BookOpen} title="记忆" actionId="memory" isLast={false} />
+          <Row icon={BookOpen} title="记忆" isLast={false} />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
         </RowGroup>
 
@@ -326,7 +326,7 @@ export function SettingsScreen() {
           <Row icon={Bell} title="通知" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
-          <Row icon={HardDrive} title="存储" isLast={false} />
+          <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
           <Row icon={Bug} title="报告错误" actionId="report-error" isLast={false} />
           <Row icon={Info} title="关于" actionId="about" isLast />
         </RowGroup>
