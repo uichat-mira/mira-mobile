@@ -6,9 +6,9 @@
 
 执行仓库：`uichat-mira/mira-mobile`
 
-首次派卡基线：`feat/contact-email-button`（基于 `dev @ a56531a5`）
+首次派卡基线：`feat/settings-contact-email`（基于 `dev @ a56531a5`）
 
-关联 PR：本分支对应 PR（创建后回填具体编号）
+关联 PR：https://github.com/uichat-mira/mira-mobile/pull/159
 
 ## 背景
 
