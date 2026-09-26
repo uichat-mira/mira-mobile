@@ -44,6 +44,7 @@
 | MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
 | MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
 | MOB-049 | 个性化设置真机验收 | **待验收** | Mobile；PR #157 待 Android 真机 + iOS 验收（卡内含安装包来源与用例表） |
+| MOB-051 | 设置 → 记忆 接 Host `/memory` 与真机验收 | **待验收** | Mobile；按 Host canonical /memory 合同实现 capability 门控 + 增 / 改 / 删 / 开关；Host 端 Remote Gateway 当前未放行 memory scope，验收需先升级 Desktop |
 
 ## 既有产品决策
 
@@ -146,3 +147,4 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
 - `MOB-049-personalization-device-acceptance.md`
+- `MOB-051-memory-screen-host-acceptance.md`
