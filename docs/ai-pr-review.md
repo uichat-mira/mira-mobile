@@ -1,6 +1,6 @@
 # Mira Mobile PR Review
 
-Mira Mobile 的 **Mira Organization AI Review** 主链路已经在真实仓库运行；首个 Mobile 试点当前因 CodeRabbit 自动旁审行为与迁移前基线不一致而重新打开，尚未完成最终验收。
+Mira Mobile 的 **Mira Organization AI Review** 主链路已经在真实仓库运行；首个 Mobile 试点已经完成验收。迁移期间出现过 CodeRabbit 自动旁审回归，但后续真实 PR 已证明自动旁审恢复。
 
 ```text
 Mobile PR event
@@ -28,9 +28,9 @@ Mobile 是 Organization AI Review 的首个真实仓库试点。当前已验证�
 - trusted Task / PR Contract 已通过 GitHub server-side work-item relation 成功进入 review package；
 - `dev -> test` 已完成 evidence-only `PROMOTION_REVIEW` dry run；在 Promotion route 未启用时，Gateway 发布 `REVIEW_UNAVAILABLE`，没有 provider attempt，也没有偷偷启用 fallback；
 - `NO_BLOCKING_FINDINGS`、`HUMAN_CHECK_NEEDED`、`REVIEW_UNAVAILABLE` 均已在真实 GitHub 路径中出现并按 Organization contract 发布；
-- CodeRabbit 在 Organization 仓库授权恢复后，PR #112 已证明手动 `@coderabbitai review` 可以执行完整独立审查；但 PR #116 的自动触发被 CodeRabbit 以 `This repository does not receive automatic reviews because it has fewer than 10 stars.` 跳过，而迁移前同一仓库的 PR #98 曾正常自动 Review。当前差异尚未解释，不能把 `<10 stars>` 直接归纳为普遍 OSS 政策。
+- CodeRabbit 在 Organization 仓库授权恢复后，PR #112 已证明手动 `@coderabbitai review` 可以执行完整独立审查；PR #116 曾出现以仓库少于 10 stars 为由跳过自动 Review 的服务端行为；后续 release PR #146 在没有任何人工 `@coderabbitai review` 指令的情况下自动生成 Walkthrough，并提交完整 Review（26 条 actionable comments），证明当前 Organization 安装上下文中的自动旁审已经恢复。历史 `<10 stars>` 提示因此只作为当时的安装/服务状态记录，不作为普遍 OSS 政策。
 
-Pilot 的验收与证据以 Issue #109 为准；#109 当前因 CodeRabbit 自动旁审回归重新打开。在该行为恢复到迁移前基线，或维护者明确接受并记录合同变化以前，不向 Desktop / Relay / Docs 等仓库继续推广。
+Pilot 的验收与证据以 Issue #109 为准。随着 #146 补齐自动旁审恢复证据，#109 的最后一项运行时 blocker 已解除，Mobile 首个 Organization AI Review pilot 已完成验收。
 
 ## Trigger and trust boundary
 
@@ -117,9 +117,10 @@ CodeRabbit 继续作为 **independent side reviewer** 存在，不被 Mira Revie
 
 - 迁移前 PR #98 在同一仓库正常产生 CodeRabbit 自动 Review，使用 `.coderabbit.yaml`、`ASSERTIVE`、`Advanced`，其评论显示当时计划提供每小时 10 次 included reviews；
 - 仓库迁移到 `uichat-mira` 后曾缺少 CodeRabbit GitHub App / repository authorization；恢复授权后，PR #112 证明手动 Review 已恢复；
-- 但 PR #116 的自动触发被 CodeRabbit 明确跳过，理由为仓库少于 10 stars。
+- PR #116 的自动触发曾被 CodeRabbit 明确跳过，理由为仓库少于 10 stars；
+- 后续 release PR #146 未出现人工 `@coderabbitai review` 指令，却自动产生 CodeRabbit Walkthrough，并提交完整 Review；该 Review 使用仓库 `.coderabbit.yaml`、`ASSERTIVE`、`Advanced`，Run ID 为 `257fc34f-7cdc-434a-8248-56bba2560cfa`，并发布 26 条 actionable comments。
 
-因此目前只能确认：**当前 Organization 安装上下文下，CodeRabbit 自动 Review 被服务端跳过，而手动 Review 可用。** 现有证据不足以把这一现象归因于普遍的 CodeRabbit OSS 政策；由于同一仓库迁移前可以自动 Review，更需要继续检查 Organization migration 是否改变了 installation / account / plan / OSS eligibility 等上下文。
+因此当前事实是：**CodeRabbit 自动 Review 已在 Organization 安装上下文中恢复。** PR #116 的 `<10 stars>` 提示保留为迁移期间的一次真实服务端响应，但不再代表当前运行状态，也没有证据支持把它归纳为普遍的 CodeRabbit OSS 政策。
 
 PR #112 的安装后手动验证取得了真实独立 Review：
 
@@ -130,7 +131,7 @@ PR #112 的安装后手动验证取得了真实独立 Review：
 - 审查范围覆盖 `docs/ai-review-pilot-smoke.md`，截至 head `561135e55b2ad45db07ff006985e483941cb55de`；
 - 结果为 `No actionable comments were generated in the recent review`，Merge Risk 为 Minimal。
 
-所以 CodeRabbit 的 Organization 授权问题已经恢复，但**自动旁审等价性仍未恢复**。当前手动旁审只能作为临时可用路径和验证证据，不能视为与迁移前 Mobile 自动 Review 合同等价。Issue #109 保持打开，直到自动旁审恢复，或维护者明确决定接受并记录这一行为变化。Mira Review 与 CodeRabbit 仍是两条独立 Review 路径；两者结果都是维护者的审查证据，不拥有自动 merge、approve 或任务验收权。
+CodeRabbit 的 Organization 授权与自动旁审都已经有真实运行证据。PR #112 保留为手动旁审恢复证据，PR #146 则提供迁移后的自动旁审恢复证据。Mira Review 与 CodeRabbit 仍是两条独立 Review 路径；两者结果都是维护者的审查证据，不拥有自动 merge、approve 或任务验收权。
 
 ## Legacy OpenCode retirement
 
