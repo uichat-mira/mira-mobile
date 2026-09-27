@@ -2,6 +2,7 @@ import { shiyanClient, ShiyanClientError } from './client/ShiyanClient';
 import {
   hasCanonicalGithubDeliveryEvidence,
   parseShiyanDeliveriesResult,
+  type ShiyanCaptureTaskView,
 } from './client/contracts';
 import { deliveryBelongsToFinalDraft } from './client/delivery';
 import { localCaptureRepository } from './recording/localCaptureRepository';
@@ -21,6 +22,7 @@ export interface ShiyanHistoryTaskSummary {
   title: string;
   sceneName: string;
   createdAt: string;
+  lifecycle: ShiyanCaptureTaskView['lifecycle'];
   currentStage: string;
   stageStatus: ShiyanHistoryStageStatus;
   canonicalDestinationUrl: string | null;
@@ -46,8 +48,6 @@ const destinationUrlFor = async (taskId: string): Promise<string | null> => {
       )?.fileUrl ?? null
     );
   } catch (error) {
-    // Missing route, task, Final Draft, or canonical evidence means “no canonical URL yet”.
-    // Never fall back to an older delivery or fabricate a URL.
     if (
       error instanceof ShiyanClientError &&
       (error.code === 'route_not_found' ||
@@ -84,6 +84,7 @@ const cloudHistoryDataSource: ShiyanHistoryDataSource = {
             localCapture?.sceneName ??
             sceneId,
           createdAt: task.createdAt,
+          lifecycle: task.lifecycle,
           currentStage: task.currentStage,
           stageStatus: current?.status ?? 'pending',
           canonicalDestinationUrl,

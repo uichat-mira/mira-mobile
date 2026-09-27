@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "zh-CN"
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - "dev"
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Treat AGENTS.md and .opencode/skills/mira-mobile-pr-review/SKILL.md as authoritative repository review rules.
+        Prioritize verified P0-P2 defects and omit low-value style commentary.
+        Do not promote missing real-device, Host, Cloud, provider, signing, or cross-repository validation into a code defect; report it as a validation gap unless the implementation contract explicitly requires that evidence.
+        For each substantive finding, clearly separate Observation, Inference, and Judgment, and include the affected platform/surface plus a concrete verification method.
+        For task-card or work-ledger changes, verify status and acceptance evidence are internally consistent, while respecting explicit acceptance decisions made by project maintainers.
+        Review Remote/Host protocol, authentication, lifecycle, Android/iOS parity, local persistence, security, CI/release, and navigation against the repository contracts rather than generic mobile conventions.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - ".opencode/skills/mira-mobile-pr-review/SKILL.md"
+
+chat:
+  auto_reply: true

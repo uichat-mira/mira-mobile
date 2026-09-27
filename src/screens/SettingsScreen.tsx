@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Alert,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -42,9 +43,29 @@ import {
   SettingsSectionHeader as SectionHeader,
 } from '../components/settings/SettingsComponents';
 import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
+import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+import { ProviderConfigStore } from '../provider/providerConfigStore';
+import { useHostStore } from '../store/hostStore';
+import { openNotificationSettings } from './notificationSettings';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
+
+// 客服 / 反馈邮箱。设置页"电子邮件"按钮通过系统 mailto: 唤起原生邮件客户端，
+// 用户最终选哪个客户端由系统决定，移动端不强绑定具体 Provider。
+const CONTACT_EMAIL = 'dangjingtao@gmail.com';
+const contactEmailUrl = `mailto:${CONTACT_EMAIL}`;
+
+const openContactEmail = () => {
+  // mailto: 没有可用 handler 时（设备无邮件客户端、桌面模拟器等）回退到一次提示，
+  // 避免按了按钮"看起来什么都没发生"。
+  Linking.openURL(contactEmailUrl).catch(() => {
+    Alert.alert(
+      '无法打开邮件客户端',
+      `未找到可用的邮件应用。可手动发送邮件至 ${CONTACT_EMAIL}。`,
+    );
+  });
+};
 
 const appearanceOptions: readonly SettingsChoice<ThemeMode>[] = [
   { value: 'system', label: '系统（默认）' },
@@ -73,6 +94,31 @@ export function SettingsScreen() {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [accentOpen, setAccentOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const { config: hostConfig, connectionStatus } = useHostStore();
+  const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
+  const [localConfigured, setLocalConfigured] = useState(false);
+  const notificationJumpInFlight = React.useRef(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void new ProviderConfigStore().load().then((configs) => {
+      if (!cancelled) setLocalConfigured(configs.length > 0);
+    }).catch(() => {
+      if (!cancelled) setLocalConfigured(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const remoteHasError = !['idle', 'probing', 'ready'].includes(remoteConnectivityState);
+  const remoteVisualStatus: ConnectionVisualStatus = remoteHasError
+    ? 'error'
+    : connectionStatus === 'connected'
+      ? 'connected'
+      : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+        ? 'connecting'
+        : hostConfig
+          ? 'disconnected'
+          : 'not-configured';
 
   const requestDisconnect = () => {
     if (disconnecting) return;
@@ -110,6 +156,22 @@ export function SettingsScreen() {
     );
   };
 
+  const openNotificationRow = () => {
+    // 跳转进行中忽略连按：系统页 / 兜底 Alert 未结束前重复触发只会叠出多个系统页或 Alert。
+    if (notificationJumpInFlight.current) return;
+    notificationJumpInFlight.current = true;
+    void openNotificationSettings()
+      .catch(() => {
+        Alert.alert(
+          '无法打开通知设置',
+          '当前设备没有可打开的应用通知设置页。可在系统「设置 → 应用 → Mira → 通知」中手动管理。',
+        );
+      })
+      .finally(() => {
+        notificationJumpInFlight.current = false;
+      });
+  };
+
   const handleSettingAction = (actionId: string) => {
     switch (actionId) {
       case 'personalization':
@@ -121,8 +183,14 @@ export function SettingsScreen() {
       case 'accent':
         setAccentOpen(true);
         break;
+      case 'notifications':
+        openNotificationRow();
+        break;
       case 'host-config':
         navigation.navigate('HostConfig');
+        break;
+      case 'local-provider':
+        navigation.navigate('LocalProviderConfig');
         break;
       case 'disconnect-host':
         requestDisconnect();
@@ -130,11 +198,23 @@ export function SettingsScreen() {
       case 'plugins':
         navigation.navigate('Plugins');
         break;
+      case 'contact-email':
+        openContactEmail();
+        break;
+      case 'storage':
+        navigation.navigate('Storage');
+        break;
       case 'report-error':
         navigation.navigate('ReportError');
         break;
       case 'about':
         navigation.navigate('About');
+        break;
+      case 'security':
+        navigation.navigate('Security');
+        break;
+      case 'general':
+        navigation.navigate('General');
         break;
     }
   };
@@ -196,7 +276,8 @@ export function SettingsScreen() {
           <Row
             icon={Mail}
             title="电子邮件"
-            subtitle="dangjingtao@gmail.com"
+            subtitle={`${CONTACT_EMAIL} · 发送反馈`}
+            actionId="contact-email"
             isFirst
             isLast
           />
@@ -240,25 +321,43 @@ export function SettingsScreen() {
           />
         </RowGroup>
 
-        <SectionHeader>主机</SectionHeader>
+        <SectionHeader>连接</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row
             icon={MessageCircle}
-            title="Mira Host 配置"
-            subtitle="管理主机连接"
-            actionId="host-config"
+            title="本地连接"
+            subtitle="管理手机直连的 OpenAI-compatible Provider"
+            actionId="local-provider"
             isFirst
+            isLast={false}
+            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
+            showChevron={false}
+          />
+          <Row
+            icon={Monitor}
+            title="远程连接"
+            subtitle="管理 Mira Host 连接"
+            actionId="host-config"
             isLast
+            right={<ConnectionStatusDot status={remoteVisualStatus} />}
+            showChevron={false}
           />
         </RowGroup>
 
         <SectionHeader>通用</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
-          <Row icon={GearIcon} title="常规" isFirst isLast={false} />
-          <Row icon={Bell} title="通知" isLast={false} />
+          <Row
+            icon={GearIcon}
+            title="常规"
+            subtitle="启动 · 显示 · 更新"
+            actionId="general"
+            isFirst
+            isLast={false}
+          />
+          <Row icon={Bell} title="通知" subtitle="在系统设置中管理" actionId="notifications" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
-          <Row icon={ShieldCheck} title="安全" isLast={false} />
-          <Row icon={HardDrive} title="存储" isLast={false} />
+          <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
+          <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
           <Row icon={Bug} title="报告错误" actionId="report-error" isLast={false} />
           <Row icon={Info} title="关于" actionId="about" isLast />
         </RowGroup>

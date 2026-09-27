@@ -1,6 +1,6 @@
 # MOB-029：拾言确认页播放器、场景 Action Sheet 与 Cloud 配置入口
 
-状态：**待实施**
+状态：**完成**（2026-09-04 真机验收通过验收条目 1–9）
 
 负责人：`mob_029_shiyan_confirmation_ux`
 

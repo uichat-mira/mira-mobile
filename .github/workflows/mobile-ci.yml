@@ -72,6 +72,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK packages
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
@@ -135,6 +137,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK packages
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
@@ -166,6 +170,7 @@ jobs:
           cd android
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8" \
+            -PreactNativeArchitectures=arm64-v8a \
             assembleRelease \
             --no-daemon \
             --no-parallel \
@@ -181,6 +186,18 @@ jobs:
           unzip -Z1 "$apk" > "$entries"
           grep -Fxq 'assets/index.android.bundle' "$entries"
           grep -Fxq 'lib/arm64-v8a/libreact_codegen_rnsvg.so' "$entries"
+          bad_abis=$(awk -F/ '$1 == "lib" && $2 != "arm64-v8a" { print $2 }' "$entries" | sort -u)
+          if [ -n "$bad_abis" ]; then
+            echo "Release APK contains non-arm64 native libraries: $bad_abis" >&2
+            exit 1
+          fi
+          apk_size_bytes=$(stat -c '%s' "$apk")
+          apk_size_mib=$(awk -v bytes="$apk_size_bytes" 'BEGIN { printf "%.2f", bytes / 1048576 }')
+          {
+            echo "### Android signed release"
+            echo "ABI: arm64-v8a only"
+            echo "APK size: ${apk_size_mib} MiB (${apk_size_bytes} bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
           release_dir=android/app/build/outputs/apk/release
           cp "$apk" "$release_dir/uichat-mira-mobile-release.apk"

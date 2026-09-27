@@ -16,22 +16,23 @@ const currentBranch = () => {
 };
 
 /**
- * Build-time release channel truth (MOB-028).
+ * Build-time release channel truth (MOB-028A).
  *
- * dev builds compare only dev prereleases; prod builds compare only stable
- * prod releases. GitHub branch/base refs and local dev/prod checkouts are
- * authoritative so a production build cannot silently become a dev build.
+ * predev/dev/test/prod builds resolve to their own channel modules. Branch
+ * truth is authoritative for normal CI/local checkouts; detached release
+ * orchestration can use an explicitly locked channel.
  */
 const releaseChannel = resolveReleaseChannel({
   env: process.env,
   branchName: currentBranch(),
 });
+const channelModuleFilename = releaseChannel === 'test' ? 'test-channel.ts' : `${releaseChannel}.ts`;
 const channelModulePath = path.resolve(
   __dirname,
   'src',
   'update',
   'channel',
-  `${releaseChannel}.ts`,
+  channelModuleFilename,
 );
 
 /**

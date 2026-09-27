@@ -2,7 +2,7 @@ Pod::Spec.new do |s|
   s.name = 'MiraAudioRecorder'
   s.version = '1.0.0'
   s.summary = 'Private local audio recording bridge for Mira Shiyan.'
-  s.homepage = 'https://github.com/dangjingtao/uichat-mira-mobile'
+  s.homepage = 'https://github.com/uichat-mira/mira-mobile'
   s.license = { :type => 'MIT' }
   s.author = { 'Mira Mobile' => 'mobile@local.invalid' }
   s.source = { :path => '.' }

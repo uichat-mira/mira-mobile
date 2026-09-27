@@ -24,25 +24,21 @@ import {
   type AppRelease,
 } from '../update/appUpdate';
 import { parseSemver } from '../update/semver';
+import { installedDisplayVersion, presentUpdatePrompt } from '../update/updatePrompt';
 
 type UpdateCheckStatus =
   | 'idle'
   | 'checking'
   | 'available'
   | 'current'
-  | 'unavailable'
   | 'failed';
 
-const channelLabel = releaseChannel === 'prod' ? '正式' : '开发';
-
-const releaseNotesPreview = (notes: string | null): string => {
-  const firstLine = notes
-    ?.split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstLine) return '';
-  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine;
-};
+const channelLabel = {
+  predev: '预开发',
+  dev: '开发',
+  test: '测试',
+  prod: '正式',
+}[releaseChannel];
 
 export function AboutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -58,17 +54,12 @@ export function AboutScreen() {
     try {
       const latest = await fetchLatestRelease(releaseChannel, fetch);
       setLatestRelease(latest);
-      // "No published release on this channel" is not proof of being current;
-      // keep it distinct so the UI never claims an unverified "已是最新".
-      if (!latest) {
-        setUpdateStatus('unavailable');
-      } else {
-        setUpdateStatus(
-          isUpdateAvailable(parseSemver(version)!, latest) ? 'available' : 'current',
-        );
-      }
+      setUpdateStatus(
+        isUpdateAvailable(parseSemver(version)!, latest) ? 'available' : 'current',
+      );
     } catch (error) {
-      // A failed check must stay a retryable error; never "已是最新".
+      // A failed or invalid R2 manifest remains retryable; it must never be
+      // presented as proof that the installed build is current.
       setLatestRelease(null);
       setUpdateError(
         error instanceof Error && error.message
@@ -83,53 +74,12 @@ export function AboutScreen() {
     void checkForUpdate();
   }, [checkForUpdate]);
 
-  const openDownload = (latest: AppRelease) => {
-    // Android hands the signed Release APK to the system/browser downloader.
-    // Falling back to the GitHub release page on Android would break the
-    // signed-APK download contract, so a missing APK asset is an explicit
-    // dead end there. iOS has no installable signed artifact and always
-    // opens the release page.
-    if (Platform.OS === 'android' && !latest.apkUrl) {
-      Alert.alert(
-        '该版本未提供安装包',
-        `最新版本 ${latest.tag} 没有附带签名 APK，请等待发布流程补齐后再试。`,
-      );
-      return;
-    }
-    const targetUrl =
-      Platform.OS === 'android' && latest.apkUrl ? latest.apkUrl : latest.releaseUrl;
-    if (!targetUrl) {
-      Alert.alert('无法下载', '该版本没有提供可用的下载地址。');
-      return;
-    }
-    const notes = releaseNotesPreview(latest.notes);
-    Alert.alert(
-      '下载新版本',
-      `当前版本 ${version}\n最新版本 ${latest.tag}${notes ? `\n\n${notes}` : ''}\n\n${
-        Platform.OS === 'android'
-          ? '确认后将使用系统下载。'
-          : 'iOS 当前分发为无签名构建，将打开发布说明页面。'
-      }`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '下载',
-          onPress: () => {
-            Linking.openURL(targetUrl).catch(() => {
-              Alert.alert('打开下载失败', '请稍后重试，或手动访问发布页面。');
-            });
-          },
-        },
-      ],
-    );
-  };
-
   const handleUpdateAction = () => {
     switch (updateStatus) {
       case 'checking':
         return;
       case 'available':
-        if (latestRelease) openDownload(latestRelease);
+        if (latestRelease) presentUpdatePrompt(latestRelease);
         return;
       case 'failed':
         Alert.alert('检查更新失败', updateError ?? '请稍后重试。', [
@@ -137,21 +87,11 @@ export function AboutScreen() {
           { text: '重试', onPress: () => void checkForUpdate() },
         ]);
         return;
-      case 'unavailable':
-        Alert.alert(
-          '暂无发布信息',
-          `当前渠道（${channelLabel}）还没有可查询的发布版本，无法确认是否最新。`,
-          [
-            { text: '取消', style: 'cancel' },
-            { text: '重试', onPress: () => void checkForUpdate() },
-          ],
-        );
-        return;
       default:
         Alert.alert(
           '版本信息',
-          `当前版本 ${version}（${channelLabel}渠道）${
-            latestRelease ? `\n最新发布 ${latestRelease.tag}` : ''
+          `当前版本 ${installedDisplayVersion}（${channelLabel}渠道）${
+            latestRelease ? `\n最新发布 ${latestRelease.displayVersion}` : ''
           }`,
         );
     }
@@ -170,17 +110,15 @@ export function AboutScreen() {
   const updateSubtitle = (() => {
     switch (updateStatus) {
       case 'checking':
-        return `${version} · 正在检查更新…`;
+        return `${installedDisplayVersion} · 正在检查更新…`;
       case 'available':
-        return `${version} · 有新版本 ${latestRelease?.tag ?? ''}`;
+        return `${installedDisplayVersion} · 有新版本 ${latestRelease?.displayVersion ?? ''}`;
       case 'current':
-        return `${version} · 已是最新`;
-      case 'unavailable':
-        return `${version} · 暂无发布信息`;
+        return `${installedDisplayVersion} · 已是最新`;
       case 'failed':
-        return `${version} · 检查更新失败，点击重试`;
+        return `${installedDisplayVersion} · 检查更新失败，点击重试`;
       default:
-        return version;
+        return installedDisplayVersion;
     }
   })();
 

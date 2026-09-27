@@ -1,103 +1,93 @@
 import { compareSemver, parseSemver, type SemverVersion } from './semver';
 
-export type ReleaseChannel = 'dev' | 'prod';
+export type ReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
 
 export interface AppRelease {
-  tag: string;
   version: SemverVersion;
+  displayVersion: string;
   notes: string | null;
-  /** Canonical browser download URL of the signed Release APK, if published. */
-  apkUrl: string | null;
-  /** GitHub Release page URL used on platforms without an installable build. */
-  releaseUrl: string | null;
+  /** Canonical same-channel R2 URL of the signed Release APK. */
+  apkUrl: string;
+  sha256: string;
 }
 
-interface GithubReleaseAsset {
-  name?: unknown;
-  browser_download_url?: unknown;
+interface R2ReleaseManifestPayload {
+  version?: unknown;
+  channel?: unknown;
+  displayVersion?: unknown;
+  apk?: unknown;
+  sha256?: unknown;
+  notes?: unknown;
 }
 
-interface GithubReleasePayload {
-  tag_name?: unknown;
-  draft?: unknown;
-  prerelease?: unknown;
-  body?: unknown;
-  html_url?: unknown;
-  assets?: unknown;
-}
-
-const GITHUB_RELEASES_URL =
-  'https://api.github.com/repos/dangjingtao/uichat-mira-mobile/releases?per_page=100';
+const R2_PUBLIC_BASE_URL = 'https://assets.tomz.io';
 const RELEASED_APK_NAME = 'uichat-mira-mobile-release.apk';
 
-/**
- * Only tags matching the current channel are eligible:
- * - dev channel: `v<semver>-dev` prereleases
- * - prod channel: `v<semver>` stable releases
- */
-const versionTextForChannelTag = (
+const channelRootUrl = (channel: ReleaseChannel): string =>
+  `${R2_PUBLIC_BASE_URL}/mira/mobile/${channel}/`;
+
+export const manifestUrlForChannel = (channel: ReleaseChannel): string =>
+  `${channelRootUrl(channel)}latest/latest.json`;
+
+const expectedApkPath = (version: string): string =>
+  `releases/${version}/${RELEASED_APK_NAME}`;
+
+const expectedDisplayVersion = (
   channel: ReleaseChannel,
-  tag: string,
-): string | null => {
-  if (channel === 'dev') {
-    const match = /^v(\d+\.\d+\.\d+)-dev$/.exec(tag);
-    return match ? match[1] : null;
-  }
-  const match = /^v(\d+\.\d+\.\d+)$/.exec(tag);
-  return match ? match[1] : null;
-};
+  version: string,
+): string => (channel === 'prod' ? version : `${version}-${channel}`);
 
-const findApkAssetUrl = (assets: unknown): string | null => {
-  if (!Array.isArray(assets)) return null;
-  for (const asset of assets) {
-    const candidate = asset as GithubReleaseAsset;
-    if (
-      candidate.name === RELEASED_APK_NAME &&
-      typeof candidate.browser_download_url === 'string' &&
-      candidate.browser_download_url.length > 0
-    ) {
-      return candidate.browser_download_url;
-    }
-  }
-  return null;
-};
-
-export const selectLatestRelease = (
+const parseR2Manifest = (
   channel: ReleaseChannel,
-  releases: GithubReleasePayload[],
-): AppRelease | null => {
-  let latest: AppRelease | null = null;
-  for (const release of releases) {
-    if (release.draft === true) continue;
-    // Tag format alone is not trustworthy channel isolation: a mislabeled
-    // release could otherwise leak across channels. Dev releases must be
-    // flagged as prereleases, prod releases must not be.
-    if (channel === 'dev' && release.prerelease !== true) continue;
-    if (channel === 'prod' && release.prerelease === true) continue;
-    if (typeof release.tag_name !== 'string' || release.tag_name.length === 0) {
-      continue;
-    }
-    const versionText = versionTextForChannelTag(channel, release.tag_name);
-    if (!versionText) continue;
-    const version = parseSemver(versionText);
-    if (!version) continue;
-    if (latest && compareSemver(version, latest.version) <= 0) continue;
-    latest = {
-      tag: release.tag_name,
-      version,
-      notes: typeof release.body === 'string' ? release.body : null,
-      apkUrl: findApkAssetUrl(release.assets),
-      releaseUrl: typeof release.html_url === 'string' ? release.html_url : null,
-    };
+  payload: unknown,
+): AppRelease => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('R2 更新清单格式异常');
   }
-  return latest;
-};
 
-const parseReleasesPayload = (payload: unknown): GithubReleasePayload[] => {
-  if (!Array.isArray(payload)) {
-    throw new Error('GitHub Releases 响应格式异常');
+  const manifest = payload as R2ReleaseManifestPayload;
+  if (manifest.channel !== channel) {
+    throw new Error('R2 更新清单渠道不匹配');
   }
-  return payload as GithubReleasePayload[];
+  if (typeof manifest.version !== 'string') {
+    throw new Error('R2 更新清单版本无效');
+  }
+
+  const version = parseSemver(manifest.version);
+  if (!version) {
+    throw new Error('R2 更新清单版本无效');
+  }
+
+  if (
+    typeof manifest.displayVersion !== 'string' ||
+    manifest.displayVersion !== expectedDisplayVersion(channel, manifest.version)
+  ) {
+    throw new Error('R2 更新清单展示版本无效');
+  }
+
+  const canonicalApkPath = expectedApkPath(manifest.version);
+  if (typeof manifest.apk !== 'string' || manifest.apk !== canonicalApkPath) {
+    throw new Error('R2 更新清单 APK 路径无效');
+  }
+
+  if (
+    typeof manifest.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(manifest.sha256)
+  ) {
+    throw new Error('R2 更新清单 SHA-256 无效');
+  }
+
+  if (manifest.notes != null && typeof manifest.notes !== 'string') {
+    throw new Error('R2 更新清单说明无效');
+  }
+
+  return {
+    version,
+    displayVersion: manifest.displayVersion,
+    notes: typeof manifest.notes === 'string' ? manifest.notes : null,
+    apkUrl: `${channelRootUrl(channel)}${canonicalApkPath}`,
+    sha256: manifest.sha256.toLowerCase(),
+  };
 };
 
 export type ReleaseFetcher = (
@@ -105,23 +95,17 @@ export type ReleaseFetcher = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-/**
- * Fetches the newest release published on the given channel. Throws on
- * network / HTTP failures so the caller can surface a retryable error instead
- * of pretending the app is up to date.
- */
 export const fetchLatestRelease = async (
   channel: ReleaseChannel,
   fetchImpl: ReleaseFetcher,
-): Promise<AppRelease | null> => {
-  const response = await fetchImpl(GITHUB_RELEASES_URL, {
-    headers: { Accept: 'application/vnd.github+json' },
+): Promise<AppRelease> => {
+  const response = await fetchImpl(manifestUrlForChannel(channel), {
+    headers: { Accept: 'application/json' },
   });
   if (!response.ok) {
-    throw new Error(`GitHub Releases 请求失败（HTTP ${response.status}）`);
+    throw new Error(`R2 更新清单请求失败（HTTP ${response.status}）`);
   }
-  const payload = parseReleasesPayload(await response.json());
-  return selectLatestRelease(channel, payload);
+  return parseR2Manifest(channel, await response.json());
 };
 
 export const isUpdateAvailable = (

@@ -1,5 +1,19 @@
 # Mira Mobile Relay Transport V1
 
+## Current Connection Reliability Truth (2026-09-05)
+
+- Relay connections have reproduced a 3-4 hour idle/background disconnect
+  pattern. This is a transport keepalive and lifecycle problem, not a pairing
+  credential problem.
+- Desktop will send native WebSocket control pings; Mobile will not depend on
+  a JavaScript timer to keep a backgrounded app alive.
+- When Mobile returns to the foreground, it must invalidate a stale Relay
+  connection and allow the next request to establish a fresh connection.
+- Active requests and streams remain fail-fast on close; this task does not
+  silently replay side-effecting requests.
+- The Relay V1 business frame contract remains unchanged. A new JSON
+  heartbeat frame is not required for the first remediation.
+
 > 配对与远程连接选择顺序以 [远程连接唯一真相源 V1](remote-connection-canonical-v1.md) 为准；本文保留 Transport frame 和 endpoint 数据结构说明。
 
 ## 目标

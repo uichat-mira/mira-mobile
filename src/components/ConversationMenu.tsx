@@ -53,6 +53,8 @@ interface ConversationMenuProps {
   };
   onClose: () => void;
   onShare?: () => void;
+  shareDisabled?: boolean;
+  shareDisabledAccessibilityLabel?: string;
   onFindInChat?: () => void;
 }
 
@@ -62,6 +64,8 @@ export function ConversationMenu({
   anchor,
   onClose,
   onShare,
+  shareDisabled = false,
+  shareDisabledAccessibilityLabel,
   onFindInChat,
 }: ConversationMenuProps) {
   const { colors } = useTheme();
@@ -106,18 +110,22 @@ export function ConversationMenu({
           </Text>
           {menuItems.map((item) => {
             const action = actionForItem(item.id);
-            const disabled = action === undefined;
+            const disabled =
+              action === undefined || (item.id === 'share' && shareDisabled);
             const itemColor = item.destructive
               ? colors.status.error
               : colors.text.ink;
             const Icon = item.icon;
+            const accessibilityLabel = disabled
+              ? item.id === 'share' && shareDisabledAccessibilityLabel
+                ? shareDisabledAccessibilityLabel
+                : `${item.label}，暂不可用`
+              : item.label;
             return (
               <Pressable
                 key={item.id}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  disabled ? `${item.label}，暂不可用` : item.label
-                }
+                accessibilityLabel={accessibilityLabel}
                 accessibilityState={{ disabled }}
                 disabled={disabled}
                 onPress={() => {

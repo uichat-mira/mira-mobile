@@ -12,6 +12,8 @@ import {
 import type {
   RemoteChatStreamEvent,
   RemoteManifest,
+  RemoteMemoryKind,
+  RemoteMemoryOverview,
   RemoteMessage,
   RemoteThread,
 } from '../protocol/remoteHostV1';
@@ -22,10 +24,24 @@ import type { MiraHostApi } from './miraHost';
 const THREAD_CREATE_ROUTE = 'POST /threads';
 const THREAD_MEDIA_ROUTE = 'GET /threads/:id/media/:mediaId/content';
 
+// Reasoning models can leak <think> blocks into Host-derived thread titles.
+// Normalize at the adapter boundary so list rows and chat headers stay
+// readable; the Host-side title itself is never modified.
+const sanitizeThreadTitle = (title: string): string => {
+  const stripped = title
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+    .replace(/<think(?:ing)?>[\s\S]*$/i, '')
+    .replace(/<\/?think(?:ing)?>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return stripped || '未命名会话';
+};
+
 const threadToSession = (thread: RemoteThread): Session => ({
   id: thread.id,
-  title: thread.title,
+  title: sanitizeThreadTitle(thread.title),
   updatedAt: new Date(thread.updatedAt),
+  source: 'remote-host',
   workspaceId: thread.workspaceId,
   knowledgeBaseId: thread.knowledgeBaseId,
   roleId: thread.roleId,
@@ -244,6 +260,39 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
   async getThreadMediaText(sessionId: string, mediaId: string): Promise<string> {
     const request = await this.getThreadMediaRequest(sessionId, mediaId);
     return readThreadMediaText(request);
+  }
+
+  // ─── Memory (canonical Host /memory surface) ───────────────
+  // Capability gating (device scope + advertised manifest route) already
+  // happens in RemoteMiraHostClient; screens surface REMOTE_SCOPE_REQUIRED /
+  // REMOTE_MEMORY_ROUTE_UNAVAILABLE as a truthful "Host has not opened
+  // memory yet" state instead of local fake data.
+
+  async getMemoryOverview(): Promise<RemoteMemoryOverview> {
+    return this.remote.getMemoryOverview();
+  }
+
+  async updateMemorySettings(enabled: boolean): Promise<RemoteMemoryOverview> {
+    return this.remote.updateMemorySettings(enabled);
+  }
+
+  async createMemory(
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    return this.remote.createMemory(kind, content);
+  }
+
+  async updateMemory(
+    id: string,
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    return this.remote.updateMemory(id, kind, content);
+  }
+
+  async deleteMemory(id: string): Promise<RemoteMemoryOverview> {
+    return this.remote.deleteMemory(id);
   }
 
   async sendMessage(

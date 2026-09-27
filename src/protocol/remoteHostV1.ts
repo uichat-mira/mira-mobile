@@ -5,7 +5,13 @@ export const REMOTE_DEVICE_SCOPES = [
   'agent:read',
   'agent:approve',
   'agent:control',
+  'tools:read',
+  'tools:invoke',
+  'tools:approve',
+  'tools:control',
   'artifacts:read',
+  'memory:read',
+  'memory:write',
 ] as const;
 
 export type RemoteDeviceScope = (typeof REMOTE_DEVICE_SCOPES)[number];
@@ -79,7 +85,12 @@ export interface RemoteManifest {
     threads: string[];
     messages: string[];
     agent: string[];
+    tools: string[];
     artifacts: string[];
+    // Older Hosts and existing test fixtures do not advertise this group;
+    // the mobile adapter treats the absent key as "not advertised" rather
+    // than failing the whole manifest parse.
+    memory?: string[];
   };
   reconnect: {
     mode: 'canonical-state-replay';
@@ -169,6 +180,48 @@ export interface RemoteAgentRun {
   [key: string]: unknown;
 }
 
+const MODEL_SAFE_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
+
+export interface RemoteToolManifest {
+  id: string;
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  destructive: boolean;
+  requiresApproval: boolean;
+}
+
+export type RemoteToolInvocationStatus =
+  | 'completed'
+  | 'awaiting_approval'
+  | 'failed'
+  | 'cancelled';
+
+export interface RemoteToolInvocationProjection {
+  invocationId: string;
+  toolId: string;
+  status: RemoteToolInvocationStatus;
+  content?: string;
+  approval?: { message: string; scope?: string };
+  error?: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+    suggestedAction?: string | null;
+  };
+}
+
+export type RemoteToolGatewayStreamEvent =
+  | { type: 'tool:start'; invocationId: string; toolId: string }
+  | { type: 'tool:progress'; invocationId: string; message: string }
+  | {
+      type: 'tool:approval_required';
+      invocationId: string;
+      message: string;
+      scope?: string;
+    }
+  | { type: 'tool:error'; code: string; message: string }
+  | { type: 'tool:complete'; invocation: RemoteToolInvocationProjection };
 export type RemoteChatStreamEvent =
   | { type: 'start'; messageId?: string }
   | { type: 'start-step' }
@@ -362,6 +415,90 @@ const stringArray = (value: unknown, context: string): string[] => {
   return value;
 };
 
+// ─── Memory (canonical Host /memory surface) ────────────────
+// Mirrors the Host memory route schema: kind is a closed enum, content is a
+// free-form string, origin distinguishes conversation-derived records from
+// records the user created through settings UIs like this one.
+export type RemoteMemoryKind =
+  | 'preference'
+  | 'fact'
+  | 'decision'
+  | 'constraint';
+
+export type RemoteMemoryOrigin = 'conversation' | 'manual';
+
+export interface RemoteMemoryRecord {
+  id: string;
+  kind: RemoteMemoryKind;
+  content: string;
+  origin: RemoteMemoryOrigin;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RemoteMemoryOverview {
+  enabled: boolean;
+  records: RemoteMemoryRecord[];
+}
+
+const REMOTE_MEMORY_KINDS: readonly RemoteMemoryKind[] = [
+  'preference',
+  'fact',
+  'decision',
+  'constraint',
+];
+
+const REMOTE_MEMORY_ORIGINS: readonly RemoteMemoryOrigin[] = [
+  'conversation',
+  'manual',
+];
+
+export const parseRemoteMemoryRecord = (
+  value: unknown,
+): RemoteMemoryRecord => {
+  if (!isRecord(value)) {
+    throw new Error('Remote memory record must be an object');
+  }
+
+  const kind = requiredString(value, 'kind', 'memoryRecord');
+  if (!(REMOTE_MEMORY_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`Unexpected memory record kind: ${kind}`);
+  }
+
+  const origin = requiredString(value, 'origin', 'memoryRecord');
+  if (!(REMOTE_MEMORY_ORIGINS as readonly string[]).includes(origin)) {
+    throw new Error(`Unexpected memory record origin: ${origin}`);
+  }
+
+  return {
+    id: requiredString(value, 'id', 'memoryRecord'),
+    kind: kind as RemoteMemoryKind,
+    content: requiredString(value, 'content', 'memoryRecord'),
+    origin: origin as RemoteMemoryOrigin,
+    createdAt: requiredString(value, 'createdAt', 'memoryRecord'),
+    updatedAt: requiredString(value, 'updatedAt', 'memoryRecord'),
+  };
+};
+
+export const parseRemoteMemoryOverview = (
+  value: unknown,
+): RemoteMemoryOverview => {
+  if (!isRecord(value)) {
+    throw new Error('Remote memory overview must be an object');
+  }
+  if (typeof value.enabled !== 'boolean') {
+    throw new Error('memoryOverview.enabled must be a boolean');
+  }
+  if (!Array.isArray(value.records)) {
+    throw new Error('memoryOverview.records must be an array');
+  }
+
+  return {
+    enabled: value.enabled,
+    records: value.records.map(parseRemoteMemoryRecord),
+  };
+};
+
 export const parseRemoteManifest = (value: unknown): RemoteManifest => {
   if (!isRecord(value)) {
     throw new Error('Remote manifest must be an object');
@@ -388,7 +525,17 @@ export const parseRemoteManifest = (value: unknown): RemoteManifest => {
       threads: stringArray(value.routes.threads, 'manifest.routes.threads'),
       messages: stringArray(value.routes.messages, 'manifest.routes.messages'),
       agent: stringArray(value.routes.agent, 'manifest.routes.agent'),
+      tools:
+        typeof value.routes.tools === 'undefined'
+          ? []
+          : stringArray(value.routes.tools, 'manifest.routes.tools'),
       artifacts: stringArray(value.routes.artifacts, 'manifest.routes.artifacts'),
+      // Hosts that have not published the Memory remote contract yet omit
+      // this group entirely; treat it as "not advertised" like tools above.
+      memory:
+        typeof value.routes.memory === 'undefined'
+          ? []
+          : stringArray(value.routes.memory, 'manifest.routes.memory'),
     },
     reconnect: {
       mode: 'canonical-state-replay',
@@ -398,6 +545,86 @@ export const parseRemoteManifest = (value: unknown): RemoteManifest => {
   };
 };
 
+export const parseRemoteToolManifest = (value: unknown): RemoteToolManifest => {
+  if (!isRecord(value)) throw new Error('Remote tool manifest must be an object');
+  if (!isRecord(value.parameters)) {
+    throw new Error('Remote tool manifest parameters must be an object');
+  }
+  if (typeof value.destructive !== 'boolean' || typeof value.requiresApproval !== 'boolean') {
+    throw new Error('Remote tool manifest capability flags must be booleans');
+  }
+  const name = requiredString(value, 'name', 'remoteTool');
+  if (!MODEL_SAFE_TOOL_NAME_PATTERN.test(name)) {
+    throw new Error('Remote tool name must match ^[A-Za-z0-9_-]{1,64}$');
+  }
+  return {
+    id: requiredString(value, 'id', 'remoteTool'),
+    name,
+    description: requiredString(value, 'description', 'remoteTool'),
+    parameters: value.parameters,
+    destructive: value.destructive,
+    requiresApproval: value.requiresApproval,
+  };
+};
+
+export const parseRemoteToolInvocationProjection = (
+  value: unknown,
+): RemoteToolInvocationProjection => {
+  if (!isRecord(value)) throw new Error('Remote tool invocation must be an object');
+  const status = requiredString(value, 'status', 'remoteToolInvocation') as RemoteToolInvocationStatus;
+  if (!['completed', 'awaiting_approval', 'failed', 'cancelled'].includes(status)) {
+    throw new Error('Unsupported remote tool invocation status: ' + status);
+  }
+  const approval = isRecord(value.approval)
+    ? {
+        message: requiredString(value.approval, 'message', 'remoteToolInvocation.approval'),
+        ...(typeof value.approval.scope === 'string' && value.approval.scope
+          ? { scope: value.approval.scope }
+          : {}),
+      }
+    : undefined;
+  const error = isRecord(value.error)
+    ? {
+        code: requiredString(value.error, 'code', 'remoteToolInvocation.error'),
+        message: requiredString(value.error, 'message', 'remoteToolInvocation.error'),
+        ...(typeof value.error.retryable === 'boolean' ? { retryable: value.error.retryable } : {}),
+        ...(typeof value.error.suggestedAction === 'string' || value.error.suggestedAction === null
+          ? { suggestedAction: value.error.suggestedAction }
+          : {}),
+      }
+    : undefined;
+  return {
+    invocationId: requiredString(value, 'invocationId', 'remoteToolInvocation'),
+    toolId: requiredString(value, 'toolId', 'remoteToolInvocation'),
+    status,
+    ...(typeof value.content === 'string' ? { content: value.content } : {}),
+    ...(approval ? { approval } : {}),
+    ...(error ? { error } : {}),
+  };
+};
+
+export const parseRemoteToolGatewayStreamEvent = (
+  value: unknown,
+): RemoteToolGatewayStreamEvent => {
+  if (!isRecord(value)) throw new Error('Remote tool stream event must be an object');
+  const type = requiredString(value, 'type', 'remoteToolEvent');
+  if (type === 'tool:start') {
+    return { type, invocationId: requiredString(value, 'invocationId', 'remoteToolEvent'), toolId: requiredString(value, 'toolId', 'remoteToolEvent') };
+  }
+  if (type === 'tool:progress') {
+    return { type, invocationId: requiredString(value, 'invocationId', 'remoteToolEvent'), message: requiredString(value, 'message', 'remoteToolEvent') };
+  }
+  if (type === 'tool:approval_required') {
+    return { type, invocationId: requiredString(value, 'invocationId', 'remoteToolEvent'), message: requiredString(value, 'message', 'remoteToolEvent'), ...(typeof value.scope === 'string' && value.scope ? { scope: value.scope } : {}) };
+  }
+  if (type === 'tool:error') {
+    return { type, code: requiredString(value, 'code', 'remoteToolEvent'), message: requiredString(value, 'message', 'remoteToolEvent') };
+  }
+  if (type === 'tool:complete') {
+    return { type, invocation: parseRemoteToolInvocationProjection(value.invocation) };
+  }
+  throw new Error('Unsupported remote tool stream event: ' + type);
+};
 export const parseRemoteThread = (value: unknown): RemoteThread => {
   if (!isRecord(value)) {
     throw new Error('Thread must be an object');

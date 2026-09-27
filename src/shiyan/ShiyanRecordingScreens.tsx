@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,18 +19,24 @@ import {
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   ArrowLeft,
-  Cloud,
+  ArrowRight,
+  Check,
+  ChevronRight,
   FileAudio,
-  History,
+  Layers,
+  Lock,
   Mic2,
   Pause,
   Play,
+  ScrollText,
+  Settings2,
+  Sparkles,
   Square,
   Trash2,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
-import { radius, spacing } from '../theme/tokens';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import {
   SHIYAN_BUILT_IN_SCENES,
   getCustomSceneDraft,
@@ -77,41 +85,6 @@ function ScreenShell({
   );
 }
 
-function ActionCard({
-  icon: Icon,
-  title,
-  description,
-  onPress,
-}: {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
-  title: string;
-  description: string;
-  onPress: () => void;
-}) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.card,
-        {
-          backgroundColor: pressed ? colors.bg.soft : colors.bg.card,
-          borderColor: colors.border.default,
-        },
-      ]}
-    >
-      <View style={[styles.iconWrap, { backgroundColor: colors.bg.soft }]}>
-        <Icon size={22} color={colors.primary} />
-      </View>
-      <View style={styles.cardText}>
-        <Text style={[styles.cardTitle, { color: colors.text.ink }]}>{title}</Text>
-        <Text style={[styles.cardDescription, { color: colors.text.soft }]}>{description}</Text>
-      </View>
-    </Pressable>
-  );
-}
-
 const formatDuration = (durationMs: number) => {
   const totalSeconds = Math.floor(durationMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -130,64 +103,266 @@ const newRecordingId = () =>
 export function ShiyanHomeScreen() {
   const navigation = useNavigation<NavProp>();
   const { colors } = useTheme();
-  const [draftCount, setDraftCount] = useState(0);
+  const [selectedSceneId, setSelectedSceneId] = useState(
+    SHIYAN_BUILT_IN_SCENES[0]?.id ?? '',
+  );
+  const [customScene, setCustomScene] = useState<ShiyanSceneDefinition | null>(() =>
+    getCustomSceneDraft(),
+  );
+  const [sceneSheetOpen, setSceneSheetOpen] = useState(false);
+
+  const scenes = useMemo(
+    () => (customScene ? [...SHIYAN_BUILT_IN_SCENES, customScene] : [...SHIYAN_BUILT_IN_SCENES]),
+    [customScene],
+  );
+  const selectedScene =
+    scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? null;
 
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      localCaptureRepository
-        .listRecoverable()
-        .then((drafts) => {
-          if (active) setDraftCount(drafts.length);
-        })
-        .catch(() => {
-          if (active) setDraftCount(0);
-        });
-      return () => {
-        active = false;
-      };
+      setCustomScene(getCustomSceneDraft());
     }, []),
   );
 
+  const startRecording = () => {
+    if (!selectedScene) return;
+    navigation.navigate('ShiyanRecord', {
+      sceneId: selectedScene.id,
+      sceneName: selectedScene.name,
+    });
+  };
+
+  const shortcuts: readonly {
+    key: string;
+    title: string;
+    caption: string;
+    icon: React.ReactNode;
+    onPress: () => void;
+  }[] = [
+    {
+      key: 'history',
+      title: '全部记录',
+      caption: '查看所有拾言记录',
+      icon: <ScrollText size={20} color={colors.primary} />,
+      onPress: () => navigation.navigate('ShiyanHistory'),
+    },
+    {
+      key: 'service-config',
+      title: '服务配置',
+      caption: '配置拾言服务连接',
+      icon: <Settings2 size={20} color={colors.primary} />,
+      onPress: () => navigation.navigate('ShiyanCloudConfig'),
+    },
+    {
+      key: 'scene-config',
+      title: '自定义场景',
+      caption: '管理我的场景',
+      icon: <Layers size={20} color={colors.primary} />,
+      onPress: () => navigation.navigate('ShiyanSceneConfig'),
+    },
+    {
+      key: 'organize-rules',
+      title: '整理规则',
+      caption: 'AI 如何整理你的内容',
+      icon: <Sparkles size={20} color={colors.primary} />,
+      onPress: () => navigation.navigate('ShiyanOrganizeRules'),
+    },
+  ];
+
   return (
-    <ScreenShell
-      title="拾言"
-      headerRight={
+    <ScreenShell title="拾言">
+      <ScrollView contentContainerStyle={styles.homeContent}>
+        <View style={styles.hero}>
+          <View style={styles.heroText}>
+            <Text style={[styles.heroTitle, { color: colors.text.ink }]}>先说下来，</Text>
+            <Text style={[styles.heroTitle, { color: colors.primary }]}>再慢慢整理。</Text>
+            <Text style={[styles.heroCaption, { color: colors.text.soft }]}>
+              说出此刻的想法，未来的自己会感谢你。
+            </Text>
+          </View>
+          <View style={[styles.heroArtWrap, { backgroundColor: colors.bg.soft }]}>
+            <Image
+              source={require('../../assets/shiyan/hero-mic-notebook.png')}
+              style={styles.heroArt}
+              resizeMode="contain"
+              accessibilityIgnoresInvertColors
+            />
+          </View>
+        </View>
+
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="配置拾言 Cloud"
-          onPress={() => navigation.navigate('ShiyanCloudConfig')}
-          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.65 }]}
+          accessibilityLabel="开始拾言"
+          disabled={!selectedScene}
+          onPress={startRecording}
+          style={({ pressed }) => [styles.startPanel, pressed && { opacity: 0.9 }]}
         >
-          <Cloud size={20} color={colors.text.ink} />
+          <View
+            style={[styles.startPanelTint, { backgroundColor: colors.primary }]}
+            pointerEvents="none"
+          />
+          <View style={[styles.startPanelHalo, { backgroundColor: colors.primary }]} pointerEvents="none" />
+          <View style={[styles.startPanelIcon, { backgroundColor: colors.primary }]}>
+            <Mic2 size={26} color={colors.onPrimary} />
+          </View>
+          <View style={styles.startPanelText}>
+            <Text style={[styles.startPanelTitle, { color: colors.primary }]}>开始拾言</Text>
+            <Text style={[styles.startPanelCaption, { color: colors.text.muted }]}>
+              点按进入录音，随时开口
+            </Text>
+          </View>
+          <View style={[styles.startPanelArrow, { backgroundColor: colors.primary }]}>
+            <ArrowRight size={20} color={colors.onPrimary} />
+          </View>
         </Pressable>
-      }
-    >
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={[styles.hero, { backgroundColor: colors.bg.card, borderColor: colors.border.default }]}>
-          <Mic2 size={28} color={colors.primary} />
-          <Text style={[styles.heroTitle, { color: colors.text.ink }]}>先说下来，再慢慢整理。</Text>
-          <Text style={[styles.heroText, { color: colors.text.soft }]}>录音先保存在手机本地。结束后确认标题和场景，再决定后续处理。</Text>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="选择当前场景"
+          onPress={() => setSceneSheetOpen(true)}
+          style={({ pressed }) => [
+            styles.currentSceneRow,
+            {
+              backgroundColor: pressed ? colors.bg.soft : colors.bg.card,
+              borderColor: colors.border.default,
+            },
+          ]}
+        >
+          <View style={styles.currentSceneIcon}>
+            <View
+              style={[styles.currentSceneIconTint, { backgroundColor: colors.primary }]}
+              pointerEvents="none"
+            />
+            <Layers size={20} color={colors.primary} />
+          </View>
+          <View style={styles.currentSceneText}>
+            <Text style={[styles.currentSceneLabel, { color: colors.text.soft }]}>当前场景</Text>
+            <Text style={[styles.currentSceneName, { color: colors.text.ink }]}>
+              {selectedScene?.name ?? '请选择场景'}
+            </Text>
+          </View>
+          <ChevronRight size={18} color={colors.text.soft} />
+        </Pressable>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.text.ink }]}>快捷入口</Text>
+          <View style={styles.shortcutGrid}>
+            {shortcuts.map((shortcut) => (
+              <Pressable
+                key={shortcut.key}
+                accessibilityRole="button"
+                accessibilityLabel={shortcut.title}
+                onPress={shortcut.onPress}
+                style={({ pressed }) => [
+                  styles.shortcutCard,
+                  {
+                    backgroundColor: pressed ? colors.bg.soft : colors.bg.card,
+                    borderColor: colors.border.default,
+                  },
+                ]}
+              >
+                <View style={styles.shortcutIcon}>
+                  <View
+                    style={[styles.shortcutIconTint, { backgroundColor: colors.primary }]}
+                    pointerEvents="none"
+                  />
+                  {shortcut.icon}
+                </View>
+                <View style={styles.shortcutText}>
+                  <Text style={[styles.shortcutTitle, { color: colors.text.ink }]} numberOfLines={1}>
+                    {shortcut.title}
+                  </Text>
+                  <Text style={[styles.shortcutCaption, { color: colors.text.soft }]} numberOfLines={1}>
+                    {shortcut.caption}
+                  </Text>
+                </View>
+                <ChevronRight size={16} color={colors.text.soft} />
+              </Pressable>
+            ))}
+          </View>
         </View>
-        <ActionCard
-          icon={Mic2}
-          title="开始拾言"
-          description="选择场景后开始本地录音，不依赖 Desktop 或网络。"
-          onPress={() => navigation.navigate('ShiyanSceneSelect')}
-        />
-        <ActionCard
-          icon={FileAudio}
-          title="本地录音草稿"
-          description={draftCount > 0 ? `${draftCount} 条录音待确认或提交。` : '查看已结束但尚未提交的本地录音。'}
-          onPress={() => navigation.navigate('ShiyanLocalDrafts')}
-        />
-        <ActionCard
-          icon={History}
-          title="历史任务"
-          description="查看已经进入处理流程的拾言任务。"
-          onPress={() => navigation.navigate('ShiyanHistory')}
-        />
+
+        <View style={styles.privacyNote}>
+          <Lock size={13} color={colors.text.soft} />
+          <Text style={[styles.privacyNoteText, { color: colors.text.soft }]}>
+            内容仅你可见，安全存储，放心记录
+          </Text>
+        </View>
       </ScrollView>
+
+      <Modal
+        visible={sceneSheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSceneSheetOpen(false)}
+      >
+        <Pressable
+          accessible={false}
+          style={[styles.sheetBackdrop, { backgroundColor: colors.overlay }]}
+          onPress={() => setSceneSheetOpen(false)}
+        >
+          <View
+            style={[styles.sheetPanel, { backgroundColor: colors.bg.card }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <Text style={[styles.sheetTitle, { color: colors.text.ink }]}>选择场景</Text>
+            <ScrollView style={styles.sheetList} bounces={false}>
+              {scenes.map((scene) => {
+                const selected = selectedScene?.id === scene.id;
+                return (
+                  <Pressable
+                    key={scene.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => {
+                      setSelectedSceneId(scene.id);
+                      setSceneSheetOpen(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.sheetRow,
+                      { backgroundColor: pressed || selected ? colors.bg.soft : colors.bg.card },
+                    ]}
+                  >
+                    <View style={styles.sceneRowLeading}>
+                      <View
+                        style={[
+                          styles.sceneRadio,
+                          { borderColor: selected ? colors.primary : colors.border.default },
+                        ]}
+                      >
+                        {selected ? (
+                          <View style={[styles.sceneRadioDot, { backgroundColor: colors.primary }]} />
+                        ) : null}
+                      </View>
+                      <Text style={{ color: colors.text.ink, fontWeight: selected ? '600' : '400' }}>
+                        {scene.name}
+                      </Text>
+                    </View>
+                    {selected ? <Check size={18} color={colors.primary} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setSceneSheetOpen(false);
+                navigation.navigate('ShiyanSceneConfig');
+              }}
+              style={styles.sceneConfigLink}
+            >
+              <Text style={{ color: colors.primary, fontWeight: '600' }}>配置自定义场景</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setSceneSheetOpen(false)}
+              style={[styles.sheetCancelButton, { borderColor: colors.border.default }]}
+            >
+              <Text style={{ color: colors.text.ink, fontWeight: '600' }}>取消</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </ScreenShell>
   );
 }
@@ -251,7 +426,7 @@ export function ShiyanSceneSelectScreen() {
           ]}
         >
           <Mic2 size={18} color={selected ? colors.onPrimary : colors.text.soft} />
-          <Text style={[styles.primaryButtonText, { color: selected ? colors.onPrimary : colors.text.soft }]}>
+          <Text style={[styles.primaryButtonText, { color: selected ? colors.onPrimary : colors.text.soft }]}> 
             {selected ? `使用「${selected.name}」开始录音` : '先选择一个场景'}
           </Text>
         </Pressable>
@@ -341,7 +516,7 @@ export function ShiyanRecordScreen() {
       <View style={styles.recordingBody}>
         <Text style={[styles.eyebrow, { color: colors.text.soft }]}>{route.params.sceneName}</Text>
         <Text style={[styles.timer, { color: colors.text.ink }]}>{formatDuration(snapshot.durationMs)}</Text>
-        <Text style={[styles.recordingHint, { color: colors.text.soft }]}>
+        <Text style={[styles.recordingHint, { color: colors.text.soft }]}> 
           {snapshot.state === 'paused' ? '录音已暂停，文件仍保留在本机。' : active ? '正在录音，仅写入 App 私有目录。' : '点击开始后才会申请麦克风权限。'}
         </Text>
 
@@ -453,12 +628,109 @@ const styles = StyleSheet.create({
   backButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '600' },
   content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
-  hero: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, padding: spacing.xl, gap: spacing.sm },
-  heroTitle: { fontSize: 22, fontWeight: '700' },
-  heroText: { fontSize: 14, lineHeight: 21 },
-  card: { minHeight: 88, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, padding: spacing.lg, flexDirection: 'row', gap: spacing.md, alignItems: 'center' },
-  iconWrap: { width: 44, height: 44, borderRadius: radius.full, alignItems: 'center', justifyContent: 'center' },
-  cardText: { flex: 1, gap: 5 },
+  homeContent: { padding: spacing.lg, gap: spacing.xl, paddingBottom: 48 },
+  hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  heroText: { flex: 1, gap: 2 },
+  heroTitle: { fontSize: fontSize.titleXl, fontWeight: '700', lineHeight: 38 },
+  heroCaption: { fontSize: fontSize.caption, lineHeight: 20, marginTop: spacing.sm },
+  heroArtWrap: {
+    width: 132,
+    height: 132,
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroArt: { width: 118, height: 102 },
+  startPanel: {
+    minHeight: 104,
+    borderRadius: radius.xl,
+    paddingHorizontal: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    overflow: 'hidden',
+  },
+  startPanelTint: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, opacity: 0.1 },
+  startPanelHalo: {
+    position: 'absolute',
+    left: -28,
+    width: 148,
+    height: 148,
+    borderRadius: radius.full,
+    opacity: 0.08,
+  },
+  startPanelIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startPanelText: { flex: 1, gap: spacing.xs },
+  startPanelTitle: { fontSize: fontSize.titleLg, fontWeight: '700' },
+  startPanelCaption: { fontSize: fontSize.caption, lineHeight: 19 },
+  startPanelArrow: {
+    width: sizing.touchTarget,
+    height: sizing.touchTarget,
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  currentSceneRow: {
+    minHeight: 68,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  currentSceneIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  currentSceneIconTint: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, opacity: 0.1 },
+  currentSceneText: { flex: 1, gap: 2 },
+  currentSceneLabel: { fontSize: fontSize.xs, lineHeight: 17 },
+  currentSceneName: { fontSize: fontSize.bodyMd, fontWeight: '600' },
+  section: { gap: spacing.md },
+  sectionTitle: { fontSize: fontSize.titleMd, fontWeight: '700' },
+  shortcutGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  shortcutCard: {
+    flexGrow: 1,
+    flexBasis: '46%',
+    minHeight: 76,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  shortcutIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  shortcutIconTint: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, opacity: 0.1 },
+  shortcutText: { flex: 1, gap: 2 },
+  shortcutTitle: { fontSize: fontSize.button, fontWeight: '600' },
+  shortcutCaption: { fontSize: fontSize.xs, lineHeight: 16 },
+  privacyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+  },
+  privacyNoteText: { fontSize: fontSize.xs, lineHeight: 18 },
   cardTitle: { fontSize: 16, fontWeight: '600' },
   cardDescription: { fontSize: 14, lineHeight: 20 },
   sceneCard: { borderWidth: 1, borderRadius: radius.lg, padding: spacing.lg, gap: 7 },
@@ -480,4 +752,14 @@ const styles = StyleSheet.create({
   draftCard: { minHeight: 92, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, flexDirection: 'row', alignItems: 'center' },
   draftMain: { flex: 1, padding: spacing.lg, gap: spacing.xs },
   trashButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', marginRight: spacing.sm },
+  sheetBackdrop: { flex: 1, justifyContent: 'flex-end' },
+  sheetPanel: { borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, paddingBottom: spacing.lg, maxHeight: '70%' },
+  sheetTitle: { fontSize: fontSize.bodyMd, fontWeight: '700', textAlign: 'center', paddingVertical: spacing.md },
+  sheetList: { paddingHorizontal: spacing.md },
+  sheetRow: { minHeight: 50, borderRadius: radius.md, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sceneRowLeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  sceneRadio: { width: 18, height: 18, borderRadius: radius.full, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  sceneRadioDot: { width: 9, height: 9, borderRadius: radius.full },
+  sceneConfigLink: { minHeight: sizing.touchTarget, alignItems: 'center', justifyContent: 'center', marginHorizontal: spacing.md, marginTop: spacing.xs },
+  sheetCancelButton: { minHeight: 46, borderRadius: radius.full, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center', marginHorizontal: spacing.md, marginTop: spacing.xs },
 });

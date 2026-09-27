@@ -213,6 +213,7 @@ describe('PairedRemoteMiraHostClient session mapping', () => {
         id: 'thread-1',
         title: 'Project thread',
         updatedAt: new Date('2026-08-27T11:00:00.000Z'),
+        source: 'remote-host',
         workspaceId: 'workspace-1',
         knowledgeBaseId: 'kb-1',
         roleId: 'role-1',
@@ -262,5 +263,34 @@ describe('PairedRemoteMiraHostClient session mapping', () => {
       code: 'THREAD_DELETE_UNAVAILABLE',
     });
     expect(deleteThread).not.toHaveBeenCalledWith('thread-2');
+  });
+});
+
+describe('PairedRemoteMiraHostClient thread title normalization', () => {
+  const makeTitleClient = (title: string) => {
+    const thread = { ...canonicalThread, title };
+    const remote = {
+      listThreads: jest.fn().mockResolvedValue([thread]),
+      getThread: jest.fn().mockResolvedValue(thread),
+    } as never;
+    return new PairedRemoteMiraHostClient(remote);
+  };
+
+  it.each([
+    ['<think>用户想要排序</think>帮我写快速排序', '帮我写快速排序'],
+    ['<think>reasoning</think>\n\n实际标题', '实际标题'],
+    ['帮我写<think>internal</think>排序', '帮我写排序'],
+    ['<think>只有推理内容', '未命名会话'],
+    ['<think>只有推理</think>', '未命名会话'],
+    ['正常标题', '正常标题'],
+  ])('normalizes %j to %j', async (input, expected) => {
+    const client = makeTitleClient(input);
+
+    await expect(client.listSessions()).resolves.toEqual([
+      expect.objectContaining({ title: expected }),
+    ]);
+    await expect(client.getSession('thread-1')).resolves.toMatchObject({
+      title: expected,
+    });
   });
 });

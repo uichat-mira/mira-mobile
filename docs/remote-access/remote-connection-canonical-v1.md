@@ -122,9 +122,29 @@ Mobile 判断某项远程能力可用时，必须同时满足：
 
 因此，**runtime manifest + device scope 是客户端 capability discovery 的权威事实**。文档可以记录当前 route 快照，但不能再用历史静态列表否决已经通过 Gateway + manifest 明确发布的新能力。
 
+### 7.1 Durable Agent Run 控制语义（MOB-043）
+
+- Host `AgentRun` 是长任务、审批暂停、恢复和取消的唯一运行事实源；Mobile 只观察和控制，不在本地重建可执行 Run。
+- V1 没有事件游标；Mobile 通过 canonical message + `GET /agent/runs/:runId` 重放当前状态。前后台切换或页面失活只停止本地观察，不等价于取消 Host Run。
+- `approve` / `reject` / `cancel` 只有在 device scope 与 manifest route 同时允许时才可调用；Mobile 必须先读取并校验 canonical Run 的线程归属。
+- `POST /agent/runs/:runId/cancel` 对已经 `completed`、`failed`、`blocked` 或 `cancelled` 的终态 Run 是幂等操作：HTTP 200 返回原 Run，**不会把终态强行改写成 `cancelled`**。
+- 因此客户端不得把“cancel 返回 200”解释成“取消一定成功生效”；必须以响应体中的 `Run.status` 为最终事实。
+
+
 MOB-024 增加当前能力：
 
 ```text
+## Current Connection Reliability Truth (2026-09-05)
+
+- Relay idle connections have reproduced a 3-4 hour disconnect pattern. Treat
+  this as a transport keepalive and app lifecycle defect, not a pairing defect.
+- Desktop keeps its host WebSocket alive with native WebSocket control pings;
+  the Relay V1 business frame contract is unchanged.
+- Mobile must drop stale Relay sockets when the app returns to the foreground.
+  The next request is then allowed to create a fresh Relay connection.
+- Background JavaScript timers are not a reliable keepalive mechanism. Active
+  requests and streams fail fast on close and are not silently replayed.
+
 POST /threads -> messages:write
 ```
 

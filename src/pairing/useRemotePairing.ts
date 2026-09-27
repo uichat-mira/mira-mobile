@@ -171,6 +171,16 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
       return;
     }
 
+    if (state.pending) {
+      setState(current => ({
+        ...current,
+        phase: 'waiting_approval',
+        message: '正在重新检查桌面确认状态。',
+      }));
+      beginPolling(state.pending);
+      return;
+    }
+
     stopPolling();
     const generation = pollingGeneration.current;
     setState({
@@ -218,7 +228,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
         message: error instanceof Error ? error.message : '提交配对申请失败',
       });
     }
-  }, [beginPolling, descriptor, stopPolling]);
+  }, [beginPolling, descriptor, state.pending, stopPolling]);
 
   return {
     state,

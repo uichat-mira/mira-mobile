@@ -18,6 +18,8 @@ export interface GlobalSearchState {
   query: string;
   threadMatches: Session[];
   messageMatches: GlobalSearchMessageMatch[];
+  /** Present only when the whole search cannot establish message results. */
+  error?: unknown;
 }
 
 export interface GlobalSearchDeps {
@@ -71,13 +73,14 @@ export class GlobalSearchController {
     let sessions: Session[];
     try {
       sessions = await this.deps.listSessions();
-    } catch {
+    } catch (error) {
       if (this.generation !== generation) return;
       this.deps.onStateChange({
         status: 'failed',
         query,
         threadMatches: [],
         messageMatches: [],
+        error,
       });
       return;
     }
@@ -90,6 +93,7 @@ export class GlobalSearchController {
 
     const messageMatches: GlobalSearchMessageMatch[] = [];
     let failedThreads = 0;
+    let firstMessageFailure: unknown;
 
     const queue = [...sessions];
     const worker = async (): Promise<void> => {
@@ -109,10 +113,12 @@ export class GlobalSearchController {
               snippet: buildSnippet(message.content, needle),
             });
           }
-        } catch {
+        } catch (error) {
           // A single unreadable thread must not clear results from the
-          // threads that were searched successfully.
+          // threads that were searched successfully. If every thread fails,
+          // retain one real failure so the UI can classify auth/connectivity.
           failedThreads += 1;
+          firstMessageFailure ??= error;
         }
       }
     };
@@ -134,11 +140,18 @@ export class GlobalSearchController {
       );
     });
 
+    const allMessageReadsFailed =
+      sessions.length > 0 && failedThreads === sessions.length;
     this.deps.onStateChange({
-      status: failedThreads > 0 ? 'degraded' : 'complete',
+      status: allMessageReadsFailed
+        ? 'failed'
+        : failedThreads > 0
+          ? 'degraded'
+          : 'complete',
       query,
       threadMatches,
       messageMatches: messageMatches.slice(0, MESSAGE_MATCH_LIMIT),
+      ...(allMessageReadsFailed ? { error: firstMessageFailure } : {}),
     });
   }
 }

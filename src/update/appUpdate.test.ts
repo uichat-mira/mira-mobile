@@ -1,151 +1,83 @@
 import {
   fetchLatestRelease,
   isUpdateAvailable,
-  selectLatestRelease,
+  manifestUrlForChannel,
   type AppRelease,
 } from './appUpdate';
 import { parseSemver } from './semver';
 
-const release = (overrides: Partial<AppRelease> & { tag: string }): AppRelease => ({
-  version: parseSemver('0.2.9')!,
+const SHA256 = 'a'.repeat(64);
+
+const manifest = (
+  channel: 'predev' | 'dev' | 'test' | 'prod',
+  version = '0.2.10',
+) => ({
+  version,
+  channel,
+  displayVersion: channel === 'prod' ? version : `${version}-${channel}`,
+  apk: `releases/${version}/uichat-mira-mobile-release.apk`,
+  sha256: SHA256,
+});
+
+const release = (version: string): AppRelease => ({
+  version: parseSemver(version)!,
+  displayVersion: `${version}-dev`,
   notes: null,
-  apkUrl: 'https://example.com/uichat-mira-mobile-release.apk',
-  releaseUrl: `https://github.com/dangjingtao/uichat-mira-mobile/releases/tag/${overrides.tag}`,
-  ...overrides,
+  apkUrl: `https://assets.tomz.io/mira/mobile/dev/releases/${version}/uichat-mira-mobile-release.apk`,
+  sha256: SHA256,
 });
 
-describe('selectLatestRelease', () => {
-  it('keeps dev channel away from prod releases', () => {
-    const latest = selectLatestRelease('dev', [
-      { tag_name: 'v0.3.0', draft: false, prerelease: false },
-      { tag_name: 'v0.2.9-dev', draft: false, prerelease: true },
-    ]);
+const jsonResponse = (payload: unknown) =>
+  ({ ok: true, status: 200, json: async () => payload }) as Response;
 
-    expect(latest?.tag).toBe('v0.2.9-dev');
-  });
-
-  it('keeps prod channel away from dev prereleases', () => {
-    const latest = selectLatestRelease('prod', [
-      { tag_name: 'v0.3.0-dev', draft: false, prerelease: true },
-      { tag_name: 'v0.2.8', draft: false, prerelease: false },
-    ]);
-
-    expect(latest?.tag).toBe('v0.2.8');
-  });
-
-  it('rejects a dev-tagged release that is not flagged as a prerelease', () => {
-    const latest = selectLatestRelease('dev', [
-      { tag_name: 'v0.2.9-dev', draft: false, prerelease: false },
-    ]);
-
-    expect(latest).toBeNull();
-  });
-
-  it('rejects a stable-tagged release that is flagged as a prerelease', () => {
-    const latest = selectLatestRelease('prod', [
-      { tag_name: 'v0.2.8', draft: false, prerelease: true },
-    ]);
-
-    expect(latest).toBeNull();
-  });
-
-  it('picks the highest version within the channel', () => {
-    const latest = selectLatestRelease('dev', [
-      { tag_name: 'v0.2.9-dev', draft: false, prerelease: true },
-      { tag_name: 'v0.2.10-dev', draft: false, prerelease: true },
-      { tag_name: 'v0.2.2-dev', draft: false, prerelease: true },
-    ]);
-
-    expect(latest?.tag).toBe('v0.2.10-dev');
-  });
-
-  it('ignores drafts and invalid tags', () => {
-    const latest = selectLatestRelease('dev', [
-      { tag_name: 'v0.9.9-dev', draft: true, prerelease: true },
-      { tag_name: 'not-a-version', draft: false, prerelease: true },
-      { tag_name: 'v0.2.9-dev2', draft: false, prerelease: true },
-      { tag_name: 'v0.2.9', draft: false, prerelease: false },
-    ]);
-
-    expect(latest).toBeNull();
-  });
-
-  it('extracts the signed release APK asset when present', () => {
-    const latest = selectLatestRelease('prod', [
-      {
-        tag_name: 'v0.2.8',
-        draft: false,
-        prerelease: false,
-        assets: [
-          { name: 'SHA256SUMS.txt', browser_download_url: 'https://example.com/sums' },
-          {
-            name: 'uichat-mira-mobile-release.apk',
-            browser_download_url: 'https://example.com/apk',
-          },
-        ],
-      },
-    ]);
-
-    expect(latest?.apkUrl).toBe('https://example.com/apk');
-  });
-
-  it('reports a missing APK asset instead of guessing a URL', () => {
-    const latest = selectLatestRelease('prod', [
-      {
-        tag_name: 'v0.2.8',
-        draft: false,
-        prerelease: false,
-        assets: [{ name: 'SHA256SUMS.txt', browser_download_url: 'https://example.com/sums' }],
-      },
-    ]);
-
-    expect(latest?.apkUrl).toBeNull();
-  });
-});
-
-describe('isUpdateAvailable', () => {
-  it('detects a newer remote version', () => {
-    expect(
-      isUpdateAvailable(
-        parseSemver('0.2.9')!,
-        release({ tag: 'v0.2.10-dev', version: parseSemver('0.2.10')! }),
-      ),
-    ).toBe(true);
-  });
-
-  it('treats equal versions as current', () => {
-    expect(
-      isUpdateAvailable(parseSemver('0.2.9')!, release({ tag: 'v0.2.9-dev' })),
-    ).toBe(false);
-  });
-
-  it('treats a newer local version as current', () => {
-    expect(
-      isUpdateAvailable(parseSemver('0.3.0')!, release({ tag: 'v0.2.9-dev' })),
-    ).toBe(false);
-  });
-
-  it('treats an absent release as not-current-but-unknown', () => {
-    expect(isUpdateAvailable(parseSemver('0.2.9')!, null)).toBe(false);
-  });
+describe('manifestUrlForChannel', () => {
+  it.each(['predev', 'dev', 'test', 'prod'] as const)(
+    'maps %s to only its own R2 manifest',
+    (channel) => {
+      expect(manifestUrlForChannel(channel)).toBe(
+        `https://assets.tomz.io/mira/mobile/${channel}/latest/latest.json`,
+      );
+    },
+  );
 });
 
 describe('fetchLatestRelease', () => {
-  const jsonResponse = (payload: unknown) =>
-    ({ ok: true, json: async () => payload }) as Response;
+  it.each(['predev', 'dev', 'test', 'prod'] as const)(
+    'requests only the %s channel manifest',
+    async (channel) => {
+      let requestedUrl = '';
+      const fetchImpl = async (url: string) => {
+        requestedUrl = url;
+        return jsonResponse(manifest(channel));
+      };
 
-  it('returns the latest release for the channel', async () => {
+      const result = await fetchLatestRelease(channel, fetchImpl);
+
+      expect(requestedUrl).toBe(manifestUrlForChannel(channel));
+      expect(result.displayVersion).toBe(
+        channel === 'prod' ? '0.2.10' : `0.2.10-${channel}`,
+      );
+    },
+  );
+
+  it('builds the Android download URL from the same channel versioned object', async () => {
     const result = await fetchLatestRelease('dev', async () =>
-      jsonResponse([
-        { tag_name: 'v0.2.8-dev', draft: false, prerelease: true },
-        { tag_name: 'v0.2.9-dev', draft: false, prerelease: true },
-      ]),
+      jsonResponse(manifest('dev')),
     );
 
-    expect(result?.tag).toBe('v0.2.9-dev');
+    expect(result.apkUrl).toBe(
+      'https://assets.tomz.io/mira/mobile/dev/releases/0.2.10/uichat-mira-mobile-release.apk',
+    );
+    expect(result.sha256).toBe(SHA256);
   });
 
-  it('throws on HTTP failure instead of reporting "up to date"', async () => {
+  it('rejects a manifest from a different channel', async () => {
+    await expect(
+      fetchLatestRelease('dev', async () => jsonResponse(manifest('prod'))),
+    ).rejects.toThrow('渠道不匹配');
+  });
+
+  it('throws on HTTP failure instead of reporting up to date', async () => {
     await expect(
       fetchLatestRelease('dev', async () =>
         ({ ok: false, status: 503 }) as Response,
@@ -153,7 +85,7 @@ describe('fetchLatestRelease', () => {
     ).rejects.toThrow('HTTP 503');
   });
 
-  it('throws on network failure', async () => {
+  it('preserves network failures as retryable failures', async () => {
     await expect(
       fetchLatestRelease('dev', async () => {
         throw new Error('network unreachable');
@@ -161,17 +93,87 @@ describe('fetchLatestRelease', () => {
     ).rejects.toThrow('network unreachable');
   });
 
-  it('returns null when the channel has no published releases', async () => {
-    const result = await fetchLatestRelease('dev', async () =>
-      jsonResponse([{ tag_name: 'v0.2.8', draft: false, prerelease: false }]),
-    );
-
-    expect(result).toBeNull();
+  it('rejects a non-object manifest', async () => {
+    await expect(
+      fetchLatestRelease('dev', async () => jsonResponse([])),
+    ).rejects.toThrow('格式异常');
   });
 
-  it('throws when the payload is not a list', async () => {
+  it('rejects an invalid semantic version', async () => {
     await expect(
-      fetchLatestRelease('dev', async () => jsonResponse({ message: 'nope' })),
-    ).rejects.toThrow('响应格式异常');
+      fetchLatestRelease('dev', async () =>
+        jsonResponse({ ...manifest('dev'), version: '0.2' }),
+      ),
+    ).rejects.toThrow('版本无效');
+  });
+
+  it('rejects a display version inconsistent with build truth', async () => {
+    await expect(
+      fetchLatestRelease('test', async () =>
+        jsonResponse({ ...manifest('test'), displayVersion: '0.2.10-dev' }),
+      ),
+    ).rejects.toThrow('展示版本无效');
+  });
+
+  it('rejects a missing APK path', async () => {
+    await expect(
+      fetchLatestRelease('dev', async () =>
+        jsonResponse({ ...manifest('dev'), apk: undefined }),
+      ),
+    ).rejects.toThrow('APK 路径无效');
+  });
+
+  it.each([
+    'https://evil.example/app.apk',
+    '../prod/releases/0.2.10/uichat-mira-mobile-release.apk',
+    'releases/0.2.9/uichat-mira-mobile-release.apk',
+    'releases/0.2.10/other.apk',
+    'latest/uichat-mira-mobile-release.apk',
+    'prod/releases/0.2.10/uichat-mira-mobile-release.apk',
+  ])('rejects unsafe or non-canonical APK path %s', async (apk) => {
+    await expect(
+      fetchLatestRelease('dev', async () =>
+        jsonResponse({ ...manifest('dev'), apk }),
+      ),
+    ).rejects.toThrow('APK 路径无效');
+  });
+
+  it('rejects an invalid SHA-256', async () => {
+    await expect(
+      fetchLatestRelease('dev', async () =>
+        jsonResponse({ ...manifest('dev'), sha256: 'not-a-sha' }),
+      ),
+    ).rejects.toThrow('SHA-256 无效');
+  });
+
+  it('does not contact GitHub Releases', async () => {
+    let calls = 0;
+    const fetchImpl = async (url: string) => {
+      calls += 1;
+      expect(url).not.toContain('api.github.com');
+      expect(url).not.toContain('/releases');
+      return jsonResponse(manifest('dev'));
+    };
+
+    await fetchLatestRelease('dev', fetchImpl);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('isUpdateAvailable', () => {
+  it('detects 0.2.10 as newer than 0.2.9', () => {
+    expect(isUpdateAvailable(parseSemver('0.2.9')!, release('0.2.10'))).toBe(true);
+  });
+
+  it('treats equal versions as current', () => {
+    expect(isUpdateAvailable(parseSemver('0.2.10')!, release('0.2.10'))).toBe(false);
+  });
+
+  it('treats a newer local version as current', () => {
+    expect(isUpdateAvailable(parseSemver('0.3.0')!, release('0.2.10'))).toBe(false);
+  });
+
+  it('treats an absent release as unknown rather than an available update', () => {
+    expect(isUpdateAvailable(parseSemver('0.2.10')!, null)).toBe(false);
   });
 });

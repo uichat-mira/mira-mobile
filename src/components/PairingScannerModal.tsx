@@ -79,10 +79,13 @@ export function PairingScannerModal({
   }, [ensureCameraPermission, visible]);
 
   const handleReadCode = useCallback(
-    (value: string) => {
+    (value: string | null | undefined) => {
       if (scanLocked.current) return;
       scanLocked.current = true;
       try {
+        if (!value || !value.trim()) {
+          throw new Error('empty pairing code');
+        }
         onScanned(parseScannedPairingUri(value));
       } catch {
         setScanError('这不是有效的 Mira 配对二维码');

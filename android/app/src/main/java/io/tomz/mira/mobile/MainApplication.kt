@@ -18,6 +18,7 @@ class MainApplication : Application(), ReactApplication {
           add(MiraLocalStorePackage())
           add(MiraNetworkMonitorPackage())
           add(MiraAudioRecorderPackage())
+          add(MiraImageSharePackage())
         },
       useDevSupport = BuildConfig.DEBUG,
     )
