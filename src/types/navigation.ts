@@ -19,6 +19,8 @@ export type RootStackParamList = {
   Settings: undefined;
   Search: undefined;
   Personalization: undefined;
+  Memory: undefined;
+  Storage: undefined;
   Plugins: undefined;
   ShiyanHome: undefined;
   ShiyanSceneSelect: undefined;
@@ -33,6 +35,8 @@ export type RootStackParamList = {
   ReportError: undefined;
   About: undefined;
   License: undefined;
+  Security: undefined;
+  General: undefined;
 };
 
 export type DrawerParamList = {

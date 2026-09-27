@@ -43,6 +43,12 @@
 | MOB-046 | OpenAI-compatible URL / SSE / Tool Call 兼容性修复 | **待验收** | Mobile；PR #100 已合入 `dev`，Base URL、finish/[DONE]、indexed/interleaved/split tool-call 兼容性与回归测试已完成；真实 Provider / 真机矩阵挂 MOB-044 |
 | MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
 | MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
+| MOB-050 | 设置 → 存储 真实功能与真机验收 | **待验收** | Mobile；设置页「存储」由无 actionId 占位升级为本地占用分类展示 + 已提交拾言录音清理 + 本地 UI 状态清空；不动设备安全存储凭据与远端数据 |
+| MOB-052 | 设置 → 电子邮件 真实功能与真机验收 | **待验收** | Mobile；设置页「电子邮件」由无 actionId 占位升级为系统 `mailto:` 唤起，邮箱地址收敛到 `CONTACT_EMAIL` 常量，无邮件客户端时 Alert 兜底；Android 真机 + iOS 必测 |
+| MOB-055 | 设置 → 报告错误 mailto 反馈通道真实功能与真机验收 | **待验收** | Mobile；设置页「报告错误」由发送按钮硬编码 disabled 的占位升级为真实 mailto 反馈（收件 `hello@mira.io`）：描述非空才可发、草稿本地持久化、诊断块仅白名单字段、无邮件客户端时 Alert 兜底；移除无监听的假「晃动手机」开关 |
+| MOB-057 | 设置 → 通知 真实功能与真机验收 | **待验收** | Mobile；设置页「通知」由无 actionId 占位升级为系统通知设置跳转（iOS `openSettings` / Android `sendIntent`），副标题恒为「在系统设置中管理」不伪造授权状态，失败弹兜底 Alert 且连按只触发一次；Android 真机 + iOS 必测 |
+
+| MOB-056 | 设置 → 常规偏好页（默认来源 / 启动恢复 / 文本大小 / 触感 / 自动更新检查）真机验收 | **待验收** | Mobile；Android 真机用例 1–8 必测，用例 9–11 按条件标注 |
 
 ## 既有产品决策
 
@@ -144,3 +150,8 @@ MOB-021 已基于 MOB-020 PR #6 冻结的内容合同完成施工并合入 Mobil
 - `MOB-046-openai-compatible-stream-compatibility.md`
 - `MOB-047-provider-credential-ux-safety.md`
 - `MOB-048-dual-entry-code-hygiene.md`
+- `MOB-050-storage-screen-and-recovery.md`
+- `MOB-052-email-contact-mailto.md`
+- `MOB-055-report-error-feedback-mailto.md`
+- `MOB-056-general-settings-device-acceptance.md`
+- `MOB-057-settings-notification-real-entry.md`

@@ -102,7 +102,10 @@ describe('MOB-028A release truth', () => {
 
   it('shows the installed channel-qualified version in About', () => {
     const about = readSource('src/screens/AboutScreen.tsx');
-    expect(about).toContain("releaseChannel === 'prod' ? version : `${version}-${releaseChannel}`");
+    const updatePrompt = readSource('src/update/updatePrompt.ts');
+    expect(updatePrompt).toContain(
+      "releaseChannel === 'prod' ? version : `${version}-${releaseChannel}`",
+    );
     expect(about).toContain("predev: '预开发'");
     expect(about).toContain("test: '测试'");
     expect(about).toContain('installedDisplayVersion');

@@ -12,6 +12,8 @@ import {
 import type {
   RemoteChatStreamEvent,
   RemoteManifest,
+  RemoteMemoryKind,
+  RemoteMemoryOverview,
   RemoteMessage,
   RemoteThread,
 } from '../protocol/remoteHostV1';
@@ -258,6 +260,39 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
   async getThreadMediaText(sessionId: string, mediaId: string): Promise<string> {
     const request = await this.getThreadMediaRequest(sessionId, mediaId);
     return readThreadMediaText(request);
+  }
+
+  // ─── Memory (canonical Host /memory surface) ───────────────
+  // Capability gating (device scope + advertised manifest route) already
+  // happens in RemoteMiraHostClient; screens surface REMOTE_SCOPE_REQUIRED /
+  // REMOTE_MEMORY_ROUTE_UNAVAILABLE as a truthful "Host has not opened
+  // memory yet" state instead of local fake data.
+
+  async getMemoryOverview(): Promise<RemoteMemoryOverview> {
+    return this.remote.getMemoryOverview();
+  }
+
+  async updateMemorySettings(enabled: boolean): Promise<RemoteMemoryOverview> {
+    return this.remote.updateMemorySettings(enabled);
+  }
+
+  async createMemory(
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    return this.remote.createMemory(kind, content);
+  }
+
+  async updateMemory(
+    id: string,
+    kind: RemoteMemoryKind,
+    content: string,
+  ): Promise<RemoteMemoryOverview> {
+    return this.remote.updateMemory(id, kind, content);
+  }
+
+  async deleteMemory(id: string): Promise<RemoteMemoryOverview> {
+    return this.remote.deleteMemory(id);
   }
 
   async sendMessage(
