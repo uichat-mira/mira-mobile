@@ -97,9 +97,10 @@ describe('buildReportMailtoUrl', () => {
     return null;
   };
 
-  it('targets the report feedback mailbox', () => {
+  it('targets the public report feedback mailbox', () => {
     const url = buildReportMailtoUrl('应用闪退', diagnostics);
-    expect(url.startsWith(`mailto:${REPORT_FEEDBACK_EMAIL}?`)).toBe(true);
+    expect(REPORT_FEEDBACK_EMAIL).toBe('hello@tomz.io');
+    expect(url.startsWith('mailto:hello@tomz.io?')).toBe(true);
   });
 
   it('url-encodes subject and body without raw whitespace', () => {
