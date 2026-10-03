@@ -57,13 +57,22 @@ test('prod push requires signed Android release and production publication', () 
   assert.equal(result.ok, true);
 });
 
-test('workflow dispatch requires the signed Android release job', () => {
+test('workflow dispatch on a non-release branch keeps release jobs not applicable', () => {
+  const result = evaluateGate({
+    eventName: 'workflow_dispatch',
+    ref: 'refs/heads/feat/mob-058-mira-gate',
+    needs: baseNeeds,
+  });
+  assert.equal(result.ok, true);
+});
+
+test('workflow dispatch on dev requires signed Android release but not publication', () => {
   const needs = structuredClone(baseNeeds);
   needs['android-release'].result = 'success';
 
   const result = evaluateGate({
     eventName: 'workflow_dispatch',
-    ref: 'refs/heads/feat/mob-058-mira-gate',
+    ref: 'refs/heads/dev',
     needs,
   });
   assert.equal(result.ok, true);
@@ -131,5 +140,9 @@ test('stage policy is explicit for dev and prod publication', () => {
   assert.equal(
     expectedResults('push', 'refs/heads/prod')['publish-prod-release'],
     'success',
+  );
+  assert.equal(
+    expectedResults('workflow_dispatch', 'refs/heads/dev')['publish-dev-release'],
+    'skipped',
   );
 });
