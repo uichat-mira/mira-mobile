@@ -47,14 +47,14 @@ import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
 import { openNotificationSettings } from './notificationSettings';
+import { PUBLIC_FEEDBACK_EMAIL } from '../data/feedbackContact';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
 
 // 客服 / 反馈邮箱。设置页"电子邮件"按钮通过系统 mailto: 唤起原生邮件客户端，
 // 用户最终选哪个客户端由系统决定，移动端不强绑定具体 Provider。
-const CONTACT_EMAIL = 'dangjingtao@gmail.com';
-const contactEmailUrl = `mailto:${CONTACT_EMAIL}`;
+const contactEmailUrl = `mailto:${PUBLIC_FEEDBACK_EMAIL}`;
 
 const openContactEmail = () => {
   // mailto: 没有可用 handler 时（设备无邮件客户端、桌面模拟器等）回退到一次提示，
@@ -62,7 +62,7 @@ const openContactEmail = () => {
   Linking.openURL(contactEmailUrl).catch(() => {
     Alert.alert(
       '无法打开邮件客户端',
-      `未找到可用的邮件应用。可手动发送邮件至 ${CONTACT_EMAIL}。`,
+      `未找到可用的邮件应用。可手动发送邮件至 ${PUBLIC_FEEDBACK_EMAIL}。`,
     );
   });
 };
@@ -276,7 +276,7 @@ export function SettingsScreen() {
           <Row
             icon={Mail}
             title="电子邮件"
-            subtitle={`${CONTACT_EMAIL} · 发送反馈`}
+            subtitle={`${PUBLIC_FEEDBACK_EMAIL} · 发送反馈`}
             actionId="contact-email"
             isFirst
             isLast
