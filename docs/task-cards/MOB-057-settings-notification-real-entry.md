@@ -33,12 +33,12 @@
 ## 安装包来源（合并前 dev release 不含本功能）
 
 - **Android 真机（必须）**：该 PR → Checks → *Android debug build* → artifact `uichat-mira-mobile-android-debug`（下载 PR artifact 需登录 GitHub）。
-- **iOS 真机 / 模拟器（必须）**：Checks → *iOS simulator and unsigned device builds* → artifact `uichat-mira-mobile-ios-simulator`；或同 job 的 `uichat-mira-mobile-ios-unsigned-device`（未签名 IPA，按 `docs/ios-free-sideload-windows.md` 自签侧载）。
-- 无条件做真机时可用模拟器，但 Android 真机结果不可被模拟器替代。
+- **iOS build / Simulator（自动化基线）**：Checks → *iOS simulator and unsigned device builds*。当前不要求维护者额外准备 iPhone；有设备时可补真机 smoke，没有设备时记录 `validation gap: iOS real device unavailable`。
+- Android 真机结果不可被模拟器替代。
 
 ## 验收用例
 
-用例 1–5 在 **Android 真机（含 Android 13+）**必测；iOS 至少覆盖 1、3、6、7、8。凡「按下后跳到哪 / 显示什么」以**实际系统行为**为准，不接受「看起来触发了就 PASS」。
+当前真人主验收只要求 **Android 真机核心路径**：入口、系统跳转、返回 App、状态文案不伪造，以及基本连按/外观/飞行模式行为。API < 26 兜底属于 developer-only 条件项，无设备时可记 validation gap。iOS 不设人工硬门槛，由 CI build + Simulator / 自动化承担基础证据。
 
 | # | 用例 | 步骤 | 预期 |
 |---|---|---|---|
@@ -78,7 +78,7 @@
 | 8 飞行模式 | ✅ 与在线一致 | 未执行 |
 | 9 字段恒定 | ✅ 结构化核实：三字面量仅定义于 notificationSettings.ts（全树 grep 未跑） | — |
 
-结论：**有条件通过** —— Android 侧 1/2/4/6/7/8 通过；iOS 最小集（1/3/6/7/8）待补；用例 5 按卡规标未验证。完整记录见 Issue #168（2026-10-03 评论）。流程事实：PR #169 已于 2026-09-26 合入 dev（merge b66c237c），本记录为事后补记。
+结论：**Android 人工核心路径已通过** —— Android 侧 1/2/4/6/7/8 通过；用例 5 为 developer-only 条件项，当前记 validation gap。iOS 真机在当前 0.3.x 口径下不再是阻塞条件，保留 CI build / Simulator / 自动化证据即可。是否正式标 PASS / 关闭仍由维护者按验收权限决定。完整记录见 Issue #168（2026-10-03 评论）。流程事实：PR #169 已于 2026-09-26 合入 dev（merge b66c237c），本记录为事后补记。
 ## Handoff
 
-用例 1–4、6–8 全部 ✅（iOS 按上述最小集）、用例 5 PASS 或如实标注「未验证」→ 本卡标 PASS，PR 可合入 `dev`，状态回写 `docs/workbench/00-work-ledger.md`。用例 9 是结构化检查，PASS 也并入 PASS 项。任一核心项 ❌ → 失败项回到施工方修复，本卡重新进入待验收。
+Android 核心路径通过 + CI / 自动化绿色即可进入 PASS 判断；iOS 真机当前不阻塞。用例 5 无条件时允许如实标注「未验证」，不要求真人寻找旧 Android 设备。用例 9 继续由结构证据承担。任一 Android 核心项 ❌ → 回施工方修复。
