@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test Mira Gate policy
+        run: node --test .github/scripts/evaluate-mobile-gate.test.cjs
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -678,3 +681,38 @@ jobs:
           fi
 
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+
+  # Temporary MOB-058 proof only. This job is removed after one PR run proves
+  # that Mira Gate still executes and fails when a required dependency fails.
+  gate-failure-probe:
+    name: Gate failure probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail intentionally
+        run: exit 1
+
+  mira-gate:
+    name: Mira Gate
+    needs:
+      - quality
+      - android
+      - android-release
+      - ios
+      - publish-dev-release
+      - publish-prod-release
+      - gate-failure-probe
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Evaluate required Mobile CI jobs
+        env:
+          MIRA_GATE_EVENT: ${{ github.event_name }}
+          MIRA_GATE_REF: ${{ github.ref }}
+          MIRA_GATE_NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/evaluate-mobile-gate.cjs
