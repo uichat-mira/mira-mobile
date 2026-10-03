@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test Mira Gate policy
+        run: node --test .github/scripts/evaluate-mobile-gate.test.cjs
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -678,3 +681,28 @@ jobs:
           fi
 
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+
+  mira-gate:
+    name: Mira Gate
+    needs:
+      - quality
+      - android
+      - android-release
+      - ios
+      - publish-dev-release
+      - publish-prod-release
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Evaluate required Mobile CI jobs
+        env:
+          MIRA_GATE_EVENT: ${{ github.event_name }}
+          MIRA_GATE_REF: ${{ github.ref }}
+          MIRA_GATE_NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/evaluate-mobile-gate.cjs
