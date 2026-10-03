@@ -683,15 +683,6 @@ jobs:
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
 
-  # Temporary MOB-058 proof only. This job is removed after one PR run proves
-  # that Mira Gate still executes and fails when a required dependency fails.
-  gate-failure-probe:
-    name: Gate failure probe
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail intentionally
-        run: exit 1
-
   mira-gate:
     name: Mira Gate
     needs:
@@ -701,7 +692,6 @@ jobs:
       - ios
       - publish-dev-release
       - publish-prod-release
-      - gate-failure-probe
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
