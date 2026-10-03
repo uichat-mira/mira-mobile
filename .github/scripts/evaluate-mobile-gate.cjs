@@ -10,10 +10,11 @@ const KNOWN_JOBS = [
 ];
 
 function expectedResults(eventName, ref) {
+  const isReleaseBranch =
+    ref === 'refs/heads/dev' || ref === 'refs/heads/prod';
   const androidReleaseRequired =
-    eventName === 'workflow_dispatch' ||
-    (eventName === 'push' &&
-      (ref === 'refs/heads/dev' || ref === 'refs/heads/prod'));
+    isReleaseBranch &&
+    (eventName === 'push' || eventName === 'workflow_dispatch');
 
   return {
     quality: 'success',
