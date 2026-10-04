@@ -1,0 +1,12 @@
+appId: io.tomz.mira.mobile
+---
+- launchApp:
+    clearState: true
+- openLink: "mira://pair?host=http%3A%2F%2F127.0.0.1%3A8787&challenge=e2e-challenge&code=ABCD2345&version=1"
+- extendedWaitUntil:
+    visible: "Mira 授权"
+    timeout: 15000
+- tapOn: "提交配对申请"
+- extendedWaitUntil:
+    visible: "E2E Fixture Thread"
+    timeout: 20000
