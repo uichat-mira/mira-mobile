@@ -328,6 +328,12 @@ describe('startup session restore', () => {
 
     expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
     expect(mockNavigations[0].canGoBack()).toBe(false);
+
+    // Returning to SessionList fires focus again in the real navigator. The
+    // startup restore must already be consumed, otherwise the old Chat would be
+    // pushed again and the user would be trapped in the same loop.
+    mockScreenListeners.SessionList?.({ navigation: mockNavigations[0] }).focus?.();
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
   });
 
   it('restores a local-provider last session above SessionList', async () => {
