@@ -1,6 +1,6 @@
 # Mira Mobile E2E Acceptance Plan
 
-Status: **Documented / Deferred**
+Status: **Android-first implementation in progress (MOB-059)**
 
 Date: 2026-09-02
 
@@ -30,6 +30,12 @@ feature work
 ```
 
 The E2E layer should cover repeatable interaction behavior that does not require a human to judge feel or hardware-specific behavior.
+
+MOB-059 is the first implementation of this plan. Its Android critical smoke uses
+the real Mobile pairing / secure credential / manifest / thread code paths against
+a deterministic contract-compatible Host fixture running inside CI. This proves
+Mobile black-box behavior against the published contract; it is **not** evidence
+of real Desktop / Relay interoperability.
 
 ## Proposed stack
 
@@ -231,16 +237,26 @@ A `validation gap` may remain visible in `REVIEW`; it must not be converted into
 - Avoid elaborate dashboards; GitHub run summary + artifacts are enough for the first version.
 - Flaky tests are defects in the acceptance system and must not be normalized with unlimited retries.
 
-## Deferred execution condition
+## MOB-059 Android-first implementation
 
-Do not implement this E2E system in the middle of the currently closing Mobile feature work.
+The deferred condition has been reached. MOB-059 implements the first Android
+critical smoke with these concrete rules:
 
-The product owner requested that the E2E harness and code-hygiene work be handled as one concentrated engineering-governance batch after the current active feature card/batch finishes.
+1. `mobile-ci.yml` still owns the canonical Android debug build.
+2. The `android-maestro` job downloads that same-run APK artifact and installs it once.
+3. A local CI Host fixture exposes only contract-compatible pairing / manifest /
+   thread / message / create-thread behavior needed by the smoke.
+4. Four capability-oriented Maestro flows run in a fixed order:
+   - pairing + thread-list readiness;
+   - Settings navigation;
+   - deterministic thread open + message history;
+   - canonical remote thread creation.
+5. Every flow runs once. There is no retry loop that can turn a flaky failure green.
+6. Failure evidence includes the flow log, screenshot, UI hierarchy and logcat.
+7. The report records commit SHA, APK SHA-256, Android API / device identity and
+   per-flow PASS / FAIL.
+8. `Mira Gate` requires this job on `test` pushes and explicit manual dispatches.
 
-At that point:
-
-1. re-check the latest GitHub Actions workflows and Mobile branch/release rules;
-2. create a dedicated E2E infrastructure card;
-3. land the smallest Android-first critical smoke if cross-platform setup would otherwise delay useful coverage;
-4. add iOS simulator coverage immediately after the harness proves stable;
-5. only then change task-card PASS rules to depend on the new E2E evidence.
+The first suite intentionally does not exercise paid Providers, production data,
+real Desktop / Relay interoperability, Agent / Tool Gateway behavior, or iOS.
+Those remain separate evidence layers.
