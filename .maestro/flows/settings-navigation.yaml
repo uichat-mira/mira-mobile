@@ -1,0 +1,10 @@
+appId: io.tomz.mira.mobile
+name: Settings navigation
+tags:
+  - critical
+---
+- runFlow: ../setup/pair-fixture.yaml
+- tapOn: "设置"
+- assertVisible: "个性化"
+- assertVisible: "外观"
+- takeScreenshot: settings-navigation
