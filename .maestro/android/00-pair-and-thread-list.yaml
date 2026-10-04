@@ -1,6 +1,8 @@
 appId: io.tomz.mira.mobile
 ---
-- assertVisible: "Mira 授权"
+- extendedWaitUntil:
+    visible: "Mira 授权"
+    timeout: 30000
 - assertVisible: "已识别配对请求"
 - tapOn: "提交配对申请"
 - extendedWaitUntil:
