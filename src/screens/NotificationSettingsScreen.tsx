@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, AppState, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Bell, BellRing, Settings2 } from 'lucide-react-native';
 import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
 import {
@@ -35,7 +35,6 @@ const statusLabel = (status: NotificationPermissionStatus | 'loading') => {
 };
 
 export function NotificationSettingsScreen() {
-  const navigation = useNavigation();
   const { colors } = useTheme();
   const [status, setStatus] = useState<NotificationPermissionStatus | 'loading'>('loading');
   const [busy, setBusy] = useState(false);
@@ -157,7 +156,7 @@ export function NotificationSettingsScreen() {
       style={[styles.screen, { backgroundColor: colors.bg.canvas }]}
       edges={['top', 'bottom']}
     >
-      <SettingsPageHeader title="通知" onConfirm={() => navigation.goBack()} />
+      <SettingsPageHeader title="通知" />
       <ScrollView contentContainerStyle={styles.content}>
         <SettingsSectionHeader>权限</SettingsSectionHeader>
         <SettingsGroup onAction={handleAction}>
