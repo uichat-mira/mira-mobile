@@ -1,0 +1,11 @@
+appId: io.tomz.mira.mobile
+---
+- tapOn: "普通对话：MOB-059 Fixture Thread"
+- extendedWaitUntil:
+    visible: "Fixture hello from Host"
+    timeout: 15000
+- assertVisible: "Fixture assistant reply"
+- back
+- extendedWaitUntil:
+    visible: "MOB-059 Fixture Thread"
+    timeout: 10000
