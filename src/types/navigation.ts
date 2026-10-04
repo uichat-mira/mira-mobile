@@ -37,6 +37,7 @@ export type RootStackParamList = {
   License: undefined;
   Security: undefined;
   General: undefined;
+  Notifications: undefined;
 };
 
 export type DrawerParamList = {
