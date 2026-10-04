@@ -3,6 +3,7 @@
 const KNOWN_JOBS = [
   'quality',
   'android',
+  'android-e2e',
   'android-release',
   'ios',
   'publish-dev-release',
@@ -15,10 +16,14 @@ function expectedResults(eventName, ref) {
   const androidReleaseRequired =
     isReleaseBranch &&
     (eventName === 'push' || eventName === 'workflow_dispatch');
+  const androidE2eRequired =
+    (eventName === 'push' && ref === 'refs/heads/test') ||
+    eventName === 'workflow_dispatch';
 
   return {
     quality: 'success',
     android: 'success',
+    'android-e2e': androidE2eRequired ? 'success' : 'skipped',
     'android-release': androidReleaseRequired ? 'success' : 'skipped',
     ios: 'success',
     'publish-dev-release':
