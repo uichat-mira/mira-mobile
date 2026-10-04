@@ -1,6 +1,6 @@
 # MOB-050：设置 → 存储 真机验收
 
-状态：**待验收**（实现与自动化证据已合入候选分支，等待真机交互与持久化验证；不引入新接口或新协议）
+状态：**PASS**（2026-10-04 维护者验收收口；Android 核心真机证据成立，iOS 真机缺口按当前 Android-primary 合同接受为非阻塞 validation gap）
 
 负责人：待指派（真机验收人）
 
@@ -79,6 +79,16 @@
 | 9 配对凭据 | | |
 | 10 外观 | | |
 | 11 键盘 / 弹窗 | | |
+
+## 验收结论（2026-10-04）
+
+**PASS。**
+
+- Android 作者侧真机证据：Huawei P30 / EMUI 12，PR #164 artifact，覆盖入口、占用展示、刷新、已提交录音清理、草稿保留、清空本地 UI 后 Provider / Key / Host 配对保留、深色模式，以及杀进程重开后的持久化核对。
+- 用例 4（读取失败注入）未执行，按卡内约定属于可选 / developer-only，不阻塞 PASS。
+- 当前 0.3.x 采用 Android-primary 真人验收口径；iOS 普通共性路径由 CI build / Simulator / 自动化承担基础证据，缺少 iOS 真机不阻塞本卡。
+- 2026-10-03 的 P30 结果属于功能作者侧设备证据，不冒充独立验收；2026-10-04 维护者依据现有证据明确接受并关闭本卡。
+- StorageScreen / deviceStorageUsage / localCaptureRepository 核心实现自 PR #164 合入后未发生相关功能改写；因此该设备证据仍可用于本卡收口。
 
 ## Handoff
 
