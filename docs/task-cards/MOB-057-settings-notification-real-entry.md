@@ -1,84 +1,127 @@
-# MOB-057：设置 → 通知 真实功能与真机验收
+# MOB-057：设置 → 通知基础能力与真机验收
 
-状态：**验收中（Android 核心路径已过；iOS 真机记 validation gap）**（PR #169 已于 2026-09-26 合入 dev，验收为事后补记；是否正式 PASS / 关闭仍由维护者决定）
+状态：**施工中**（2026-10-04 根据 Redmi K70 真人验收发现扩大范围；原“仅跳系统通知设置页”实现不足以构成真实通知功能）
 
-负责人：待指派（真机验收人）
+负责人：待指派
 
 执行仓库：`uichat-mira/mira-mobile`
 
-首次派卡基线：`feat/settings-notification-entry`（基于最新 `dev`）
-
 关联 Issue：#168
 
-关联 PR：https://github.com/uichat-mira/mira-mobile/pull/169（原卡误写 #168；#168 为关联 Issue）
+历史实现 PR：#169
 
 ## 背景
 
-设置 → 通用分组下的「通知」行历史上是一个无 `actionId` 的占位行 —— `SettingsRow` 检测到没有 actionId 时整行 disabled 并隐藏 chevron，看起来像设置项，按下没有任何响应。本次改动把它接通到真实的系统通知设置管理出口。
+原实现只把“通知”占位行接到了系统通知设置页。2026-10-04 在 Redmi K70 / HyperOS 真人验收时，虽然跳转目标正确，但系统页全部灰置，并显示“此应用未发布任何通知”。
 
-按仓库规则，**自动化不能替代真机交互验收**。本卡把剩余的人工验收项显式列出，验收通过前 PR 不得合入 `dev`。
+代码核对后确认根因不是单纯 OEM 异常，而是 Mobile 当时：
 
-## 已知边界（先读，避免误报）
+- Android manifest 未声明 `POST_NOTIFICATIONS`；
+- 未创建 NotificationChannel；
+- iOS 也没有 UserNotifications 基础桥；
+- App 没有任何本地 / 远程通知发送能力。
 
-1. **本卡交付的是「系统通知设置管理入口」，不是推送通知能力**：Mira Mobile 当前不发送任何本地 / 远程推送通知。行内不伪造通知列表、应用内偏好开关或「测试通知」按钮。
-2. **副标题在各平台恒为「在系统设置中管理」，不显示「已允许 / 已关闭」——这是显式的诚实缺省，不是 bug**：
-   - iOS：仓库 `ios/Podfile` 的 `setup_permissions` 只启用了 `'Camera'`，未启用 react-native-permissions 的 `Notifications` 子规格，读不到授权状态。
-   - Android：manifest 未声明 `POST_NOTIFICATIONS`，`PermissionsAndroid.check()` 对未声明权限恒返回 `false`，读出来只会是伪造的「已关闭」。
-   - 真实授权状态以跳转后的系统页面显示为准。启用 App 内状态展示需要先补 manifest 声明与 iOS 子规格（原生工程变更 + pod install），归未来通知能力卡。
-3. **跳转目标由系统决定**：Android 通过 `Linking.sendIntent('android.settings.APP_NOTIFICATION_SETTINGS', APP_PACKAGE=io.tomz.mira.mobile)` 直达 Mira 的应用通知设置页（Android 8+）；iOS 通过 `Linking.openSettings()` 打开系统设置中 Mira 的应用设置页，用户从该页的「通知」入口管理。
-4. **API < 26 的设备没有「应用通知设置」系统页**：sendIntent 会失败，App 弹一次兜底 Alert 提示手动路径；跳转请求进行中忽略连按（in-flight 锁），失败路径上不会叠出多个 Alert。minSdk 24 / targetSdk 36，此类设备占比可忽略，但兜底路径必须可用。
-5. **本卡验收的是 UI 接线 + 真实跳转 + 兜底行为**，不验证「通知是否真的能弹出来」（App 当前无通知可发）；`POST_NOTIFICATIONS` 权限声明与推送链路归未来的通知能力卡。
-6. **未通过本 PR 构建的情况下不要伪造包**：本卡所有用例一律基于该 PR 的 CI artifact。
+维护者决定：既然 UI 已存在，就补足**真实通知基础能力**；但 AI / Agent 回复完成通知不在本卡内。
 
-## 安装包来源（合并前 dev release 不含本功能）
+## 本卡交付
 
-- **Android 真机（必须）**：该 PR → Checks → *Android debug build* → artifact `uichat-mira-mobile-android-debug`（下载 PR artifact 需登录 GitHub）。
-- **iOS build / Simulator（自动化基线）**：Checks → *iOS simulator and unsigned device builds*。当前不要求维护者额外准备 iPhone；有设备时可补真机 smoke，没有设备时记录 `validation gap: iOS real device unavailable`。
-- Android 真机结果不可被模拟器替代。
+### 通用 UI
 
-## 验收用例
+设置 → 通用 → 通知进入独立通知页面，页面提供：
 
-当前真人主验收只要求 **Android 真机核心路径**：入口、系统跳转、返回 App、状态文案不伪造，以及基本连按/外观/飞行模式行为。API < 26 兜底属于 developer-only 条件项，无设备时可记 validation gap。iOS 不设人工硬门槛，由 CI build + Simulator / 自动化承担基础证据。
+1. 真实通知权限状态；
+2. 主动请求通知权限；
+3. 发送一条真实系统测试通知；
+4. 打开系统通知设置。
 
-| # | 用例 | 步骤 | 预期 |
-|---|---|---|---|
-| 1 | 入口可达 | 设置 → 通用 → 通知 | 行右侧 chevron 正常显示，行无 disabled 灰态；副标题恒为「在系统设置中管理」，任何平台 / 任何授权状态下都不出现「已允许 / 已关闭」字样 |
-| 2 | 跳转（Android） | Android 13+ 真机按下通知行 | 系统直接打开 Mira 的「应用通知设置」页（个别 OEM 可能先落到应用详情页，以实际行为为准并如实记录）；返回 App 不崩溃 |
-| 3 | 跳转（iOS） | iOS 真机按下通知行 | 系统设置中 Mira 的应用设置页打开；页面内「通知」入口可见 |
-| 4 | 副标题不伪造状态 | Android 13+：在系统通知设置页关闭（或重新开启）「所有 Mira 通知」→ 返回 App | 行副标题始终为「在系统设置中管理」，不随授权状态变化（App 内没有可读的真实状态源，变化即伪造） |
-| 5 | 兜底 Alert（developer-only） | API 24/25 模拟器安装 debug 包后按下通知行（真机无此条件可标「未验证」，不算 FAIL） | App 内弹出 `Alert.alert("无法打开通知设置", ...)`，提示手动路径；按确认关闭后回到原设置页，可重复操作 |
-| 6 | 多次连按 | 连续按通知行 5 次（前一次跳转 / 提示未结束时继续按） | 进行中的跳转只触发一次系统页 / 一次 Alert；不出现重复 Alert 叠加、不出现 App 卡顿或崩溃 |
-| 7 | 外观联动 | 切到深色模式 + 切重点色，再查看本行 | 行图标、副标题文字、chevron 在深浅色下都可读 |
-| 8 | 飞行模式 | 飞行模式下按下通知行 | 与在线时行为一致（跳系统设置不依赖网络）；不应出现「网络错误」提示 |
-| 9 | 字段恒定（源码范围） | 在 `src/` 实现源码内 grep `io.tomz.mira.mobile`、`android.settings.APP_NOTIFICATION_SETTINGS`、`android.provider.extra.APP_PACKAGE` | 三个字面量仅出现在 `src/screens/notificationSettings.ts` 的常量定义处（测试文件 `notificationSettings.test.ts` 中的断言字面量亦允许）；不允许出现在其它实现文件、脚本或配置里（协作文档与 AndroidManifest 等既有文件除外） |
+### Android
 
-## Hard Constraints
+- 声明 `android.permission.POST_NOTIFICATIONS`；
+- App 启动时创建 `mira_messages` channel；
+- Android 13+ 仅在用户主动操作时请求运行时通知权限；
+- 权限状态同时考虑系统 master 与 channel 是否被禁用；
+- 测试通知标题为“**Mira 通知测试**”；
+- 点击测试通知回到 Mira；
+- 系统通知设置页可以真实管理声音、振动、锁屏和 channel。
 
-- 没有真机证据不得标 PASS；不得用「模拟器看起来没问题」替代 Android 真机结论。
-- 用例 4 必须在**真机**上完成完整的「系统页切换 → 返回」闭环，确认副标题不伪造状态。
-- 用例 5 是兜底路径验证，无条件时标「未验证」并在结果记录中说明，不得伪造成 PASS。
-- 失败项回到施工方修复，本卡重新进入待验收；不在验收记录里直接宣称已修。
-- 启用 App 内授权状态展示（iOS `Notifications` 子规格 + Android manifest `POST_NOTIFICATIONS` 声明与运行时授权）不在本卡范围；如需，新建独立任务卡并同步更新 `Podfile.lock` / Info.plist / AndroidManifest。
-- 通知推送能力（本地通知调度、远程推送）不在本卡范围。
+### iOS
 
-## 结果记录（验收人填写）
+- 使用系统 `UserNotifications`；
+- 读取 / 请求通知权限；
+- 可发送真实本地测试通知；
+- App 在前台时测试通知仍可展示；
+- 点击通知由系统回到 Mira；
+- 当前无 iOS 真机，CI build / Simulator / 自动化作为基础证据。
 
-设备：Huawei P30 / EMUI 12（≥Android 10，API≥26）/ 包来源：PR #169 Checks → uichat-mira-mobile-android-debug / commit c4f94a34
-验收日期：2026-10-03（Android 真机；iOS 未执行）
+## 明确不做
 
-| 用例 | Android | iOS |
-|---|---|---|
-| 1 入口可达 | ✅ 副标题恒为「在系统设置中管理」、chevron 正常、非 disabled | 未执行 |
-| 2 跳转（Android） | ✅ 直达 Mira 应用通知设置页（未落应用详情页）；返回不崩溃 | — |
-| 3 跳转（iOS） | — | 未执行 |
-| 4 副标题不伪造状态 | ✅ 系统页切换通知开关后返回，副标题恒定 | — |
-| 5 兜底 Alert（API<26） | 未验证（设备 API≥26，场景不可达） | — |
-| 6 多次连按 | ✅ 只触发一次，无叠加 | 未执行 |
-| 7 外观联动 | ✅ 深浅色可读 | 未执行 |
-| 8 飞行模式 | ✅ 与在线一致 | 未执行 |
-| 9 字段恒定 | ✅ 结构化核实：三字面量仅定义于 notificationSettings.ts（全树 grep 未跑） | — |
+- FCM / APNs 远程推送；
+- AI / Agent 回复完成通知；
+- Host Run completion push；
+- 设备 push token 注册；
+- Local Provider / Agent 后台持续执行；
+- 会话 deep-link；
+- 应用内多种通知分类偏好开关。
 
-结论：**Android 人工核心路径已通过** —— Android 侧 1/2/4/6/7/8 通过；用例 5 为 developer-only 条件项，当前记 validation gap。iOS 真机在当前 0.3.x 口径下不再是阻塞条件，保留 CI build / Simulator / 自动化证据即可。是否正式标 PASS / 关闭仍由维护者按验收权限决定。完整记录见 Issue #168（2026-10-03 评论）。流程事实：PR #169 已于 2026-09-26 合入 dev（merge b66c237c），本记录为事后补记。
+## 自动化验收
+
+- `notificationSettings.test.ts` 覆盖：
+  - 真实权限状态读取；
+  - Android 13+ runtime permission；
+  - Android < 13 无 runtime permission 路径；
+  - iOS native permission；
+  - 测试通知 native bridge；
+  - Android / iOS 系统设置跳转；
+  - unsupported platform。
+- Typecheck / Lint / Jest 全绿。
+- Android debug build 全绿。
+- iOS Simulator + unsigned device build 全绿。
+- Mira Gate 全绿。
+
+## Android 真人验收（当前主验收面）
+
+设备：Redmi K70 / HyperOS
+
+只需要测以下核心流程：
+
+1. **进入通知页**
+   - 设置 → 通用 → 通知；
+   - 应进入 Mira 自己的通知页面，而不是立即跳系统设置。
+
+2. **权限**
+   - 若未授权，页面显示“未允许 / 尚未授权”；
+   - 点“通知权限”，Android 13+ 应出现系统通知权限请求；
+   - 允许后页面显示“已允许”。
+
+3. **测试通知**
+   - 点“发送测试通知”；
+   - 应收到标题“**Mira 通知测试**”的真实系统通知；
+   - 通知正文为“通知功能已正常启用。”；
+   - 点击通知应回到 Mira。
+
+4. **系统通知设置**
+   - 点“系统通知设置”；
+   - 应进入 Mira 对应系统通知页；
+   - 不应再是“应用未发布任何通知”的空壳；
+   - `Mira 消息` channel 应可见 / 可管理（OEM 页面命名与层级可不同）。
+
+5. **关闭后状态同步**
+   - 在系统设置里关闭 Mira 总通知或关闭 `Mira 消息` channel；
+   - 返回 Mira 通知页；
+   - 页面状态应反映为未允许；
+   - 重新开启后再回 Mira，应恢复为已允许。
+
+## iOS 验收口径
+
+当前没有 iOS 真机，不要求维护者额外准备设备。
+
+- iOS CI build 必须通过；
+- native UserNotifications bridge 与 JS contract 必须有自动化证据；
+- 真机结果记 `validation gap: iOS real device unavailable`；
+- 不得把 Android PASS 写成 iOS 真机 PASS。
+
 ## Handoff
 
-Android 核心路径通过 + CI / 自动化绿色即可进入 PASS 判断；iOS 真机当前不阻塞。用例 5 无条件时允许如实标注「未验证」，不要求真人寻找旧 Android 设备。用例 9 继续由结构证据承担。任一 Android 核心项 ❌ → 回施工方修复。
+Android 真人核心 1–5 通过 + CI / 自动化绿色，即可判 MOB-057 PASS 并关闭 #168。
+
+AI / Agent 回复完成通知即使尚未实现，也**不阻塞**本卡；那是后续独立通知产品能力。
