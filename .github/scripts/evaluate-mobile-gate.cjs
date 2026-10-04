@@ -3,6 +3,7 @@
 const KNOWN_JOBS = [
   'quality',
   'android',
+  'android-maestro',
   'android-release',
   'ios',
   'publish-dev-release',
@@ -15,10 +16,14 @@ function expectedResults(eventName, ref) {
   const androidReleaseRequired =
     isReleaseBranch &&
     (eventName === 'push' || eventName === 'workflow_dispatch');
+  const androidMaestroRequired =
+    eventName === 'workflow_dispatch' ||
+    (eventName === 'push' && ref === 'refs/heads/test');
 
   return {
     quality: 'success',
     android: 'success',
+    'android-maestro': androidMaestroRequired ? 'success' : 'skipped',
     'android-release': androidReleaseRequired ? 'success' : 'skipped',
     ios: 'success',
     'publish-dev-release':
