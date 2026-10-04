@@ -257,6 +257,8 @@ export function SessionListScreen() {
     >
       <View style={styles.header}>
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="打开菜单"
           onPress={openDrawer}
           style={({ pressed }) => [
             styles.drawerBtn,
@@ -270,6 +272,8 @@ export function SessionListScreen() {
           <ConnectionSourceDropdown value={sourceFilter} options={sourceOptions} onChange={setSourceFilter} />
         </View>
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="设置"
           onPress={() => navigation.navigate('Settings')}
           style={({ pressed }) => [
             styles.settingsBtn,
