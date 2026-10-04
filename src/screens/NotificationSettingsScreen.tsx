@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Alert, AppState, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Bell, BellRing, Settings2 } from 'lucide-react-native';
@@ -54,6 +54,15 @@ export function NotificationSettingsScreen() {
       void refreshStatus();
     }, [refreshStatus]),
   );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        void refreshStatus();
+      }
+    });
+    return () => subscription.remove();
+  }, [refreshStatus]);
 
   const requestPermission = useCallback(async () => {
     if (busy) return;
