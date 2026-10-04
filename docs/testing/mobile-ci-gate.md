@@ -10,12 +10,13 @@ dependencies have settled.
 
 | Trigger / branch | Required success | Explicitly not applicable |
 | --- | --- | --- |
-| Pull request | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
-| push to `test` (and other non-release branches handled by this workflow) | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
-| push to `dev` | quality, Android debug build, Android signed release, iOS builds, dev publication | prod publication |
-| push to `prod` | quality, Android debug build, Android signed release, iOS builds, prod publication | dev publication |
-| manual `workflow_dispatch` on `dev` / `prod` | quality, Android debug build, Android signed release, iOS builds | dev publication, prod publication |
-| manual `workflow_dispatch` on other branches | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
+| Pull request | quality, Android debug build, iOS builds | Android Maestro, Android signed release, dev publication, prod publication |
+| push to `test` | quality, Android debug build, **Android Maestro critical smoke**, iOS builds | Android signed release, dev publication, prod publication |
+| push to other non-release branches handled by this workflow | quality, Android debug build, iOS builds | Android Maestro, Android signed release, dev publication, prod publication |
+| push to `dev` | quality, Android debug build, Android signed release, iOS builds, dev publication | Android Maestro, prod publication |
+| push to `prod` | quality, Android debug build, Android signed release, iOS builds, prod publication | Android Maestro, dev publication |
+| manual `workflow_dispatch` on `dev` / `prod` | quality, Android debug build, **Android Maestro critical smoke**, Android signed release, iOS builds | dev publication, prod publication |
+| manual `workflow_dispatch` on other branches | quality, Android debug build, **Android Maestro critical smoke**, iOS builds | Android signed release, dev publication, prod publication |
 
 A required result must be `success`. A job classified as not applicable must be
 `skipped`. Failure, cancellation, a missing result, or an unexpected skip makes
@@ -30,6 +31,10 @@ The policy evaluator lives in
 Node tests. The workflow-level job uses `if: ${{ always() }}` so it still runs
 when an upstream dependency fails or is skipped.
 
-MOB-059 and MOB-060 may later add T4 E2E jobs to the test-stage gate. Those jobs
-must be added deliberately to both the workflow dependencies and the stage
-policy; this document does not pre-classify checks that do not yet exist.
+MOB-059 adds the `android-maestro` T4 job. It is required on `test` pushes
+and on explicit manual workflow dispatches, and is deliberately skipped for
+ordinary PR / `dev` / `prod` push gates. The job downloads the exact Android
+debug artifact produced by the same workflow run; it does not rebuild the app.
+
+MOB-060 may later add the iOS T4 job. As with Android, it must be deliberately
+classified here and in the executable gate policy before it can affect Mira Gate.
