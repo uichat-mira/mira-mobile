@@ -1,4 +1,4 @@
-import { compareSemver, parseSemver, type SemverVersion } from './semver';
+import { diffSemver, parseSemver, type SemverVersion } from './semver';
 
 export type ReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
 
@@ -10,6 +10,18 @@ export interface AppRelease {
   apkUrl: string;
   sha256: string;
 }
+
+/**
+ * How an installed version relates to the latest published release. This is the
+ * single "is there an update, and how big is it" decision shared by the About
+ * screen badge and the bootstrap auto-check, so the two never drift apart.
+ *
+ * - `none`: no update (equal, older, or absent/invalid release).
+ * - `patch`: only `z` moved, so the user is quiet-notified (badge) but not
+ *   interrupted with an auto prompt.
+ * - `minor` / `major`: `x` or `y` moved, so the auto-check may prompt.
+ */
+export type UpdateLevel = 'none' | 'patch' | 'minor' | 'major';
 
 interface R2ReleaseManifestPayload {
   version?: unknown;
@@ -108,7 +120,23 @@ export const fetchLatestRelease = async (
   return parseR2Manifest(channel, await response.json());
 };
 
+/**
+ * Derives the update level from the current version and the latest release
+ * truth. It is the only place that decides "is there an update / how big".
+ * Callers must reject an unparsable installed version (`parseSemver(...)`
+ * returning null) instead of coercing it here, so a broken build version cannot
+ * silently masquerade as "no update".
+ */
+export const classifyAvailableUpdate = (
+  currentVersion: SemverVersion,
+  latest: AppRelease | null,
+): UpdateLevel => {
+  if (!latest) return 'none';
+  const diff = diffSemver(latest.version, currentVersion);
+  return diff === 'equal' ? 'none' : diff;
+};
+
 export const isUpdateAvailable = (
   currentVersion: SemverVersion,
   latest: AppRelease | null,
-): boolean => Boolean(latest && compareSemver(latest.version, currentVersion) > 0);
+): boolean => classifyAvailableUpdate(currentVersion, latest) !== 'none';

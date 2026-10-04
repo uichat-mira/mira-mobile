@@ -100,8 +100,8 @@ jest.mock('../src/api/miraHostClient', () => ({
 }));
 
 jest.mock('../src/update/appUpdate', () => ({
+  ...jest.requireActual('../src/update/appUpdate'),
   fetchLatestRelease: jest.fn(async () => null),
-  isUpdateAvailable: jest.fn(() => false),
 }));
 
 jest.mock('../src/update/updatePrompt', () => ({
@@ -205,6 +205,11 @@ describe('startup session restore', () => {
     const host = jest.requireMock('../src/api/miraHostClient').miraHostClient;
     host.listSessions.mockReset();
     host.listSessions.mockResolvedValue(mockListedSessions);
+    const update = jest.requireMock('../src/update/appUpdate');
+    update.fetchLatestRelease.mockReset();
+    update.fetchLatestRelease.mockResolvedValue(null);
+    const prompt = jest.requireMock('../src/update/updatePrompt');
+    prompt.presentUpdatePrompt.mockClear();
   });
 
   afterEach(async () => {
@@ -224,6 +229,40 @@ describe('startup session restore', () => {
       },
       localKeyValueStore,
     );
+
+  const enableAutoUpdateCheck = () =>
+    saveGeneralSettings(
+      {
+        defaultSessionSource: 'ask',
+        launchBehavior: 'home',
+        autoCheckUpdates: true,
+        textScale: 'standard',
+        hapticsEnabled: true,
+      },
+      localKeyValueStore,
+    );
+
+  const nextRelease = (level: 'patch' | 'minor' | 'major') => {
+    const { parseSemver } = jest.requireActual('../src/update/semver');
+    const { version: installedVersion } = jest.requireActual('../package.json');
+    const installed = parseSemver(installedVersion);
+    if (!installed) throw new Error(`Invalid installed version: ${installedVersion}`);
+
+    const next =
+      level === 'major'
+        ? `${installed.major + 1}.0.0`
+        : level === 'minor'
+          ? `${installed.major}.${installed.minor + 1}.0`
+          : `${installed.major}.${installed.minor}.${installed.patch + 1}`;
+
+    return {
+      version: parseSemver(next),
+      displayVersion: `${next}-dev`,
+      notes: null,
+      apkUrl: `https://assets.tomz.io/mira/mobile/dev/releases/${next}/uichat-mira-mobile-release.apk`,
+      sha256: 'a'.repeat(64),
+    };
+  };
 
   it('cold-starts into the last session when launchBehavior is last-session', async () => {
     await enableLastSessionLaunch();
@@ -305,5 +344,42 @@ describe('startup session restore', () => {
 
     expect(mockInitialRouteNames).toHaveLength(1);
     expect(mockInitialRouteNames[0]).toBe('SessionList');
+  });
+
+  it('does not auto-prompt for a patch-only update', async () => {
+    const { fetchLatestRelease } = jest.requireMock('../src/update/appUpdate');
+    const { presentUpdatePrompt } = jest.requireMock('../src/update/updatePrompt');
+    fetchLatestRelease.mockResolvedValue(nextRelease('patch'));
+    await enableAutoUpdateCheck();
+
+    await renderApp();
+
+    expect(presentUpdatePrompt).not.toHaveBeenCalled();
+  });
+
+  it('auto-prompts for a minor update', async () => {
+    const { fetchLatestRelease } = jest.requireMock('../src/update/appUpdate');
+    const { presentUpdatePrompt } = jest.requireMock('../src/update/updatePrompt');
+    const latest = nextRelease('minor');
+    fetchLatestRelease.mockResolvedValue(latest);
+    await enableAutoUpdateCheck();
+
+    await renderApp();
+
+    expect(presentUpdatePrompt).toHaveBeenCalledTimes(1);
+    expect(presentUpdatePrompt).toHaveBeenCalledWith(latest);
+  });
+
+  it('auto-prompts for a major update', async () => {
+    const { fetchLatestRelease } = jest.requireMock('../src/update/appUpdate');
+    const { presentUpdatePrompt } = jest.requireMock('../src/update/updatePrompt');
+    const latest = nextRelease('major');
+    fetchLatestRelease.mockResolvedValue(latest);
+    await enableAutoUpdateCheck();
+
+    await renderApp();
+
+    expect(presentUpdatePrompt).toHaveBeenCalledTimes(1);
+    expect(presentUpdatePrompt).toHaveBeenCalledWith(latest);
   });
 });
