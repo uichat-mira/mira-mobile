@@ -12,6 +12,7 @@ import type {
   MemoryOverview,
   MemoryOverviewRecord,
   MemoryRecord,
+  MemoryTurnCommitResult,
   MemoryTurnLedger,
 } from './types';
 
@@ -89,7 +90,6 @@ export class LocalMemoryService {
 
   constructor(
     private readonly repository: LocalMemoryRepository,
-    private readonly consolidator: MemoryConsolidator,
     private readonly turnLedger: MemoryTurnLedger,
   ) {}
 
@@ -123,6 +123,11 @@ export class LocalMemoryService {
     return this.readOverview();
   }
 
+  /** Whether this canonical turn was already consolidated (successfully). */
+  isProcessed(source: ConversationMemorySource): Promise<boolean> {
+    return this.turnLedger.has(source);
+  }
+
   setEnabled(enabled: boolean): Promise<MemoryOverview> {
     return this.runCommitSerialized(async () => {
       await this.repository.updateSettings({ enabled });
@@ -140,46 +145,65 @@ export class LocalMemoryService {
     );
   }
 
+  /**
+   * Consolidate one completed turn.
+   *
+   * The `consolidator` is a per-turn, scoped dependency: the caller supplies the
+   * Provider-backed consolidator bound to the exact Local Provider client /
+   * model that produced this turn. The service never retains it, so concurrent
+   * commits from different sessions can never observe each other's Provider.
+   *
+   * Returns `{ applied, processed }`. `processed` is false when consolidation
+   * itself failed (provider error / invalid JSON / empty output), which leaves
+   * the turn eligible for a later retry.
+   */
   async commitTurn(input: {
     source: ConversationMemorySource;
     userText: string;
     assistantText: string;
-  }): Promise<MemoryApplyResult> {
+    consolidator: MemoryConsolidator;
+  }): Promise<MemoryTurnCommitResult> {
     const userText = input.userText.trim();
     const assistantText = input.assistantText.trim();
     if (!userText || !assistantText) {
-      return { ...EMPTY_APPLY_RESULT };
+      return { applied: { ...EMPTY_APPLY_RESULT }, processed: false };
     }
 
     return this.runCommitSerialized(async () => {
       if (await this.turnLedger.has(input.source)) {
-        return { ...EMPTY_APPLY_RESULT };
+        return { applied: { ...EMPTY_APPLY_RESULT }, processed: true };
       }
 
       if (!(await this.repository.getSettings()).enabled) {
         await this.turnLedger.mark(input.source);
-        return { ...EMPTY_APPLY_RESULT };
+        return { applied: { ...EMPTY_APPLY_RESULT }, processed: true };
       }
 
       const existing = await this.repository.list();
-      const proposals = await this.consolidator.propose({
+      const proposals = await input.consolidator.propose({
         source: input.source,
         userText,
         assistantText,
         existing,
       });
+      // A `null` proposal means consolidation itself failed (provider error /
+      // invalid JSON / empty output). Do not write and do not mark the turn
+      // processed, so a later attempt can still consolidate this evidence.
+      if (proposals === null) {
+        return { applied: { ...EMPTY_APPLY_RESULT }, processed: false };
+      }
       const patches = validateMemoryPatchProposals({
         proposals,
         existing,
         source: input.source,
       });
-      const result =
+      const applied =
         patches.length > 0
           ? await this.repository.apply(patches)
           : { ...EMPTY_APPLY_RESULT };
 
       await this.turnLedger.mark(input.source);
-      return result;
+      return { applied, processed: true };
     });
   }
 

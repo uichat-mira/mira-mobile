@@ -1,7 +1,6 @@
 import { LocalMemoryRepository, MEMORY_STORAGE_KEYS } from './localMemoryRepository';
 import { LocalMemoryService, MAX_CONTEXT_CHARACTERS, MAX_CONTEXT_RECORDS } from './localMemoryService';
 import { LocalMemoryTurnLedger } from './localMemoryTurnLedger';
-import { noopMemoryConsolidator } from './runtime';
 import { FakeLocalKeyValueStore } from './testSupport/fakeLocalKeyValueStore';
 import type {
   ConversationMemorySource,
@@ -16,13 +15,17 @@ const createSource = (suffix: string): ConversationMemorySource => ({
   assistantMessageId: `assistant-${suffix}`,
 });
 
-const createService = (
-  store: FakeLocalKeyValueStore,
-  consolidator: MemoryConsolidator = noopMemoryConsolidator,
-) =>
+const noopConsolidator: MemoryConsolidator = {
+  propose: async () => [],
+};
+
+const consolidatorReturning = (
+  run: () => MemoryPatchProposal[] | null | Promise<MemoryPatchProposal[] | null>,
+): MemoryConsolidator => ({ propose: async () => run() });
+
+const createService = (store: FakeLocalKeyValueStore) =>
   new LocalMemoryService(
     new LocalMemoryRepository(store),
-    consolidator,
     new LocalMemoryTurnLedger(store),
   );
 
@@ -44,18 +47,25 @@ describe('LocalMemoryService', () => {
         ];
       },
     };
-    const service = createService(store, consolidator);
+    const service = createService(store);
     const turn = {
       source: createSource('1'),
       userText: '以后技术问题先给我结论。',
       assistantText: '记住了。',
+      consolidator,
     };
 
     const result = await service.commitTurn(turn);
     const duplicate = await service.commitTurn(turn);
 
-    expect(result).toEqual({ created: 1, replaced: 0, deleted: 0 });
-    expect(duplicate).toEqual({ created: 0, replaced: 0, deleted: 0 });
+    expect(result).toEqual({
+      applied: { created: 1, replaced: 0, deleted: 0 },
+      processed: true,
+    });
+    expect(duplicate).toEqual({
+      applied: { created: 0, replaced: 0, deleted: 0 },
+      processed: true,
+    });
     expect(calls).toBe(1);
 
     const snapshot = await service.buildContext();
@@ -65,39 +75,83 @@ describe('LocalMemoryService', () => {
     expect(snapshot.updatedAt).not.toBeNull();
   });
 
+  it('uses only the per-turn consolidator for each commit', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    const proposals: MemoryPatchProposal[] = [
+      {
+        operation: 'create',
+        kind: 'preference',
+        content: '用户偏好 A。',
+        confidence: 0.98,
+        reason: 'explicit',
+      },
+    ];
+    const consolidatorA: MemoryConsolidator = {
+      propose: async () => proposals,
+    };
+    const consolidatorB: MemoryConsolidator = {
+      propose: async () => [],
+    };
+
+    const first = await service.commitTurn({
+      source: createSource('a'),
+      userText: '记住 A。',
+      assistantText: '好的。',
+      consolidator: consolidatorA,
+    });
+    const second = await service.commitTurn({
+      source: createSource('b'),
+      userText: '记住 B。',
+      assistantText: '好的。',
+      consolidator: consolidatorB,
+    });
+
+    // Each commit used exactly its own consolidator; the service retains neither.
+    expect(first.applied.created).toBe(1);
+    expect(second.applied.created).toBe(0);
+    expect((await service.getOverview()).records).toHaveLength(1);
+  });
+
   it('does not call the consolidator for an incomplete turn', async () => {
     const store = new FakeLocalKeyValueStore();
     let calls = 0;
-    const service = createService(store, {
-      async propose() {
-        calls += 1;
-        return [];
-      },
-    });
+    const service = createService(store);
 
     const result = await service.commitTurn({
       source: createSource('1'),
       userText: '',
       assistantText: 'answer',
+      consolidator: {
+        async propose() {
+          calls += 1;
+          return [];
+        },
+      },
     });
 
     expect(calls).toBe(0);
-    expect(result).toEqual({ created: 0, replaced: 0, deleted: 0 });
+    expect(result).toEqual({
+      applied: { created: 0, replaced: 0, deleted: 0 },
+      processed: false,
+    });
   });
 
   it('marks a no-op consolidation as processed so it is never retried', async () => {
     const store = new FakeLocalKeyValueStore();
     let calls = 0;
-    const service = createService(store, {
+    const service = createService(store);
+    const consolidator: MemoryConsolidator = {
       async propose() {
         calls += 1;
         return [];
       },
-    });
+    };
     const turn = {
       source: createSource('2'),
       userText: '帮我算一下这道题。',
       assistantText: '答案是 42。',
+      consolidator,
     };
 
     await service.commitTurn(turn);
@@ -109,18 +163,20 @@ describe('LocalMemoryService', () => {
   it('returns an empty snapshot and skips consolidation when disabled', async () => {
     const store = new FakeLocalKeyValueStore();
     let calls = 0;
-    const service = createService(store, {
+    const service = createService(store);
+    const consolidator: MemoryConsolidator = {
       async propose() {
         calls += 1;
         return [];
       },
-    });
+    };
     await service.setEnabled(false);
 
     const turn = {
       source: createSource('disabled'),
       userText: '以后记住这个偏好。',
       assistantText: '好的。',
+      consolidator,
     };
     await service.commitTurn(turn);
     await service.setEnabled(true);
@@ -152,19 +208,23 @@ describe('LocalMemoryService', () => {
         reason: 'reserved marker',
       },
     ];
-    const service = createService(store, {
-      async propose() {
-        return invalid;
-      },
-    });
+    const service = createService(store);
 
     const result = await service.commitTurn({
       source: createSource('invalid'),
       userText: '随便聊聊。',
       assistantText: '好的。',
+      consolidator: {
+        async propose() {
+          return invalid;
+        },
+      },
     });
 
-    expect(result).toEqual({ created: 0, replaced: 0, deleted: 0 });
+    expect(result).toEqual({
+      applied: { created: 0, replaced: 0, deleted: 0 },
+      processed: true,
+    });
     expect(await service.getOverview()).toMatchObject({ records: [] });
     // Turn is still recorded as processed to preserve idempotency.
     expect(store.raw(MEMORY_STORAGE_KEYS.state)).toBeNull();
@@ -248,25 +308,22 @@ describe('LocalMemoryService', () => {
 
   it('surfaces a storage failure without marking the turn processed', async () => {
     const store = new FakeLocalKeyValueStore();
-    const service = createService(store, {
-      async propose() {
-        return [
-          {
-            operation: 'create',
-            kind: 'preference',
-            content: '用户偏好深色模式。',
-            confidence: 0.99,
-            reason: 'explicit',
-          },
-        ];
-      },
-    });
+    const service = createService(store);
 
     store.failNextWrite();
     const turn = {
       source: createSource('failure'),
       userText: '我更喜欢深色模式。',
       assistantText: '好的。',
+      consolidator: consolidatorReturning(() => [
+        {
+          operation: 'create',
+          kind: 'preference',
+          content: '用户偏好深色模式。',
+          confidence: 0.99,
+          reason: 'explicit',
+        },
+      ]),
     };
 
     await expect(service.commitTurn(turn)).rejects.toThrow(
@@ -289,5 +346,47 @@ describe('LocalMemoryService', () => {
     for (const content of contents) {
       expect(seen.has(content)).toBe(true);
     }
+  });
+
+  it('does not mark the turn processed when consolidation itself fails', async () => {
+    const store = new FakeLocalKeyValueStore();
+    let calls = 0;
+    const service = createService(store);
+    const consolidator: MemoryConsolidator = {
+      async propose() {
+        calls += 1;
+        return calls === 1 ? null : [];
+      },
+    };
+    const turn = {
+      source: createSource('consolidation-failure'),
+      userText: '以后技术问题先给结论。',
+      assistantText: '记住了。',
+      consolidator,
+    };
+
+    const failed = await service.commitTurn(turn);
+    expect(failed.processed).toBe(false);
+    expect(await service.isProcessed(turn.source)).toBe(false);
+
+    // A later retry can still consolidate the same evidence.
+    await service.commitTurn(turn);
+    expect(calls).toBe(2);
+    expect(await service.isProcessed(turn.source)).toBe(true);
+  });
+
+  it('reports an unprocessed turn until a successful consolidation', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    const turn = {
+      source: createSource('is-processed'),
+      userText: '帮我查一下今天的天气。',
+      assistantText: '今天晴。',
+      consolidator: noopConsolidator,
+    };
+
+    expect(await service.isProcessed(turn.source)).toBe(false);
+    await service.commitTurn(turn);
+    expect(await service.isProcessed(turn.source)).toBe(true);
   });
 });

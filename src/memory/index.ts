@@ -34,4 +34,9 @@ export {
   createMemoryId,
   createManualOperationId,
 } from './memoryPolicy';
-export { getLocalMemoryService, noopMemoryConsolidator } from './runtime';
+export { getLocalMemoryService } from './runtime';
+export { buildMemoryContext } from './memoryContext';
+export {
+  createLocalProviderConsolidator,
+  parseConsolidationProposals,
+} from './consolidator';
