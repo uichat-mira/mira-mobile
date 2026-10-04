@@ -7,11 +7,19 @@ import { lightImpact } from './haptics';
  * Assistant message, not on local actions (sending, creating a session) nor on
  * low-level delivery events (token deltas, tool events, run completion).
  *
- * Both the Local Provider runtime (`sessionRepository.getMessages`) and the
- * Remote Host runtime (`miraHostClient.getMessages`) converge on the same
- * canonical message list, so this observer is the single trigger point: the
- * screen hands it each canonical read and it decides whether a brand-new
- * Assistant message appeared.
+ * There is no single runtime-level push channel shared by both paths, so the
+ * shared boundary is this observer: each path feeds it through its own real
+ * canonical-message arrival point.
+ *
+ *   - Remote Host publishes canonical messages through
+ *     `miraHostClient.subscribeMessageSnapshots` (every canonical read, incl.
+ *     the Agent discovery poll and run observation, republishes a snapshot).
+ *   - Local Provider has no push channel; its canonical arrival is the
+ *     `LocalProviderRuntime.getMessages` read after a send completes.
+ *
+ * Both hand the same `observe(messages)` the canonical list, so the trigger
+ * contract — dedup by canonical id, AppState gating, one vibration per new
+ * Assistant message — is identical for Local and Remote.
  */
 
 const isNewAssistantMessage = (
@@ -49,18 +57,22 @@ export class AssistantMessageHapticsObserver {
 
   constructor(options: AssistantMessageHapticsOptions = {}) {
     this.vibrate = options.vibrate ?? lightImpact;
-    this.readAppState =
-      options.readAppState ?? (() => AppState.currentState);
+    this.readAppState = options.readAppState ?? (() => AppState.currentState);
   }
 
   /**
    * Observe a fresh canonical message read.
    *
    * The first read of a session establishes a baseline (history must never
-   * fire haptics); only messages that appear after that baseline count. A
-   * message is reported at most once for the lifetime of this observer.
+   * fire haptics); only messages that appear after that baseline count. Each
+   * Assistant message is reported at most once for the lifetime of this
+   * observer, and the product contract is "one reminder per reply": if a
+   * single batch carries N new Assistant messages, N separate reminders fire.
+   *
+   * Returns the ids that actually triggered a reminder, so callers/tests can
+   * verify the per-message contract rather than trusting a side effect.
    */
-  observe(messages: readonly ChatMessage[]): void {
+  observe(messages: readonly ChatMessage[]): string[] {
     const assistantIds = messages
       .filter((message) => message.role === 'assistant')
       .map((message) => message.id);
@@ -74,13 +86,17 @@ export class AssistantMessageHapticsObserver {
     if (!this.seeded) {
       // Baseline read: record history without any reminder.
       this.seeded = true;
-      return;
+      return [];
     }
 
-    if (newlyArrived.length === 0) return;
-    if (this.readAppState() !== 'active') return;
+    if (newlyArrived.length === 0) return [];
+    if (this.readAppState() !== 'active') return [];
 
-    void this.vibrate();
+    // One light impact per new Assistant reply, never a single "batch" ping.
+    for (let index = 0; index < newlyArrived.length; index += 1) {
+      void this.vibrate();
+    }
+    return newlyArrived;
   }
 
   /** Test/teardown helper: forget baseline and dedup state. */

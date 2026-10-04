@@ -286,6 +286,19 @@ export function ChatScreen() {
   }, [sessionId]);
 
   useEffect(() => {
+    // Remote canonical messages arrive through the Host snapshot feed (published
+    // by every canonical read, including the Agent discovery poll and run
+    // observation). Feeding the same observer here means a Remote Assistant
+    // reply that lands while foregrounded triggers the identical reminder as a
+    // Local one, without inventing a second trigger path.
+    if (isLocalProvider) return undefined;
+    return miraHostClient.subscribeMessageSnapshots((snapshot) => {
+      if (snapshot.sessionId !== sessionId) return;
+      assistantHapticsRef.current?.observe(snapshot.messages);
+    });
+  }, [isLocalProvider, sessionId]);
+
+  useEffect(() => {
     let active = true;
     setAgentActivities([]);
     setPendingAgentApproval(null);
