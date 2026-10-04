@@ -2,6 +2,7 @@ import type { LocalMemoryRepository } from './localMemoryRepository';
 import { memoryTurnKey } from './localMemoryTurnLedger';
 import {
   createManualOperationId,
+  normalizeMemoryContent,
   validateMemoryPatchProposals,
 } from './memoryPolicy';
 import type {
@@ -12,6 +13,7 @@ import type {
   MemoryKind,
   MemoryOverview,
   MemoryOverviewRecord,
+  MemoryPatchProposal,
   MemoryRecord,
   MemoryTurnCommitResult,
   MemoryTurnLedger,
@@ -82,6 +84,39 @@ const toOverviewRecord = (record: MemoryRecord): MemoryOverviewRecord => ({
   createdAt: record.createdAt,
   updatedAt: record.updatedAt,
 });
+
+const isSameRecordVersion = (
+  before: MemoryRecord,
+  current: MemoryRecord,
+): boolean =>
+  before.id === current.id &&
+  before.updatedAt === current.updatedAt &&
+  before.kind === current.kind &&
+  normalizeMemoryContent(before.content) ===
+    normalizeMemoryContent(current.content);
+
+const dropStaleTargetProposals = (input: {
+  proposals: MemoryPatchProposal[];
+  providerView: MemoryRecord[];
+  current: MemoryRecord[];
+}): MemoryPatchProposal[] => {
+  const providerViewById = new Map(
+    input.providerView.map(record => [record.id, record]),
+  );
+  const currentById = new Map(input.current.map(record => [record.id, record]));
+
+  return input.proposals.filter(proposal => {
+    if (proposal.operation === 'create') return true;
+
+    const before = providerViewById.get(proposal.targetId);
+    const current = currentById.get(proposal.targetId);
+    return Boolean(
+      before &&
+        current &&
+        isSameRecordVersion(before, current),
+    );
+  });
+};
 
 export class LocalMemoryService {
   private readonly commitQueues = new WeakMap<
@@ -263,8 +298,13 @@ export class LocalMemoryService {
       }
 
       const existing = await this.repository.list();
-      const patches = validateMemoryPatchProposals({
+      const currentProposals = dropStaleTargetProposals({
         proposals,
+        providerView: preflight.existing,
+        current: existing,
+      });
+      const patches = validateMemoryPatchProposals({
+        proposals: currentProposals,
         existing,
         source: input.source,
       });

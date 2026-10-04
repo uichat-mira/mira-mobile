@@ -427,6 +427,118 @@ describe('LocalMemoryService', () => {
     await expect(pendingCommit).resolves.toMatchObject({ processed: true });
   });
 
+  it('drops a stale replace when the target changes during Provider consolidation', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    const initial = await service.createManual({
+      kind: 'fact',
+      content: '用户主要使用 macOS。',
+    });
+    const id = initial.records[0]!.id;
+
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      signalStarted = resolve;
+    });
+    let releaseProposal!: (value: MemoryPatchProposal[] | null) => void;
+    const proposal = new Promise<MemoryPatchProposal[] | null>(resolve => {
+      releaseProposal = resolve;
+    });
+
+    const pendingCommit = service.commitTurn({
+      source: createSource('stale-replace'),
+      userText: '我现在主要用 Linux。',
+      assistantText: '记住了。',
+      consolidator: {
+        async propose() {
+          signalStarted();
+          return proposal;
+        },
+      },
+    });
+
+    await started;
+    await service.updateManual(id, {
+      kind: 'fact',
+      content: '用户主要使用 Windows 11。',
+    });
+
+    releaseProposal([
+      {
+        operation: 'replace',
+        targetId: id,
+        kind: 'fact',
+        content: '用户主要使用 Linux。',
+        confidence: 0.99,
+        reason: 'conversation correction',
+      },
+    ]);
+    const result = await pendingCommit;
+
+    expect(result).toEqual({
+      applied: { created: 0, replaced: 0, deleted: 0 },
+      processed: true,
+    });
+    expect((await service.getOverview()).records[0]?.content).toBe(
+      '用户主要使用 Windows 11。',
+    );
+  });
+
+  it('drops a stale delete when the target changes during Provider consolidation', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    const initial = await service.createManual({
+      kind: 'preference',
+      content: '用户偏好深色主题。',
+    });
+    const id = initial.records[0]!.id;
+
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      signalStarted = resolve;
+    });
+    let releaseProposal!: (value: MemoryPatchProposal[] | null) => void;
+    const proposal = new Promise<MemoryPatchProposal[] | null>(resolve => {
+      releaseProposal = resolve;
+    });
+
+    const pendingCommit = service.commitTurn({
+      source: createSource('stale-delete'),
+      userText: '我不再偏好深色主题。',
+      assistantText: '知道了。',
+      consolidator: {
+        async propose() {
+          signalStarted();
+          return proposal;
+        },
+      },
+    });
+
+    await started;
+    await service.updateManual(id, {
+      kind: 'preference',
+      content: '用户偏好跟随系统主题。',
+    });
+
+    releaseProposal([
+      {
+        operation: 'delete',
+        targetId: id,
+        confidence: 0.99,
+        reason: 'conversation withdrawal',
+      },
+    ]);
+    const result = await pendingCommit;
+
+    expect(result).toEqual({
+      applied: { created: 0, replaced: 0, deleted: 0 },
+      processed: true,
+    });
+    expect((await service.getOverview()).records[0]?.content).toBe(
+      '用户偏好跟随系统主题。',
+    );
+  });
+
   it('shares one in-flight consolidation for concurrent replay of the same evidence', async () => {
     const store = new FakeLocalKeyValueStore();
     const service = createService(store);
