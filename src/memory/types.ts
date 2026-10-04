@@ -82,7 +82,13 @@ export interface ConsolidationInput {
 }
 
 export interface MemoryConsolidator {
-  propose(input: ConsolidationInput): Promise<MemoryPatchProposal[]>;
+  /**
+   * Returns validated-shape proposals, or `null` when consolidation failed
+   * (provider error, empty output, unparseable payload). A failed proposal must
+   * never be treated as "nothing to remember" — the caller leaves the turn
+   * unprocessed so a later retry is possible.
+   */
+  propose(input: ConsolidationInput): Promise<MemoryPatchProposal[] | null>;
 }
 
 export interface MemoryTurnLedger {
@@ -104,6 +110,16 @@ export interface MemoryApplyResult {
   created: number;
   replaced: number;
   deleted: number;
+}
+
+export interface MemoryTurnCommitResult {
+  applied: MemoryApplyResult;
+  /**
+   * True when the turn is durably recorded as processed (including a successful
+   * no-op consolidation). False when consolidation failed, leaving the turn
+   * eligible for a later retry.
+   */
+  processed: boolean;
 }
 
 export interface MemoryOverviewRecord {

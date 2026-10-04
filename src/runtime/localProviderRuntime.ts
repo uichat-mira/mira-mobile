@@ -11,6 +11,12 @@ import {
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { MobileAgentLoop } from './mobileAgentLoop';
 import { buildLocalPersonalizationContext } from './localPersonalizationContext';
+import {
+  buildMemoryContext,
+  createLocalProviderConsolidator,
+  getLocalMemoryService,
+  type LocalMemoryService,
+} from '../memory';
 import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -40,6 +46,9 @@ const applyProviderCompatibility = (
     ? filterReasoningTagEvents(stream)
     : stream;
 
+const isCompletedAssistantFinishReason = (reason: string | null): boolean =>
+  reason === 'stop' || reason === null;
+
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
   credentialStore?: ProviderCredentialStore;
@@ -47,6 +56,7 @@ export interface LocalProviderRuntimeOptions {
   clientFactory?: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
   toolGateway?: ToolGatewayClient;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
+  memoryService?: LocalMemoryService;
 }
 
 export class LocalProviderRuntime implements ConversationRuntime {
@@ -58,6 +68,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly clientFactory: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
   private readonly toolGateway?: ToolGatewayClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
+  private readonly memoryService: LocalMemoryService;
   private activeClient: OpenAiCompatibleClient | null = null;
   private activeAbortController: AbortController | null = null;
   private activeRunToken: symbol | null = null;
@@ -79,6 +90,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       options.clientFactory ?? ((config, apiKey) => new OpenAiCompatibleClient({ baseUrl: config.baseUrl, apiKey }));
     this.toolGateway = options.toolGateway;
     this.loadPersonalization = options.loadPersonalization ?? loadPersonalizationSettings;
+    this.memoryService = options.memoryService ?? getLocalMemoryService();
     this.supportsAgent = Boolean(this.toolGateway);
   }
 
@@ -176,6 +188,24 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (personalizationContext) {
       requestMessages.unshift({ role: 'system', content: personalizationContext });
     }
+    // Local Memory is another Local-only request context, layered after
+    // Personalization so request order stays:
+    //   system / agent context -> Personalization -> Local Memory -> conversation
+    // A memory read failure (or disabled / empty memory) degrades to no memory
+    // context rather than failing the send, and never touches persisted history.
+    try {
+      const snapshot = await this.memoryService.buildContext();
+      const memoryContext = buildMemoryContext(snapshot);
+      if (memoryContext) {
+        const insertAt = personalizationContext ? 1 : 0;
+        requestMessages.splice(insertAt, 0, {
+          role: 'system',
+          content: memoryContext,
+        });
+      }
+    } catch {
+      // Safe degradation: this turn simply runs without memory context.
+    }
     if (options?.agentEnabled && this.activeRunToken) {
       const replacedClient = this.activeClient;
       this.activeAbortController?.abort();
@@ -246,13 +276,26 @@ export class LocalProviderRuntime implements ConversationRuntime {
       throw error;
     }
     const repository = this.sessionRepository;
-    const runtime = this;
+    const that = this;
     const assistantId = createMessageId();
+    const threadId = sessionId;
+    const canonicalUserMessageId = userMessage.id;
+    const userText = input;
     return (async function* () {
       let content = '';
+      let sawError = false;
+      let paused = false;
+      let finished = false;
+      let finishReason: string | null = null;
       try {
         for await (const event of stream) {
           if (event.type === 'text-delta') content += event.delta;
+          if (event.type === 'error') sawError = true;
+          if (event.type === 'run-paused') paused = true;
+          if (event.type === 'finish') {
+            finished = true;
+            finishReason = event.reason;
+          }
           yield event;
         }
         if (content) {
@@ -260,23 +303,108 @@ export class LocalProviderRuntime implements ConversationRuntime {
             { id: assistantId, role: 'assistant', content, timestamp: new Date() },
           ]);
         }
+        // Memory consolidation runs only for a genuinely completed turn whose
+        // canonical Assistant reply was just persisted.
+        //
+        // "Completed" means the run reached a real final Assistant reply, not
+        // merely that some text arrived. An Agent run that errored, paused
+        // (app-suspended / timeout / cancelled / approval-rejected) or stopped
+        // on a non-final reason (tool_calls / tool-round limit) is not a
+        // completed turn: tool intermediate messages are not Memory evidence.
+        const completedTurn =
+          content.length > 0 &&
+          !sawError &&
+          !paused &&
+          finished &&
+          isCompletedAssistantFinishReason(finishReason);
+        if (completedTurn) {
+          // Detached, best-effort side effect: the canonical reply is already
+          // durable, so the Chat stream / UI must complete without waiting for
+          // the extra Provider consolidation call.
+          that.consolidateTurn({
+            threadId,
+            userMessageId: canonicalUserMessageId,
+            assistantMessageId: assistantId,
+            userText,
+            assistantText: content,
+            model: config.model,
+            client,
+            config,
+          }).catch(() => undefined);
+        }
       } finally {
-        if (runtime.activeClient === client) runtime.activeClient = null;
+        if (that.activeClient === client) that.activeClient = null;
         if (
-          runtime.activeAbortController === abortController &&
-          runtime.activeRunToken === runToken
+          that.activeAbortController === abortController &&
+          that.activeRunToken === runToken
         ) {
-          runtime.activeAbortController = null;
-          runtime.activeRunToken = null;
+          that.activeAbortController = null;
+          that.activeRunToken = null;
         }
         if (runToken) {
-          runtime.rejectPendingApproval(
+          that.rejectPendingApproval(
             new Error('Local Agent run ended before approval was resolved'),
             runToken,
           );
         }
       }
     })();
+  }
+
+  /**
+   * Consolidate one completed local turn into Memory.
+   *
+   * This is a best-effort, detached, Local-only side effect that runs after the
+   * canonical Assistant reply is already durable. Every failure path (provider
+   * error, invalid JSON, policy reject, repository failure, disabled memory) is
+   * swallowed here so a Memory problem can never turn a successful chat reply
+   * into a failed one. The Memory Service owns idempotency and marks the turn
+   * processed only on a successful consolidation.
+   *
+   * The Provider-backed consolidator is built per turn from the exact Local
+   * Provider client / model that produced this turn and passed explicitly into
+   * `commitTurn`, so concurrent sessions can never share or overwrite each
+   * other's Provider.
+   */
+  private async consolidateTurn(input: {
+    threadId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    userText: string;
+    assistantText: string;
+    model: string;
+    client: OpenAiCompatibleClient;
+    config: LocalProviderConfig;
+  }): Promise<void> {
+    try {
+      const source = {
+        type: 'conversation' as const,
+        threadId: input.threadId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: input.assistantMessageId,
+      };
+      if (await this.memoryService.isProcessed(source)) return;
+      // The consolidator uses the exact same Local Provider client / model and
+      // secure credential boundary as the chat request, and goes through the
+      // same provider compatibility normalization (e.g. reasoning-tag stripping)
+      // so a reasoning-tag-prefixed JSON payload is still parsed correctly.
+      const consolidator = createLocalProviderConsolidator({
+        model: input.model,
+        chat: async request =>
+          applyProviderCompatibility(
+            await input.client.streamChat(request),
+            input.config,
+          ),
+      });
+      await this.memoryService.commitTurn({
+        source,
+        userText: input.userText,
+        assistantText: input.assistantText,
+        consolidator,
+      });
+    } catch {
+      // Memory is an additive capability; it must never fail the chat reply.
+    }
   }
 
   getAgentEnabled(sessionId: string): Promise<boolean> {
