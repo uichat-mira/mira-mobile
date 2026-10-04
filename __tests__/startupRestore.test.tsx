@@ -200,6 +200,11 @@ describe('startup session restore', () => {
     mockInitialRouteNames.length = 0;
     mockChatInitialParams.length = 0;
     useHostStore.getState().setConnectionStatus('connected');
+    const remote = jest.requireMock('../src/api/remoteMiraHost').remoteMiraHostClient;
+    remote.restoreConnection.mockResolvedValue({ hostUrl: 'https://host.example' });
+    const host = jest.requireMock('../src/api/miraHostClient').miraHostClient;
+    host.listSessions.mockReset();
+    host.listSessions.mockResolvedValue(mockListedSessions);
   });
 
   afterEach(async () => {
@@ -234,9 +239,9 @@ describe('startup session restore', () => {
     expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
   });
 
-  it('falls back to the session list when the stored session no longer exists', async () => {
+  it('falls back to the session list when a connected Host authoritatively lists it as absent', async () => {
     const { miraHostClient } = jest.requireMock('../src/api/miraHostClient');
-    miraHostClient.listSessions.mockResolvedValueOnce([]);
+    miraHostClient.listSessions.mockResolvedValue([]);
 
     await enableLastSessionLaunch();
     await saveLastOpenedSession(
@@ -249,6 +254,45 @@ describe('startup session restore', () => {
     expect(mockInitialRouteNames).toHaveLength(1);
     expect(mockInitialRouteNames[0]).toBe('SessionList');
     expect(mockChatInitialParams.every((params) => params === undefined)).toBe(true);
+  });
+
+  it('restores the remote session into Chat while the Host is unavailable', async () => {
+    // restoreConnection rejecting models a temporarily unreachable Host: the
+    // credential is kept and connectionStatus becomes "reconnecting".
+    const { remoteMiraHostClient } = jest.requireMock('../src/api/remoteMiraHost');
+    remoteMiraHostClient.restoreConnection.mockRejectedValueOnce(new Error('host unreachable'));
+
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(useHostStore.getState().connectionStatus).toBe('reconnecting');
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('Chat');
+    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+  });
+
+  it('restores the remote session into Chat when session listing fails', async () => {
+    // Host reports connected, but listing sessions errors. An unreachable listing
+    // must not be reinterpreted as "the session was deleted".
+    const { miraHostClient } = jest.requireMock('../src/api/miraHostClient');
+    miraHostClient.listSessions.mockRejectedValue(new Error('list failed'));
+
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('Chat');
+    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
   });
 
   it('starts on the session list by default', async () => {

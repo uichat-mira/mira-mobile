@@ -62,38 +62,62 @@ import type { RootStackParamList } from './src/types/navigation';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 /**
- * Restoring a session is only safe while that session still exists. Local
- * sessions are verified against device storage. Remote sessions need the Host,
- * so an unreachable Host resolves to "not restorable" and the app falls back to
- * the session list instead of opening a chat that may have been deleted.
+ * Whether a stored restore target can be confirmed gone.
+ *
+ * - `restore`: the session exists, or the authority that owns it cannot be
+ *   reached right now. An unreachable Host must not be silently reinterpreted as
+ *   "this session was deleted"; the restore intent is preserved and the existing
+ *   chat error/retry path explains the connection problem instead.
+ * - `drop`: the owning authority authoritatively reports the session is absent,
+ *   so the app safely falls back to the session list.
  */
-async function sessionStillExists(target: LastOpenedSession): Promise<boolean> {
-  if (target.source === 'local-provider') {
-    return runtimeRegistry.local
-      .listSessions()
-      .then((sessions) => sessions.some((session) => session.id === target.sessionId))
-      .catch(() => false);
-  }
+type RestoreVerdict = 'restore' | 'drop';
 
-  if (useHostStore.getState().connectionStatus !== 'connected') return false;
+/**
+ * Local sessions live on this device, so device storage is authoritative: an
+ * absent id is dropped, and a listing failure is treated as "cannot confirm"
+ * and also dropped, matching the existing local fallback behavior.
+ */
+async function resolveLocalRestoreVerdict(target: LastOpenedSession): Promise<RestoreVerdict> {
+  return runtimeRegistry.local
+    .listSessions()
+    .then((sessions) => (sessions.some((session) => session.id === target.sessionId) ? 'restore' : 'drop'))
+    .catch(() => 'drop');
+}
+
+/**
+ * Remote sessions are owned by the Host. Only a connected Host that can list
+ * sessions is authoritative: if it lists them and the id is absent, the session
+ * is genuinely gone. While the Host is reconnecting/unavailable, or when the
+ * listing itself fails, the verdict is `restore` so the app still opens the
+ * chat and lets the existing error/retry path surface the connection problem.
+ */
+async function resolveRemoteRestoreVerdict(target: LastOpenedSession): Promise<RestoreVerdict> {
+  if (useHostStore.getState().connectionStatus !== 'connected') return 'restore';
 
   return miraHostClient
     .listSessions()
-    .then((sessions) => sessions.some((session) => session.id === target.sessionId))
-    .catch(() => false);
+    .then((sessions) => (sessions.some((session) => session.id === target.sessionId) ? 'restore' : 'drop'))
+    .catch(() => 'restore');
 }
 
 /**
  * Resolves the cold-start restore target once, during bootstrap. Returns the
- * stored record only when the running app can confirm it still exists; otherwise
- * null, so the app falls back to the session list. This is the single decision
+ * stored record when it can be restored, and null only when the owning authority
+ * has authoritatively confirmed it no longer exists. This is the single decision
  * point for the "last session" launch behavior and must run before the navigator
  * commits its initial route.
  */
 async function resolveRestoreTarget(): Promise<LastOpenedSession | null> {
   const lastOpened = await loadLastOpenedSession().catch(() => null);
   if (!lastOpened) return null;
-  return (await sessionStillExists(lastOpened)) ? lastOpened : null;
+
+  const verdict =
+    lastOpened.source === 'local-provider'
+      ? await resolveLocalRestoreVerdict(lastOpened)
+      : await resolveRemoteRestoreVerdict(lastOpened);
+
+  return verdict === 'restore' ? lastOpened : null;
 }
 
 const linking: LinkingOptions<RootStackParamList> = {
