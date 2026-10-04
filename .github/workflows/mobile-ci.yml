@@ -140,7 +140,7 @@ jobs:
           java-version: '17'
 
       - name: Install JavaScript dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download Android debug artifact
         uses: actions/download-artifact@v4
@@ -164,7 +164,8 @@ jobs:
           install_root="$HOME/.local/share/maestro-2.11.0"
           rm -rf "$install_root"
           mkdir -p "$install_root"
-          curl --fail --location --retry 3 \
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --retry 3 \
             'https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.11.0/maestro.zip' \
             --output "$RUNNER_TEMP/maestro.zip"
           unzip -q "$RUNNER_TEMP/maestro.zip" -d "$install_root"
@@ -178,7 +179,7 @@ jobs:
           "$maestro_bin" --version
 
       - name: Run Android emulator and Maestro critical smoke
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 35
           target: google_apis
