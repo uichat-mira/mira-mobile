@@ -83,6 +83,19 @@ async function sessionStillExists(target: LastOpenedSession): Promise<boolean> {
     .catch(() => false);
 }
 
+/**
+ * Resolves the cold-start restore target once, during bootstrap. Returns the
+ * stored record only when the running app can confirm it still exists; otherwise
+ * null, so the app falls back to the session list. This is the single decision
+ * point for the "last session" launch behavior and must run before the navigator
+ * commits its initial route.
+ */
+async function resolveRestoreTarget(): Promise<LastOpenedSession | null> {
+  const lastOpened = await loadLastOpenedSession().catch(() => null);
+  if (!lastOpened) return null;
+  return (await sessionStillExists(lastOpened)) ? lastOpened : null;
+}
+
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ['mira://'],
   config: {
@@ -101,10 +114,24 @@ function StatusBarThemed() {
   return null;
 }
 
+interface BootstrapResolution {
+  hasDeviceCredential: boolean;
+  restoreTarget: LastOpenedSession | null;
+}
+
+/**
+ * Bootstrap resolves the startup route in one committed step. `bootstrapChecked`
+ * alone is not enough to gate the navigator: the restore target used to live in
+ * separate state and was cleared by a follow-up effect before the navigator ever
+ * mounted, so a valid last session silently fell back to the list. Keeping both
+ * values in a single object makes "checked" and "restore target" impossible to
+ * batch apart, and nothing clears the target once it is committed.
+ */
 function AppInner() {
-  const [bootstrapChecked, setBootstrapChecked] = useState(false);
-  const [hasDeviceCredential, setHasDeviceCredential] = useState(false);
-  const [restoreTarget, setRestoreTarget] = useState<LastOpenedSession | null>(null);
+  const [bootstrap, setBootstrap] = useState<BootstrapResolution | null>(null);
+  const bootstrapChecked = bootstrap !== null;
+  const hasDeviceCredential = bootstrap?.hasDeviceCredential ?? false;
+  const restoreTarget = bootstrap?.restoreTarget ?? null;
 
   useEffect(() => {
     let previousState: AppStateStatus = AppState.currentState;
@@ -142,10 +169,12 @@ function AppInner() {
     let cancelled = false;
 
     const bootstrapRemoteHost = async () => {
+      let credentialPresent = false;
+      let resolvedRestoreTarget: LastOpenedSession | null = null;
+
       try {
         if (!remoteMiraHostClient.isSecureStorageAvailable()) {
           if (!cancelled) {
-            setHasDeviceCredential(false);
             useHostStore.getState().setConnectionStatus('disconnected');
           }
           return;
@@ -154,18 +183,17 @@ function AppInner() {
         const stored = await deviceCredentialStore.load();
         if (cancelled) return;
         if (!stored) {
-          setHasDeviceCredential(false);
           useHostStore.getState().setConnectionStatus('disconnected');
           return;
         }
 
-        setHasDeviceCredential(true);
+        credentialPresent = true;
         try {
           const restored = await remoteMiraHostClient.restoreConnection();
           if (cancelled) return;
 
           const connected = restored != null;
-          setHasDeviceCredential(connected);
+          credentialPresent = connected;
           useHostStore
             .getState()
             .setConnectionStatus(connected ? 'connected' : 'disconnected');
@@ -174,7 +202,7 @@ function AppInner() {
 
           // Direct or Relay may be temporarily unreachable. The paired-device
           // credential remains valid unless the Host explicitly returns 401/403.
-          setHasDeviceCredential(true);
+          credentialPresent = true;
           useHostStore.getState().setConnectionStatus('reconnecting');
         }
 
@@ -182,12 +210,8 @@ function AppInner() {
         if (cancelled) return;
 
         if (settings.launchBehavior === 'last-session') {
-          const lastOpened = await loadLastOpenedSession().catch(() => null);
+          resolvedRestoreTarget = await resolveRestoreTarget();
           if (cancelled) return;
-          if (lastOpened && (await sessionStillExists(lastOpened))) {
-            if (cancelled) return;
-            setRestoreTarget(lastOpened);
-          }
         }
 
         if (settings.autoCheckUpdates) {
@@ -200,7 +224,14 @@ function AppInner() {
           }
         }
       } finally {
-        if (!cancelled) setBootstrapChecked(true);
+        if (!cancelled) {
+          // Single commit: the navigator mounts once with both the credential
+          // state and the resolved restore target already in place.
+          setBootstrap({
+            hasDeviceCredential: credentialPresent,
+            restoreTarget: resolvedRestoreTarget,
+          });
+        }
       }
     };
     void bootstrapRemoteHost();
@@ -209,12 +240,11 @@ function AppInner() {
     };
   }, []);
 
-  // The restore target is consumed once, by the navigator's initial route. It is
-  // then cleared so a later restart re-reads the record instead of replaying this
-  // mount's params, and so a manual back-out is not undone on the next render.
-  useEffect(() => {
-    if (restoreTarget) setRestoreTarget(null);
-  }, [restoreTarget]);
+  // The restore target lives in the committed bootstrap state and is only read
+  // once, by the navigator's initial route. It is intentionally not cleared
+  // afterwards: the navigator never re-reads initialRouteName, and clearing it
+  // here previously won the race against the navigator's first mount, which is
+  // exactly why "launch into last session" fell back to the session list.
 
   if (!bootstrapChecked) return null;
 
