@@ -1,0 +1,309 @@
+/**
+ * @format
+ */
+
+import React from 'react';
+import ReactTestRenderer from 'react-test-renderer';
+
+import { saveGeneralSettings } from '../src/screens/generalSettings';
+import { saveLastOpenedSession } from '../src/screens/lastOpenedSession';
+
+// Captured from the stack navigator's first mount. The regression this guards is
+// that a valid restore target was cleared before the navigator read its initial
+// route, so the app cold-started into the session list instead of the last
+// session. We observe the navigator's actual route/params instead of asserting
+// on App.tsx source text.
+const mockInitialRouteNames: string[] = [];
+const mockChatInitialParams: Array<Record<string, unknown> | undefined> = [];
+
+jest.mock('@react-navigation/native', () => ({
+  NavigationContainer: ({ children }: { children: React.ReactNode }) => children ?? null,
+}));
+
+jest.mock('react-native-safe-area-context', () => ({
+  SafeAreaProvider: ({ children }: { children: React.ReactNode }) => children ?? null,
+  SafeAreaView: ({ children }: { children: React.ReactNode }) => children ?? null,
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaFrame: () => ({ x: 0, y: 0, width: 390, height: 844 }),
+}));
+
+jest.mock('@react-navigation/native-stack', () => ({
+  createNativeStackNavigator: () => ({
+    Navigator: ({
+      initialRouteName,
+      children,
+    }: {
+      initialRouteName?: string;
+      children?: React.ReactNode;
+    }) => {
+      mockInitialRouteNames.push(initialRouteName as string);
+      return children ?? null;
+    },
+    Screen: ({ name, initialParams }: { name: string; initialParams?: unknown }) => {
+      if (name === 'Chat') {
+        mockChatInitialParams.push(initialParams as Record<string, unknown> | undefined);
+      }
+      return null;
+    },
+  }),
+}));
+
+// Back the app's key-value store with an in-memory implementation so the test
+// can seed the exact instance the app reads. The store must be created inside
+// the factory: a module-scope const is not yet initialized when jest executes
+// the mock factory during the hoisted import of App.
+jest.mock('../src/storage/localKeyValueStore', () => {
+  const actual = jest.requireActual('../src/storage/localKeyValueStore');
+  return {
+    ...actual,
+    localKeyValueStore: new actual.MemoryLocalKeyValueStore(),
+  };
+});
+
+const mockCredential = {
+  hostUrl: 'https://host.example',
+  scopes: ['chat'],
+  relay: null,
+};
+
+jest.mock('../src/security/deviceCredentialStore', () => ({
+  deviceCredentialStore: {
+    load: jest.fn(async () => mockCredential),
+    save: jest.fn(async () => undefined),
+    clear: jest.fn(async () => undefined),
+    isAvailable: () => true,
+  },
+}));
+
+jest.mock('../src/api/remoteMiraHost', () => ({
+  remoteMiraHostClient: {
+    isSecureStorageAvailable: () => true,
+    restoreConnection: jest.fn(async () => ({ hostUrl: 'https://host.example' })),
+    refreshRelayConnection: jest.fn(),
+    getStoredHostUrl: jest.fn(async () => 'https://host.example'),
+  },
+}));
+
+const mockListedSessions = [
+  {
+    id: 'thread-42',
+    title: '需求评审',
+    updatedAt: new Date('2026-10-01T00:00:00Z'),
+    source: 'remote-host' as const,
+  },
+];
+
+jest.mock('../src/api/miraHostClient', () => ({
+  miraHostClient: {
+    listSessions: jest.fn(async () => mockListedSessions),
+  },
+}));
+
+jest.mock('../src/update/appUpdate', () => ({
+  fetchLatestRelease: jest.fn(async () => null),
+  isUpdateAvailable: jest.fn(() => false),
+}));
+
+jest.mock('../src/update/updatePrompt', () => ({
+  presentUpdatePrompt: jest.fn(),
+}));
+
+// Tailscale connectivity probing is unrelated to startup routing and otherwise
+// schedules async store updates that trip act() warnings.
+jest.mock('../src/connectivity/TailscaleConnectivityLifecycle', () => ({
+  TailscaleConnectivityLifecycle: () => null,
+}));
+
+// The full screen tree pulls in heavyweight, ESM-only renderers that are
+// irrelevant to startup routing. Replace every screen with an inert component so
+// the test exercises only bootstrap + navigator wiring.
+jest.mock('../src/screens/BootstrapScreen', () => ({ BootstrapScreen: 'BootstrapScreen' }));
+jest.mock('../src/screens/SessionListScreen', () => ({ SessionListScreen: 'SessionListScreen' }));
+jest.mock('../src/screens/AgentChatScreen', () => ({ AgentChatScreen: 'AgentChatScreen' }));
+jest.mock('../src/screens/WorkspaceListScreen', () => ({
+  WorkspaceListScreen: 'WorkspaceListScreen',
+}));
+jest.mock('../src/screens/WorkspaceDetailScreen', () => ({
+  WorkspaceDetailScreen: 'WorkspaceDetailScreen',
+}));
+jest.mock('../src/screens/HostConfigScreen', () => ({ HostConfigScreen: 'HostConfigScreen' }));
+jest.mock('../src/screens/SettingsScreen', () => ({ SettingsScreen: 'SettingsScreen' }));
+jest.mock('../src/screens/LocalProviderConfigScreen', () => ({
+  LocalProviderConfigScreen: 'LocalProviderConfigScreen',
+}));
+jest.mock('../src/screens/SearchScreen', () => ({ SearchScreen: 'SearchScreen' }));
+jest.mock('../src/screens/PersonalizationScreen', () => ({
+  PersonalizationScreen: 'PersonalizationScreen',
+}));
+jest.mock('../src/screens/MemoryScreen', () => ({ MemoryScreen: 'MemoryScreen' }));
+jest.mock('../src/screens/StorageScreen', () => ({ StorageScreen: 'StorageScreen' }));
+jest.mock('../src/screens/GeneralSettingsScreen', () => ({
+  GeneralSettingsScreen: 'GeneralSettingsScreen',
+}));
+jest.mock('../src/screens/NotificationSettingsScreen', () => ({
+  NotificationSettingsScreen: 'NotificationSettingsScreen',
+}));
+jest.mock('../src/screens/ReportErrorScreen', () => ({ ReportErrorScreen: 'ReportErrorScreen' }));
+jest.mock('../src/screens/AboutScreen', () => ({ AboutScreen: 'AboutScreen' }));
+jest.mock('../src/screens/LicenseScreen', () => ({ LicenseScreen: 'LicenseScreen' }));
+jest.mock('../src/screens/SecurityScreen', () => ({ SecurityScreen: 'SecurityScreen' }));
+jest.mock('../src/shiyan/ShiyanScreens', () => ({
+  PluginsScreen: 'PluginsScreen',
+  ShiyanSceneConfigScreen: 'ShiyanSceneConfigScreen',
+}));
+jest.mock('../src/shiyan/ShiyanRecordingScreens', () => ({
+  ShiyanHomeScreen: 'ShiyanHomeScreen',
+  ShiyanLocalDraftsScreen: 'ShiyanLocalDraftsScreen',
+  ShiyanRecordScreen: 'ShiyanRecordScreen',
+  ShiyanSceneSelectScreen: 'ShiyanSceneSelectScreen',
+}));
+jest.mock('../src/shiyan/ShiyanCaptureSubmitScreen', () => ({
+  ShiyanCaptureSubmitScreen: 'ShiyanCaptureSubmitScreen',
+}));
+jest.mock('../src/shiyan/ShiyanCloudConfigScreen', () => ({
+  ShiyanCloudConfigScreen: 'ShiyanCloudConfigScreen',
+}));
+jest.mock('../src/shiyan/ShiyanHistoryScreen', () => ({
+  ShiyanHistoryScreen: 'ShiyanHistoryScreen',
+}));
+jest.mock('../src/shiyan/ShiyanOrganizeRulesScreen', () => ({
+  ShiyanOrganizeRulesScreen: 'ShiyanOrganizeRulesScreen',
+}));
+jest.mock('../src/shiyan/ShiyanTaskDetailWithDeliveryScreen', () => ({
+  ShiyanTaskDetailWithDeliveryScreen: 'ShiyanTaskDetailWithDeliveryScreen',
+}));
+
+import { useHostStore } from '../src/store/hostStore';
+import { localKeyValueStore } from '../src/storage/localKeyValueStore';
+import App from '../App';
+
+const flushMicrotasks = async (rounds = 12): Promise<void> => {
+  for (let index = 0; index < rounds; index += 1) {
+    await Promise.resolve();
+  }
+};
+
+const renderApp = async (): Promise<ReactTestRenderer.ReactTestRenderer> => {
+  let component: ReactTestRenderer.ReactTestRenderer | undefined;
+  await ReactTestRenderer.act(async () => {
+    component = ReactTestRenderer.create(<App />);
+    await flushMicrotasks();
+  });
+  await ReactTestRenderer.act(async () => {
+    await flushMicrotasks();
+  });
+  return component!;
+};
+
+describe('startup session restore', () => {
+  beforeEach(() => {
+    mockInitialRouteNames.length = 0;
+    mockChatInitialParams.length = 0;
+    useHostStore.getState().setConnectionStatus('connected');
+    const remote = jest.requireMock('../src/api/remoteMiraHost').remoteMiraHostClient;
+    remote.restoreConnection.mockResolvedValue({ hostUrl: 'https://host.example' });
+    const host = jest.requireMock('../src/api/miraHostClient').miraHostClient;
+    host.listSessions.mockReset();
+    host.listSessions.mockResolvedValue(mockListedSessions);
+  });
+
+  afterEach(async () => {
+    useHostStore.getState().setConnectionStatus('disconnected');
+    await localKeyValueStore.remove('mira.mobile.last-opened-session.v1');
+    await localKeyValueStore.remove('mira.mobile.general.v1');
+  });
+
+  const enableLastSessionLaunch = () =>
+    saveGeneralSettings(
+      {
+        defaultSessionSource: 'ask',
+        launchBehavior: 'last-session',
+        autoCheckUpdates: false,
+        textScale: 'standard',
+        hapticsEnabled: true,
+      },
+      localKeyValueStore,
+    );
+
+  it('cold-starts into the last session when launchBehavior is last-session', async () => {
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('Chat');
+    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+  });
+
+  it('falls back to the session list when a connected Host authoritatively lists it as absent', async () => {
+    const { miraHostClient } = jest.requireMock('../src/api/miraHostClient');
+    miraHostClient.listSessions.mockResolvedValue([]);
+
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-deleted', title: '已删除', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('SessionList');
+    expect(mockChatInitialParams.every((params) => params === undefined)).toBe(true);
+  });
+
+  it('restores the remote session into Chat while the Host is unavailable', async () => {
+    // restoreConnection rejecting models a temporarily unreachable Host: the
+    // credential is kept and connectionStatus becomes "reconnecting".
+    const { remoteMiraHostClient } = jest.requireMock('../src/api/remoteMiraHost');
+    remoteMiraHostClient.restoreConnection.mockRejectedValueOnce(new Error('host unreachable'));
+
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(useHostStore.getState().connectionStatus).toBe('reconnecting');
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('Chat');
+    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+  });
+
+  it('restores the remote session into Chat when session listing fails', async () => {
+    // Host reports connected, but listing sessions errors. An unreachable listing
+    // must not be reinterpreted as "the session was deleted".
+    const { miraHostClient } = jest.requireMock('../src/api/miraHostClient');
+    miraHostClient.listSessions.mockRejectedValue(new Error('list failed'));
+
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('Chat');
+    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+  });
+
+  it('starts on the session list by default', async () => {
+    await saveLastOpenedSession(
+      { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toHaveLength(1);
+    expect(mockInitialRouteNames[0]).toBe('SessionList');
+  });
+});
