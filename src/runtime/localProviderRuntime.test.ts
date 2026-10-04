@@ -3,6 +3,10 @@ import { LocalSessionRepository } from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
+import {
+  DEFAULT_PERSONALIZATION_SETTINGS,
+  type PersonalizationSettings,
+} from '../screens/personalizationSettings';
 import { LocalProviderRuntime } from './localProviderRuntime';
 
 const config: LocalProviderConfig = {
@@ -148,3 +152,123 @@ describe('LocalProviderRuntime', () => {
     ]);
   });
 });
+
+const createPersonalizationRuntime = async (
+  personalization: PersonalizationSettings,
+  loadPersonalization: () => Promise<PersonalizationSettings> = async () => personalization,
+) => {
+  const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+  await configStore.save([config]);
+  const credentialStore = new MemoryProviderCredentialStore();
+  await credentialStore.save(config.id, 'sk-test');
+  const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+  const streamChat = jest.fn(async () => (async function* () {})());
+  const runtime = new LocalProviderRuntime({
+    configStore,
+    credentialStore,
+    sessionRepository: repository,
+    clientFactory: () => ({
+      cancelActiveRun: jest.fn(),
+      streamChat,
+    } as unknown as OpenAiCompatibleClient),
+    loadPersonalization,
+    toolGateway: {
+      listTools: async () => [],
+      callTool: async () => ({ content: 'unused' }),
+    },
+  });
+  return { runtime, streamChat };
+};
+
+const firstRequestMessages = (streamChat: jest.Mock) => {
+  const request = streamChat.mock.calls[0][0] as {
+    messages: Array<{ role: string; content: string | null }>;
+  };
+  return request.messages;
+};
+
+const drain = async (stream: AsyncIterable<unknown>) => {
+  // Exhaust the runtime stream so lazy model calls are dispatched.
+  const iterator = stream[Symbol.asyncIterator]();
+  let result = await iterator.next();
+  while (!result.done) {
+    result = await iterator.next();
+  }
+};
+
+describe('LocalProviderRuntime personalization context', () => {
+  const personalized: PersonalizationSettings = {
+    baseStyle: { tone: 'professional' },
+    characteristics: { warmth: true, traits: ['讲话简短'], conciseFirst: true },
+    instructions: '保持克制',
+  };
+
+  it('injects a Personalization system context into plain Local Chat requests', async () => {
+    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const session = await runtime.createSession('Chat', config.id);
+
+    await runtime.sendMessage(session.id, '你好');
+
+    const messages = firstRequestMessages(streamChat);
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content).toContain('professional');
+    expect(messages[0].content).toContain('保持克制');
+    expect(messages.some((message) => message.role === 'user')).toBe(true);
+  });
+
+  it('injects the same Personalization context into Local Agent requests', async () => {
+    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const session = await runtime.createSession('Agent', config.id);
+
+    await drain(await runtime.sendMessage(session.id, '你好', { agentEnabled: true }));
+
+    const messages = firstRequestMessages(streamChat);
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content).toContain('professional');
+  });
+
+  it('does not inject a system context when personalization is default and no instruction is present', async () => {
+    const { runtime, streamChat } = await createPersonalizationRuntime(
+      DEFAULT_PERSONALIZATION_SETTINGS,
+    );
+    const session = await runtime.createSession('Chat', config.id);
+
+    await runtime.sendMessage(session.id, '你好');
+
+    const messages = firstRequestMessages(streamChat);
+    expect(messages.some((message) => message.role === 'system')).toBe(false);
+  });
+
+  it('carries the precedence note so the current user message can override the stored style', async () => {
+    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const session = await runtime.createSession('Chat', config.id);
+
+    await runtime.sendMessage(session.id, '请用非常简短的一句话回答');
+
+    const messages = firstRequestMessages(streamChat);
+    expect(messages[0].content).toContain('follow the current user message');
+  });
+
+  it('never persists the compiled context into stored conversation history', async () => {
+    const { runtime } = await createPersonalizationRuntime(personalized);
+    const session = await runtime.createSession('Chat', config.id);
+
+    await runtime.sendMessage(session.id, '你好');
+
+    const stored = await runtime.getMessages(session.id);
+    expect(stored.some((message) => message.role === 'system')).toBe(false);
+  });
+
+  it('degrades to no personalization context when loading fails, without failing the send', async () => {
+    const { runtime, streamChat } = await createPersonalizationRuntime(personalized, () => {
+      throw new Error('corrupted personalization payload');
+    });
+    const session = await runtime.createSession('Chat', config.id);
+
+    await expect(runtime.sendMessage(session.id, '你好')).resolves.toBeDefined();
+
+    const messages = firstRequestMessages(streamChat);
+    expect(messages.some((message) => message.role === 'system')).toBe(false);
+  });
+});
+

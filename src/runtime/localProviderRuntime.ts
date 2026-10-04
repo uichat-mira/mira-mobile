@@ -4,8 +4,13 @@ import { ProviderConfigStore, type LocalProviderConfig } from '../provider/provi
 import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
 import { providerCredentialStore, type ProviderCredentialStore } from '../security/providerCredentialStore';
 import { LocalSessionRepository, DEFAULT_LOCAL_SESSION_TITLE } from '../local/localSessionRepository';
+import {
+  loadPersonalizationSettings,
+  type PersonalizationSettings,
+} from '../screens/personalizationSettings';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { MobileAgentLoop } from './mobileAgentLoop';
+import { buildLocalPersonalizationContext } from './localPersonalizationContext';
 import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -41,6 +46,7 @@ export interface LocalProviderRuntimeOptions {
   sessionRepository?: LocalSessionRepository;
   clientFactory?: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
   toolGateway?: ToolGatewayClient;
+  loadPersonalization?: () => Promise<PersonalizationSettings>;
 }
 
 export class LocalProviderRuntime implements ConversationRuntime {
@@ -51,6 +57,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly sessionRepository: LocalSessionRepository;
   private readonly clientFactory: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
   private readonly toolGateway?: ToolGatewayClient;
+  private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
   private activeClient: OpenAiCompatibleClient | null = null;
   private activeAbortController: AbortController | null = null;
   private activeRunToken: symbol | null = null;
@@ -71,6 +78,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.clientFactory =
       options.clientFactory ?? ((config, apiKey) => new OpenAiCompatibleClient({ baseUrl: config.baseUrl, apiKey }));
     this.toolGateway = options.toolGateway;
+    this.loadPersonalization = options.loadPersonalization ?? loadPersonalizationSettings;
     this.supportsAgent = Boolean(this.toolGateway);
   }
 
@@ -152,6 +160,22 @@ export class LocalProviderRuntime implements ConversationRuntime {
         content: message.content,
       }),
     );
+    // Personalization is a Local-only request context. It is compiled here,
+    // after canonical storage reads, so persisted history stays untouched and
+    // the Remote Host path (which never enters this runtime) cannot receive it.
+    // A read failure degrades to no personalization rather than failing the
+    // send, and must never overwrite the persisted settings.
+    let personalizationContext: string | null = null;
+    try {
+      personalizationContext = buildLocalPersonalizationContext(
+        await this.loadPersonalization(),
+      );
+    } catch {
+      personalizationContext = null;
+    }
+    if (personalizationContext) {
+      requestMessages.unshift({ role: 'system', content: personalizationContext });
+    }
     if (options?.agentEnabled && this.activeRunToken) {
       const replacedClient = this.activeClient;
       this.activeAbortController?.abort();
