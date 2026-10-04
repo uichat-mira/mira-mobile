@@ -18,11 +18,12 @@ import {
   normalizeTrait,
   removeTrait,
   savePersonalizationSettings,
+  type BaseStyleTone,
   type PersonalizationSettings,
-  type PersonalizationTone,
 } from './personalizationSettings';
 
-const toneOptions: readonly SettingsChoice<PersonalizationTone>[] = [
+const toneOptions: readonly SettingsChoice<BaseStyleTone>[] = [
+  { value: 'default', label: '默认（不指定）' },
   { value: 'friendly', label: '亲和友善' },
   { value: 'professional', label: '专业严谨' },
   { value: 'concise', label: '简洁直接' },
@@ -134,8 +135,8 @@ export function PersonalizationScreen() {
   if (!hydrated) return null;
 
   const controlsLocked = loadFailed;
-  const traitsAtCap = settings.traits.length >= MAX_TRAITS;
-  const toneLabel = toneOptions.find((option) => option.value === settings.tone)?.label ?? '';
+  const traitsAtCap = settings.characteristics.traits.length >= MAX_TRAITS;
+  const toneLabel = toneOptions.find((option) => option.value === settings.baseStyle.tone)?.label ?? '';
 
   return (
     <SafeAreaView
@@ -197,19 +198,30 @@ export function PersonalizationScreen() {
             <Text style={[styles.subtitle, { color: colors.text.muted }]}>更友好、更亲近</Text>
           </View>
           <Switch
-            value={settings.warmthEnabled}
-            onValueChange={(value) => applySettings({ ...settings, warmthEnabled: value })}
+            value={settings.characteristics.warmth}
+            onValueChange={(value) =>
+              applySettings({
+                ...settings,
+                characteristics: { ...settings.characteristics, warmth: value },
+              })
+            }
             disabled={controlsLocked}
             trackColor={{ false: colors.border.default, true: colors.primary }}
             thumbColor={colors.bg.elevated}
           />
         </View>
-        {settings.traits.map((trait, index) => (
+        {settings.characteristics.traits.map((trait, index) => (
           <View key={trait} style={[styles.surface, { backgroundColor: colors.bg.card }]}>
             <Text style={[styles.title, styles.flex, { color: colors.text.ink }]}>{trait}</Text>
             <Pressable
               onPress={() =>
-                applySettings({ ...settings, traits: removeTrait(settings.traits, index) })
+                applySettings({
+                  ...settings,
+                  characteristics: {
+                    ...settings.characteristics,
+                    traits: removeTrait(settings.characteristics.traits, index),
+                  },
+                })
               }
               style={({ pressed }) => [
                 styles.traitRemove,
@@ -244,7 +256,7 @@ export function PersonalizationScreen() {
             <Text style={[styles.subtitle, { color: colors.text.muted }]}>
               {traitsAtCap
                 ? `已达上限 ${MAX_TRAITS} 条`
-                : `${settings.traits.length}/${MAX_TRAITS}`}
+                : `${settings.characteristics.traits.length}/${MAX_TRAITS}`}
             </Text>
           </View>
         </Pressable>
@@ -252,8 +264,13 @@ export function PersonalizationScreen() {
         <View style={[styles.surface, { backgroundColor: colors.bg.card }]}>
           <Text style={[styles.title, styles.flex, { color: colors.text.ink }]}>快速回答</Text>
           <Switch
-            value={settings.quickReplies}
-            onValueChange={(value) => applySettings({ ...settings, quickReplies: value })}
+            value={settings.characteristics.conciseFirst}
+            onValueChange={(value) =>
+              applySettings({
+                ...settings,
+                characteristics: { ...settings.characteristics, conciseFirst: value },
+              })
+            }
             disabled={controlsLocked}
             trackColor={{ false: colors.border.default, true: colors.primary }}
             thumbColor={colors.bg.elevated}
@@ -278,9 +295,9 @@ export function PersonalizationScreen() {
       </ScrollView>
       <SettingsChoiceModal
         visible={toneOpen}
-        value={settings.tone}
+        value={settings.baseStyle.tone}
         options={toneOptions}
-        onChange={(tone) => applySettings({ ...settings, tone })}
+        onChange={(tone) => applySettings({ ...settings, baseStyle: { tone } })}
         onClose={() => setToneOpen(false)}
       />
       <SettingsInputModal
@@ -290,15 +307,23 @@ export function PersonalizationScreen() {
         confirmLabel="添加"
         maxLength={MAX_TRAIT_LENGTH}
         validate={(value) => {
-          if (settings.traits.length >= MAX_TRAITS) {
+          if (settings.characteristics.traits.length >= MAX_TRAITS) {
             return `最多添加 ${MAX_TRAITS} 条特征。`;
           }
-          if (settings.traits.includes(normalizeTrait(value))) {
+          if (settings.characteristics.traits.includes(normalizeTrait(value))) {
             return '该特征已存在，换一个试试。';
           }
           return null;
         }}
-        onSubmit={(value) => applySettings({ ...settings, traits: addTrait(settings.traits, value) })}
+        onSubmit={(value) =>
+          applySettings({
+            ...settings,
+            characteristics: {
+              ...settings.characteristics,
+              traits: addTrait(settings.characteristics.traits, value),
+            },
+          })
+        }
         onClose={() => setTraitModalOpen(false)}
       />
     </SafeAreaView>
