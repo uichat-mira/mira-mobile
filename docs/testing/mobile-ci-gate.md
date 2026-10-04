@@ -11,11 +11,12 @@ dependencies have settled.
 | Trigger / branch | Required success | Explicitly not applicable |
 | --- | --- | --- |
 | Pull request | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
-| push to `test` (and other non-release branches handled by this workflow) | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
+| push to `test` | quality, Android debug build, Android Maestro critical smoke, iOS builds | Android signed release, dev publication, prod publication |
+| push to other non-release branches handled by this workflow | quality, Android debug build, iOS builds | Android Maestro critical smoke, Android signed release, dev publication, prod publication |
 | push to `dev` | quality, Android debug build, Android signed release, iOS builds, dev publication | prod publication |
 | push to `prod` | quality, Android debug build, Android signed release, iOS builds, prod publication | dev publication |
-| manual `workflow_dispatch` on `dev` / `prod` | quality, Android debug build, Android signed release, iOS builds | dev publication, prod publication |
-| manual `workflow_dispatch` on other branches | quality, Android debug build, iOS builds | Android signed release, dev publication, prod publication |
+| manual `workflow_dispatch` on `dev` / `prod` | quality, Android debug build, Android Maestro critical smoke, Android signed release, iOS builds | dev publication, prod publication |
+| manual `workflow_dispatch` on other branches | quality, Android debug build, Android Maestro critical smoke, iOS builds | Android signed release, dev publication, prod publication |
 
 A required result must be `success`. A job classified as not applicable must be
 `skipped`. Failure, cancellation, a missing result, or an unexpected skip makes
@@ -30,6 +31,8 @@ The policy evaluator lives in
 Node tests. The workflow-level job uses `if: ${{ always() }}` so it still runs
 when an upstream dependency fails or is skipped.
 
-MOB-059 and MOB-060 may later add T4 E2E jobs to the test-stage gate. Those jobs
-must be added deliberately to both the workflow dependencies and the stage
-policy; this document does not pre-classify checks that do not yet exist.
+MOB-059 adds `Android Maestro critical smoke` as required T4 evidence on a
+`test` push. The job reuses the Android debug artifact produced by the same
+workflow/SHA; it does not rebuild the app per flow. Manual workflow dispatch also
+runs this smoke so the harness can be exercised before promotion. MOB-060 may add
+the iOS T4 job later and must classify it explicitly in the same stage policy.
