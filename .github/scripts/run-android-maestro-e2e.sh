@@ -36,6 +36,7 @@ sha256sum "$APK_PATH" | tee "$ARTIFACT_DIR/apk.sha256"
   echo "android_release=$(adb shell getprop ro.build.version.release | tr -d '\r')"
   echo "device_model=$(adb shell getprop ro.product.model | tr -d '\r')"
   echo "device_name=$(adb shell getprop ro.product.device | tr -d '\r')"
+  echo "failure_probe=${MIRA_E2E_FAILURE_PROBE:-0}"
 } | tee "$ARTIFACT_DIR/metadata.txt"
 
 node "$ROOT_DIR/.github/e2e/host-fixture.cjs" >"$ARTIFACT_DIR/fixture.log" 2>&1 &
@@ -72,15 +73,25 @@ adb install -r "$APK_PATH"
 adb shell "am start -W -a android.intent.action.VIEW -d '$PAIRING_URI' $APP_ID"   >"$ARTIFACT_DIR/pairing-intent.txt" 2>&1
 
 flows=(
-  "00-pair-and-thread-list.yaml"
-  "01-settings-navigation.yaml"
-  "02-open-thread.yaml"
-  "03-create-thread.yaml"
+  "$ROOT_DIR/.maestro/android/00-pair-and-thread-list.yaml"
+  "$ROOT_DIR/.maestro/android/01-settings-navigation.yaml"
+  "$ROOT_DIR/.maestro/android/02-open-thread.yaml"
+  "$ROOT_DIR/.maestro/android/03-create-thread.yaml"
 )
 
+if [[ "${MIRA_E2E_FAILURE_PROBE:-0}" == "1" ]]; then
+  probe_flow="$ARTIFACT_DIR/deliberate-failure-probe.yaml"
+  cat >"$probe_flow" <<'YAML'
+appId: io.tomz.mira.mobile
+---
+- assertVisible: "MOB-059 deliberate failure probe should never be visible"
+YAML
+  flows+=("$probe_flow")
+fi
+
 failed=0
-for flow_name in "${flows[@]}"; do
-  flow="$ROOT_DIR/.maestro/android/$flow_name"
+for flow in "${flows[@]}"; do
+  flow_name="$(basename "$flow")"
   base="${flow_name%.yaml}"
   log="$ARTIFACT_DIR/${base}.maestro.log"
 
