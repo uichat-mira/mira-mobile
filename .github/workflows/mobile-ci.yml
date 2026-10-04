@@ -11,6 +11,12 @@ on:
       - 'feature/**'
       - 'fix/**'
   workflow_dispatch:
+    inputs:
+      android_e2e_failure_probe:
+        description: 'Deliberately fail one Maestro probe after normal flows to validate failure evidence'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -123,6 +129,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/test') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MIRA_E2E_FAILURE_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.android_e2e_failure_probe && '1' || '0' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
