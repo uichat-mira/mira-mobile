@@ -7,6 +7,7 @@ const { evaluateGate, expectedResults } = require('./evaluate-mobile-gate.cjs');
 const baseNeeds = {
   quality: { result: 'success' },
   android: { result: 'success' },
+  'android-e2e': { result: 'skipped' },
   'android-release': { result: 'skipped' },
   ios: { result: 'success' },
   'publish-dev-release': { result: 'skipped' },
@@ -22,11 +23,14 @@ test('pull request requires quality and platform builds while release jobs are n
   assert.equal(result.ok, true);
 });
 
-test('test push keeps release and publication jobs explicitly not applicable', () => {
+test('test push requires Android E2E while release and publication jobs are not applicable', () => {
+  const needs = structuredClone(baseNeeds);
+  needs['android-e2e'].result = 'success';
+
   const result = evaluateGate({
     eventName: 'push',
     ref: 'refs/heads/test',
-    needs: baseNeeds,
+    needs,
   });
   assert.equal(result.ok, true);
 });
@@ -57,17 +61,21 @@ test('prod push requires signed Android release and production publication', () 
   assert.equal(result.ok, true);
 });
 
-test('workflow dispatch on a non-release branch keeps release jobs not applicable', () => {
+test('workflow dispatch on a non-release branch requires Android E2E', () => {
+  const needs = structuredClone(baseNeeds);
+  needs['android-e2e'].result = 'success';
+
   const result = evaluateGate({
     eventName: 'workflow_dispatch',
-    ref: 'refs/heads/feat/mob-058-mira-gate',
-    needs: baseNeeds,
+    ref: 'refs/heads/feat/mob-059-android-maestro-smoke',
+    needs,
   });
   assert.equal(result.ok, true);
 });
 
-test('workflow dispatch on dev requires signed Android release but not publication', () => {
+test('workflow dispatch on dev requires signed Android release and Android E2E but not publication', () => {
   const needs = structuredClone(baseNeeds);
+  needs['android-e2e'].result = 'success';
   needs['android-release'].result = 'success';
 
   const result = evaluateGate({
@@ -101,6 +109,16 @@ test('required skip is not accepted as success', () => {
     needs,
   });
   assert.equal(result.ok, false);
+});
+
+test('test push rejects a skipped Android E2E job', () => {
+  const result = evaluateGate({
+    eventName: 'push',
+    ref: 'refs/heads/test',
+    needs: baseNeeds,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.failures.join('\n'), /android-e2e/);
 });
 
 test('a not-applicable release job unexpectedly running is rejected', () => {
