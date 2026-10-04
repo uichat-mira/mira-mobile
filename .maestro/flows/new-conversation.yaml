@@ -1,0 +1,14 @@
+appId: io.tomz.mira.mobile
+name: New remote conversation
+tags:
+  - critical
+---
+- runFlow: ../setup/pair-fixture.yaml
+- tapOn: "打开侧栏"
+- tapOn: "聊天"
+- assertVisible: "新建会话"
+- tapOn: "远程连接"
+- extendedWaitUntil:
+    visible: "New E2E Conversation"
+    timeout: 15000
+- takeScreenshot: new-remote-conversation
