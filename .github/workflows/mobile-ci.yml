@@ -470,7 +470,6 @@ jobs:
     needs:
       - quality
       - android
-      - android-maestro
       - android-release
       - ios
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
