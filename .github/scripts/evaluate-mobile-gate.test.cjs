@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { evaluateGate, expectedResults } = require('./evaluate-mobile-gate.cjs');
 
 const baseNeeds = {
@@ -185,4 +187,21 @@ test('stage policy is explicit for dev and prod publication', () => {
     expectedResults('workflow_dispatch', 'refs/heads/dev')['android-maestro'],
     'success',
   );
+});
+
+
+test('workflow graph keeps Maestro out of dev publishing while Mira Gate observes it', () => {
+  const workflow = fs.readFileSync(
+    path.join(__dirname, '..', 'workflows', 'mobile-ci.yml'),
+    'utf8',
+  );
+
+  const publishDev = workflow.slice(
+    workflow.indexOf('  publish-dev-release:'),
+    workflow.indexOf('  publish-prod-release:'),
+  );
+  assert.doesNotMatch(publishDev, /\n\s+- android-maestro\s*\n/u);
+
+  const miraGate = workflow.slice(workflow.indexOf('  mira-gate:'));
+  assert.match(miraGate, /\n\s+- android-maestro\s*\n/u);
 });
