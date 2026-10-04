@@ -773,6 +773,7 @@ jobs:
     needs:
       - quality
       - android
+      - android-maestro
       - android-release
       - ios
       - publish-dev-release
