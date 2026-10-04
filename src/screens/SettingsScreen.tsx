@@ -46,7 +46,6 @@ import { SettingsChoiceModal, type SettingsChoice } from '../components/settings
 import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
-import { openNotificationSettings } from './notificationSettings';
 import { PUBLIC_FEEDBACK_EMAIL } from '../data/feedbackContact';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -97,7 +96,6 @@ export function SettingsScreen() {
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
   const [localConfigured, setLocalConfigured] = useState(false);
-  const notificationJumpInFlight = React.useRef(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -156,22 +154,6 @@ export function SettingsScreen() {
     );
   };
 
-  const openNotificationRow = () => {
-    // 跳转进行中忽略连按：系统页 / 兜底 Alert 未结束前重复触发只会叠出多个系统页或 Alert。
-    if (notificationJumpInFlight.current) return;
-    notificationJumpInFlight.current = true;
-    void openNotificationSettings()
-      .catch(() => {
-        Alert.alert(
-          '无法打开通知设置',
-          '当前设备没有可打开的应用通知设置页。可在系统「设置 → 应用 → Mira → 通知」中手动管理。',
-        );
-      })
-      .finally(() => {
-        notificationJumpInFlight.current = false;
-      });
-  };
-
   const handleSettingAction = (actionId: string) => {
     switch (actionId) {
       case 'personalization':
@@ -184,7 +166,7 @@ export function SettingsScreen() {
         setAccentOpen(true);
         break;
       case 'notifications':
-        openNotificationRow();
+        navigation.navigate('Notifications');
         break;
       case 'host-config':
         navigation.navigate('HostConfig');
@@ -354,7 +336,7 @@ export function SettingsScreen() {
             isFirst
             isLast={false}
           />
-          <Row icon={Bell} title="通知" subtitle="在系统设置中管理" actionId="notifications" isLast={false} />
+          <Row icon={Bell} title="通知" subtitle="权限 · 测试通知" actionId="notifications" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
           <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />

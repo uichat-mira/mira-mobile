@@ -19,6 +19,7 @@ import { PersonalizationScreen } from './src/screens/PersonalizationScreen';
 import { MemoryScreen } from './src/screens/MemoryScreen';
 import { StorageScreen } from './src/screens/StorageScreen';
 import { GeneralSettingsScreen } from './src/screens/GeneralSettingsScreen';
+import { NotificationSettingsScreen } from './src/screens/NotificationSettingsScreen';
 import { ReportErrorScreen } from './src/screens/ReportErrorScreen';
 import { AboutScreen } from './src/screens/AboutScreen';
 import { LicenseScreen } from './src/screens/LicenseScreen';
@@ -241,6 +242,7 @@ function AppInner() {
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />
         <Stack.Screen name="General" component={GeneralSettingsScreen} />
+        <Stack.Screen name="Notifications" component={NotificationSettingsScreen} />
         <Stack.Screen name="Memory" component={MemoryScreen} />
         <Stack.Screen name="Storage" component={StorageScreen} />
         <Stack.Screen name="Plugins" component={PluginsScreen} />
