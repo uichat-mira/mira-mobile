@@ -1,0 +1,12 @@
+appId: io.tomz.mira.mobile
+name: Open deterministic thread
+tags:
+  - critical
+---
+- runFlow: ../setup/pair-fixture.yaml
+- tapOn: "E2E Fixture Thread"
+- extendedWaitUntil:
+    visible: "Fixture assistant message"
+    timeout: 15000
+- assertVisible: "E2E Fixture Thread"
+- takeScreenshot: open-thread
