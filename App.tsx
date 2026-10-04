@@ -48,7 +48,7 @@ import { miraHostClient } from './src/api/miraHostClient';
 import { deviceCredentialStore } from './src/security/deviceCredentialStore';
 import { useHostStore } from './src/store/hostStore';
 import { runtimeRegistry } from './src/runtime/runtimeRegistry';
-import { fetchLatestRelease, isUpdateAvailable } from './src/update/appUpdate';
+import { classifyAvailableUpdate, fetchLatestRelease } from './src/update/appUpdate';
 import { parseSemver } from './src/update/semver';
 import { presentUpdatePrompt } from './src/update/updatePrompt';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from './src/screens/generalSettings';
@@ -62,25 +62,62 @@ import type { RootStackParamList } from './src/types/navigation';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 /**
- * Restoring a session is only safe while that session still exists. Local
- * sessions are verified against device storage. Remote sessions need the Host,
- * so an unreachable Host resolves to "not restorable" and the app falls back to
- * the session list instead of opening a chat that may have been deleted.
+ * Whether a stored restore target can be confirmed gone.
+ *
+ * - `restore`: the session exists, or the authority that owns it cannot be
+ *   reached right now. An unreachable Host must not be silently reinterpreted as
+ *   "this session was deleted"; the restore intent is preserved and the existing
+ *   chat error/retry path explains the connection problem instead.
+ * - `drop`: the owning authority authoritatively reports the session is absent,
+ *   so the app safely falls back to the session list.
  */
-async function sessionStillExists(target: LastOpenedSession): Promise<boolean> {
-  if (target.source === 'local-provider') {
-    return runtimeRegistry.local
-      .listSessions()
-      .then((sessions) => sessions.some((session) => session.id === target.sessionId))
-      .catch(() => false);
-  }
+type RestoreVerdict = 'restore' | 'drop';
 
-  if (useHostStore.getState().connectionStatus !== 'connected') return false;
+/**
+ * Local sessions live on this device, so device storage is authoritative: an
+ * absent id is dropped, and a listing failure is treated as "cannot confirm"
+ * and also dropped, matching the existing local fallback behavior.
+ */
+async function resolveLocalRestoreVerdict(target: LastOpenedSession): Promise<RestoreVerdict> {
+  return runtimeRegistry.local
+    .listSessions()
+    .then((sessions) => (sessions.some((session) => session.id === target.sessionId) ? 'restore' : 'drop'))
+    .catch(() => 'drop');
+}
+
+/**
+ * Remote sessions are owned by the Host. Only a connected Host that can list
+ * sessions is authoritative: if it lists them and the id is absent, the session
+ * is genuinely gone. While the Host is reconnecting/unavailable, or when the
+ * listing itself fails, the verdict is `restore` so the app still opens the
+ * chat and lets the existing error/retry path surface the connection problem.
+ */
+async function resolveRemoteRestoreVerdict(target: LastOpenedSession): Promise<RestoreVerdict> {
+  if (useHostStore.getState().connectionStatus !== 'connected') return 'restore';
 
   return miraHostClient
     .listSessions()
-    .then((sessions) => sessions.some((session) => session.id === target.sessionId))
-    .catch(() => false);
+    .then((sessions) => (sessions.some((session) => session.id === target.sessionId) ? 'restore' : 'drop'))
+    .catch(() => 'restore');
+}
+
+/**
+ * Resolves the cold-start restore target once, during bootstrap. Returns the
+ * stored record when it can be restored, and null only when the owning authority
+ * has authoritatively confirmed it no longer exists. This is the single decision
+ * point for the "last session" launch behavior and must run before the navigator
+ * commits its initial route.
+ */
+async function resolveRestoreTarget(): Promise<LastOpenedSession | null> {
+  const lastOpened = await loadLastOpenedSession().catch(() => null);
+  if (!lastOpened) return null;
+
+  const verdict =
+    lastOpened.source === 'local-provider'
+      ? await resolveLocalRestoreVerdict(lastOpened)
+      : await resolveRemoteRestoreVerdict(lastOpened);
+
+  return verdict === 'restore' ? lastOpened : null;
 }
 
 const linking: LinkingOptions<RootStackParamList> = {
@@ -101,10 +138,24 @@ function StatusBarThemed() {
   return null;
 }
 
+interface BootstrapResolution {
+  hasDeviceCredential: boolean;
+  restoreTarget: LastOpenedSession | null;
+}
+
+/**
+ * Bootstrap resolves the startup route in one committed step. `bootstrapChecked`
+ * alone is not enough to gate the navigator: the restore target used to live in
+ * separate state and was cleared by a follow-up effect before the navigator ever
+ * mounted, so a valid last session silently fell back to the list. Keeping both
+ * values in a single object makes "checked" and "restore target" impossible to
+ * batch apart, and nothing clears the target once it is committed.
+ */
 function AppInner() {
-  const [bootstrapChecked, setBootstrapChecked] = useState(false);
-  const [hasDeviceCredential, setHasDeviceCredential] = useState(false);
-  const [restoreTarget, setRestoreTarget] = useState<LastOpenedSession | null>(null);
+  const [bootstrap, setBootstrap] = useState<BootstrapResolution | null>(null);
+  const bootstrapChecked = bootstrap !== null;
+  const hasDeviceCredential = bootstrap?.hasDeviceCredential ?? false;
+  const restoreTarget = bootstrap?.restoreTarget ?? null;
 
   useEffect(() => {
     let previousState: AppStateStatus = AppState.currentState;
@@ -142,10 +193,12 @@ function AppInner() {
     let cancelled = false;
 
     const bootstrapRemoteHost = async () => {
+      let credentialPresent = false;
+      let resolvedRestoreTarget: LastOpenedSession | null = null;
+
       try {
         if (!remoteMiraHostClient.isSecureStorageAvailable()) {
           if (!cancelled) {
-            setHasDeviceCredential(false);
             useHostStore.getState().setConnectionStatus('disconnected');
           }
           return;
@@ -154,18 +207,17 @@ function AppInner() {
         const stored = await deviceCredentialStore.load();
         if (cancelled) return;
         if (!stored) {
-          setHasDeviceCredential(false);
           useHostStore.getState().setConnectionStatus('disconnected');
           return;
         }
 
-        setHasDeviceCredential(true);
+        credentialPresent = true;
         try {
           const restored = await remoteMiraHostClient.restoreConnection();
           if (cancelled) return;
 
           const connected = restored != null;
-          setHasDeviceCredential(connected);
+          credentialPresent = connected;
           useHostStore
             .getState()
             .setConnectionStatus(connected ? 'connected' : 'disconnected');
@@ -174,7 +226,7 @@ function AppInner() {
 
           // Direct or Relay may be temporarily unreachable. The paired-device
           // credential remains valid unless the Host explicitly returns 401/403.
-          setHasDeviceCredential(true);
+          credentialPresent = true;
           useHostStore.getState().setConnectionStatus('reconnecting');
         }
 
@@ -182,12 +234,8 @@ function AppInner() {
         if (cancelled) return;
 
         if (settings.launchBehavior === 'last-session') {
-          const lastOpened = await loadLastOpenedSession().catch(() => null);
+          resolvedRestoreTarget = await resolveRestoreTarget();
           if (cancelled) return;
-          if (lastOpened && (await sessionStillExists(lastOpened))) {
-            if (cancelled) return;
-            setRestoreTarget(lastOpened);
-          }
         }
 
         if (settings.autoCheckUpdates) {
@@ -195,12 +243,27 @@ function AppInner() {
           // cancellation flag also guards this alert.
           const latest = await fetchLatestRelease(releaseChannel, fetch).catch(() => null);
           if (cancelled || !latest) return;
-          if (isUpdateAvailable(parseSemver(version)!, latest)) {
+
+          // Only major/minor bumps interrupt the user. A patch-only release is
+          // quiet-notified through the About badge (same source of truth) and
+          // must not auto-prompt. A broken installed semver is treated as
+          // "cannot decide" rather than silently as no update.
+          const current = parseSemver(version);
+          if (!current) return;
+          const level = classifyAvailableUpdate(current, latest);
+          if (level === 'major' || level === 'minor') {
             presentUpdatePrompt(latest);
           }
         }
       } finally {
-        if (!cancelled) setBootstrapChecked(true);
+        if (!cancelled) {
+          // Single commit: the navigator mounts once with both the credential
+          // state and the resolved restore target already in place.
+          setBootstrap({
+            hasDeviceCredential: credentialPresent,
+            restoreTarget: resolvedRestoreTarget,
+          });
+        }
       }
     };
     void bootstrapRemoteHost();
@@ -209,12 +272,11 @@ function AppInner() {
     };
   }, []);
 
-  // The restore target is consumed once, by the navigator's initial route. It is
-  // then cleared so a later restart re-reads the record instead of replaying this
-  // mount's params, and so a manual back-out is not undone on the next render.
-  useEffect(() => {
-    if (restoreTarget) setRestoreTarget(null);
-  }, [restoreTarget]);
+  // The restore target lives in the committed bootstrap state and is only read
+  // once, by the navigator's initial route. It is intentionally not cleared
+  // afterwards: the navigator never re-reads initialRouteName, and clearing it
+  // here previously won the race against the navigator's first mount, which is
+  // exactly why "launch into last session" fell back to the session list.
 
   if (!bootstrapChecked) return null;
 

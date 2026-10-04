@@ -1,5 +1,6 @@
 import {
   compareSemver,
+  diffSemver,
   formatSemver,
   parseSemver,
 } from './semver';
@@ -36,5 +37,35 @@ describe('compareSemver', () => {
 
   it('formats back to the canonical string', () => {
     expect(formatSemver(parseSemver('0.2.10')!)).toBe('0.2.10');
+  });
+});
+
+describe('diffSemver', () => {
+  it('reports a major move when x changes', () => {
+    expect(diffSemver(parseSemver('1.0.0')!, parseSemver('0.3.10')!)).toBe('major');
+  });
+
+  it('reports a minor move when only y changes', () => {
+    expect(diffSemver(parseSemver('0.4.0')!, parseSemver('0.3.10')!)).toBe('minor');
+  });
+
+  it('reports a patch move when only z changes', () => {
+    expect(diffSemver(parseSemver('0.3.11')!, parseSemver('0.3.10')!)).toBe('patch');
+  });
+
+  it('reports major for 0.x -> 1.x even when y also moves', () => {
+    expect(diffSemver(parseSemver('1.0.0')!, parseSemver('0.9.5')!)).toBe('major');
+  });
+
+  it('reports minor for patch+minor moves only', () => {
+    expect(diffSemver(parseSemver('0.4.3')!, parseSemver('0.3.10')!)).toBe('minor');
+  });
+
+  it('reports equal for equal versions', () => {
+    expect(diffSemver(parseSemver('0.3.10')!, parseSemver('0.3.10')!)).toBe('equal');
+  });
+
+  it('reports equal for an older "newer" argument', () => {
+    expect(diffSemver(parseSemver('0.3.9')!, parseSemver('0.3.10')!)).toBe('equal');
   });
 });

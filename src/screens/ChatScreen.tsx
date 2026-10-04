@@ -53,7 +53,7 @@ import {
 } from '../components/LocalAgentRunCard';
 import { buildShareCardModel } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
-import { lightImpact } from '../haptics/haptics';
+import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
@@ -251,6 +251,10 @@ export function ChatScreen() {
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const menuButtonRef = useRef<View>(null);
   const abortRef = useRef(false);
+  const assistantHapticsRef = useRef<AssistantMessageHapticsObserver | null>(null);
+  if (assistantHapticsRef.current === null) {
+    assistantHapticsRef.current = new AssistantMessageHapticsObserver();
+  }
   const shareCoordinator = useMemo(() => new ConversationShareCoordinator(), []);
   const runtime = useMemo(
     () => runtimeRegistry.runtimeForSession(sessionId, source),
@@ -274,6 +278,25 @@ export function ChatScreen() {
     setIsSearchVisible(false);
     setSearchFocusMessageId(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    // A new session re-establishes the baseline: opening a session must read
+    // its existing history without firing the "new reply" reminder.
+    assistantHapticsRef.current?.reset();
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Remote canonical messages arrive through the Host snapshot feed (published
+    // by every canonical read, including the Agent discovery poll and run
+    // observation). Feeding the same observer here means a Remote Assistant
+    // reply that lands while foregrounded triggers the identical reminder as a
+    // Local one, without inventing a second trigger path.
+    if (isLocalProvider) return undefined;
+    return miraHostClient.subscribeMessageSnapshots((snapshot) => {
+      if (snapshot.sessionId !== sessionId) return;
+      assistantHapticsRef.current?.observe(snapshot.messages);
+    });
+  }, [isLocalProvider, sessionId]);
 
   useEffect(() => {
     let active = true;
@@ -357,6 +380,7 @@ export function ChatScreen() {
     try {
       const canonicalMessages = await runtime.getMessages(sessionId);
       setMessages(canonicalMessages);
+      assistantHapticsRef.current?.observe(canonicalMessages);
       try {
         await markThreadRead(
           sessionId,
@@ -567,7 +591,6 @@ export function ChatScreen() {
       setIsLoading(true);
       setStreamingText('');
       abortRef.current = false;
-      void lightImpact();
       const useLocalAgent = supportsLocalAgent && agentEnabled;
       if (useLocalAgent) {
         setAgentActivities([]);

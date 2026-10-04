@@ -1,4 +1,5 @@
 import {
+  classifyAvailableUpdate,
   fetchLatestRelease,
   isUpdateAvailable,
   manifestUrlForChannel,
@@ -175,5 +176,33 @@ describe('isUpdateAvailable', () => {
 
   it('treats an absent release as unknown rather than an available update', () => {
     expect(isUpdateAvailable(parseSemver('0.2.10')!, null)).toBe(false);
+  });
+});
+
+describe('classifyAvailableUpdate', () => {
+  const current = parseSemver('0.3.10')!;
+
+  it('classifies 0.3.10 -> 0.3.11 as a patch update (quiet badge, no auto prompt)', () => {
+    expect(classifyAvailableUpdate(current, release('0.3.11'))).toBe('patch');
+  });
+
+  it('classifies 0.3.10 -> 0.4.0 as a minor update (auto prompt allowed)', () => {
+    expect(classifyAvailableUpdate(current, release('0.4.0'))).toBe('minor');
+  });
+
+  it('classifies 0.3.10 -> 1.0.0 as a major update (auto prompt allowed)', () => {
+    expect(classifyAvailableUpdate(current, release('1.0.0'))).toBe('major');
+  });
+
+  it('classifies an equal release as no update', () => {
+    expect(classifyAvailableUpdate(current, release('0.3.10'))).toBe('none');
+  });
+
+  it('classifies an older release as no update', () => {
+    expect(classifyAvailableUpdate(parseSemver('0.3.10')!, release('0.3.9'))).toBe('none');
+  });
+
+  it('classifies an absent (invalid/unavailable) release as no update', () => {
+    expect(classifyAvailableUpdate(current, null)).toBe('none');
   });
 });

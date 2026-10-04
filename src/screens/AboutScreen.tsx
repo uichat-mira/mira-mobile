@@ -19,9 +19,10 @@ import { spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
 import { SettingsGroup, SettingsRow } from '../components/settings/SettingsComponents';
 import {
+  classifyAvailableUpdate,
   fetchLatestRelease,
-  isUpdateAvailable,
   type AppRelease,
+  type UpdateLevel,
 } from '../update/appUpdate';
 import { parseSemver } from '../update/semver';
 import { installedDisplayVersion, presentUpdatePrompt } from '../update/updatePrompt';
@@ -32,6 +33,8 @@ type UpdateCheckStatus =
   | 'available'
   | 'current'
   | 'failed';
+
+const DOCUMENTATION_URL = 'https://mira.tomz.io';
 
 const channelLabel = {
   predev: '预开发',
@@ -46,6 +49,7 @@ export function AboutScreen() {
   const platformName = Platform.OS === 'android' ? 'Android' : 'iOS';
   const [updateStatus, setUpdateStatus] = useState<UpdateCheckStatus>('idle');
   const [latestRelease, setLatestRelease] = useState<AppRelease | null>(null);
+  const [updateLevel, setUpdateLevel] = useState<UpdateLevel>('none');
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   const checkForUpdate = useCallback(async () => {
@@ -54,9 +58,19 @@ export function AboutScreen() {
     try {
       const latest = await fetchLatestRelease(releaseChannel, fetch);
       setLatestRelease(latest);
-      setUpdateStatus(
-        isUpdateAvailable(parseSemver(version)!, latest) ? 'available' : 'current',
-      );
+
+      // Manual check is allowed to discover patch releases. The badge and the
+      // bootstrap auto-prompt share this one level decision; only the prompt is
+      // gated on major/minor, not the badge.
+      const current = parseSemver(version);
+      if (!current) {
+        setUpdateLevel('none');
+        setUpdateStatus('current');
+        return;
+      }
+      const level = classifyAvailableUpdate(current, latest);
+      setUpdateLevel(level);
+      setUpdateStatus(level === 'none' ? 'current' : 'available');
     } catch (error) {
       // A failed or invalid R2 manifest remains retryable; it must never be
       // presented as proof that the installed build is current.
@@ -99,7 +113,7 @@ export function AboutScreen() {
 
   const handleAction = (actionId: string) => {
     if (actionId === 'documentation') {
-      Linking.openURL('https://tomz.io').catch(() => {});
+      Linking.openURL(DOCUMENTATION_URL).catch(() => {});
     } else if (actionId === 'license') {
       navigation.navigate('License');
     } else if (actionId === 'app-update') {
@@ -112,7 +126,13 @@ export function AboutScreen() {
       case 'checking':
         return `${installedDisplayVersion} · 正在检查更新…`;
       case 'available':
-        return `${installedDisplayVersion} · 有新版本 ${latestRelease?.displayVersion ?? ''}`;
+        // A patch-only release is quiet-notified: the badge shows there is an
+        // update, but the copy stays calm and the auto-check never prompts.
+        return updateLevel === 'patch'
+          ? `${installedDisplayVersion} · 有小版本更新 ${
+              latestRelease?.displayVersion ?? ''
+            }`
+          : `${installedDisplayVersion} · 有新版本 ${latestRelease?.displayVersion ?? ''}`;
       case 'current':
         return `${installedDisplayVersion} · 已是最新`;
       case 'failed':
