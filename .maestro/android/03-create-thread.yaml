@@ -1,0 +1,9 @@
+appId: io.tomz.mira.mobile
+---
+- tapOn: "打开菜单"
+- tapOn: "聊天"
+- assertVisible: "选择会话来源"
+- tapOn: "远程连接"
+- extendedWaitUntil:
+    visible: "MOB-059 Created Thread"
+    timeout: 15000
