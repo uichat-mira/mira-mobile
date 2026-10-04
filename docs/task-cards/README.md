@@ -43,9 +43,9 @@
 | MOB-046 | OpenAI-compatible URL / SSE / Tool Call 兼容性修复 | **待验收** | Mobile；PR #100 已合入 `dev`，Base URL、finish/[DONE]、indexed/interleaved/split tool-call 兼容性与回归测试已完成；真实 Provider / 真机矩阵挂 MOB-044 |
 | MOB-047 | Provider API Key 配置 UX 与凭据状态安全修复 | **待开始** | Mobile；移除掩码 sentinel，补 preserve/replace/clear |
 | MOB-048 | 双链路提交窄范围代码卫生收尾 | **待开始** | Mobile；等待 045–047 后执行，不启动 broad refactor |
-| MOB-050 | 设置 → 存储 真实功能与真机验收 | **待验收** | Mobile；设置页「存储」由无 actionId 占位升级为本地占用分类展示 + 已提交拾言录音清理 + 本地 UI 状态清空；不动设备安全存储凭据与远端数据 |
+| MOB-050 | 设置 → 存储 真实功能与真机验收 | **PASS** | 2026-10-04 维护者收口；Huawei P30 / EMUI 12 作者侧真机覆盖存储统计、录音清理、草稿/Provider/Key/Host 配对保留与杀进程持久化核心路径；可选读取失败注入与 iOS 真机为已记录非阻塞 validation gap |
 | MOB-052 | 设置 → 电子邮件 真实功能与真机验收 | **待验收** | Mobile；历史 mailto 功能验收卡；原个人反馈地址已移除，当前公共收件地址由 MOB-064 统一管理 |
-| MOB-055 | 设置 → 报告错误 mailto 反馈通道真实功能与真机验收 | **待验收** | Mobile；设置页「报告错误」由发送按钮硬编码 disabled 的占位升级为真实 mailto 反馈（收件 `hello@tomz.io`）：描述非空才可发、草稿本地持久化、诊断块仅白名单字段、无邮件客户端时 Alert 兜底；移除无监听的假「晃动手机」开关 |
+| MOB-055 | 设置 → 报告错误 mailto 反馈通道真实功能与真机验收 | **PASS** | 2026-10-04 维护者显式接受 mailto 三要素未逐项人工核对、no-handler / developer-only / iOS 真机未执行等 validation gap；Android 已确认真实邮件客户端交接、草稿持久化与核心 UI；公共收件地址现由 MOB-064 统一为 `hello@tomz.io` |
 | MOB-057 | 设置 → 通知基础能力与真机验收 | **完成** | PR #194 已合入 `dev`；真实权限状态、Android `mira_messages` channel、iOS UserNotifications、测试通知与系统设置入口已落地；维护者 2026-10-04 正式收口，正式安装包复验作为后续 release smoke，不再阻塞本卡；AI / Agent 回复完成通知不在本卡 |
 | MOB-064 | 统一 Mobile 公共反馈邮箱 | **实施中** | Mobile；设置「电子邮件」与「报告错误」统一使用 `hello@tomz.io`，删除旧个人邮箱内容并收敛为单一地址常量；只需 Android 最小真人核对 |
 
