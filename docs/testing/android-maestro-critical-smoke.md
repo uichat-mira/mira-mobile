@@ -28,6 +28,12 @@ once, and records its SHA-256 in the evidence report.
 The suite executes each flow exactly once with a 150-second hard timeout. There
 is no automatic retry.
 
+Manual `workflow_dispatch` exposes an `android_e2e_failure_probe` boolean.
+When explicitly enabled, the runner executes the four normal flows first and
+then appends a deliberately impossible assertion. The resulting red run is used
+only to inspect whether failure screenshots, UI hierarchy, logcat and flow logs
+are sufficient. The probe is never part of a normal `test` push.
+
 ## Host fixture boundary
 
 `.github/e2e/host-fixture.cjs` implements only the published Mobile contracts
