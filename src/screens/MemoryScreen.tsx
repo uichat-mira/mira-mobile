@@ -7,50 +7,47 @@ import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
 import { SettingsInputModal } from '../components/settings/SettingsInputModal';
-import { miraHostClient } from '../api/miraHostClient';
-import { RemoteHostError } from '../api/remoteHttp';
-import type {
-  RemoteMemoryKind,
-  RemoteMemoryOverview,
-  RemoteMemoryRecord,
-} from '../protocol/remoteHostV1';
+import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
+import {
+  MAX_CONTENT_LENGTH,
+  MIN_CONTENT_LENGTH,
+  getLocalMemoryService,
+  type MemoryKind,
+  type MemoryOverview,
+  type MemoryOverviewRecord,
+} from '../memory';
 
-const kindLabels: Record<RemoteMemoryKind, string> = {
+const kindLabels: Record<MemoryKind, string> = {
   preference: '偏好',
   fact: '事实',
   decision: '决策',
   constraint: '约束',
 };
 
-// Mirrors the Host /memory body schema: content must be 4-500 chars.
-// Hard error messages intentionally mirror the Host so the user can act on
-// them without translation gymnastics.
-const MIN_MEMORY_CONTENT_LENGTH = 4;
-const MAX_MEMORY_CONTENT_LENGTH = 500;
+const kindChoices: readonly SettingsChoice<MemoryKind>[] = [
+  { value: 'preference', label: '偏好' },
+  { value: 'fact', label: '长期事实' },
+  { value: 'decision', label: '决定' },
+  { value: 'constraint', label: '约束' },
+];
 
-const errorMessage = (error: unknown): string => {
-  if (error instanceof RemoteHostError) {
-    if (error.code === 'REMOTE_MEMORY_ROUTE_UNAVAILABLE' || error.code === 'REMOTE_SCOPE_REQUIRED') {
-      return '当前 Mira Host 尚未对移动端开放记忆能力。请在 Desktop Host 上升级并开放 Memory 远程合同后再试。';
-    }
-    if (error.code === 'PAIRING_REQUIRED') {
-      return '此设备尚未与 Mira Host 配对，无法管理记忆。';
-    }
-    return error.message;
-  }
-  return error instanceof Error && error.message
+// Mirrors the deterministic Memory Policy content range, so the user sees the
+// same constraint the kernel enforces instead of a UI-only rule.
+const MIN_MEMORY_CONTENT_LENGTH = MIN_CONTENT_LENGTH;
+const MAX_MEMORY_CONTENT_LENGTH = MAX_CONTENT_LENGTH;
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error && error.message
     ? error.message
-    : '无法与 Mira Host 同步记忆，请稍后重试。';
-};
+    : '本机记忆不可用，请稍后重试。';
 
 interface PendingEdit {
-  record: RemoteMemoryRecord;
-  text: string;
+  record: MemoryOverviewRecord;
 }
 
-const formatKindLabel = (kind: RemoteMemoryKind): string => kindLabels[kind];
+const formatKindLabel = (kind: MemoryKind): string => kindLabels[kind];
 
-const formatOriginLabel = (origin: RemoteMemoryRecord['origin']): string =>
+const formatOriginLabel = (origin: MemoryOverviewRecord['origin']): string =>
   origin === 'manual' ? '手动添加' : '对话中提炼';
 
 const formatTimestamp = (value: string): string => {
@@ -62,31 +59,36 @@ const formatTimestamp = (value: string): string => {
 export function MemoryScreen() {
   const navigation = useNavigation();
   const { colors } = useTheme();
-  const [overview, setOverview] = useState<RemoteMemoryOverview | null>(null);
+  const service = getLocalMemoryService();
+  const [overview, setOverview] = useState<MemoryOverview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createKind, setCreateKind] = useState<MemoryKind>('preference');
+  const [kindPickerForCreate, setKindPickerForCreate] = useState(false);
   const [editTarget, setEditTarget] = useState<PendingEdit | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const next = await miraHostClient.getMemoryOverview();
+      const next = await service.getOverview();
       setOverview(next);
       setLoadError(null);
     } catch (error) {
+      // Corrupt or unreadable local storage must surface as an explicit,
+      // non-destructive failure rather than being silently overwritten.
       setLoadError(errorMessage(error));
     } finally {
       setHydrated(true);
     }
-  }, []);
+  }, [service]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  const applyResult = useCallback((next: RemoteMemoryOverview) => {
+  const applyResult = useCallback((next: MemoryOverview) => {
     setOverview(next);
     setActionError(null);
   }, []);
@@ -96,48 +98,45 @@ export function MemoryScreen() {
       // Optimistic flip; rolled back on error by reload.
       if (overview) setOverview({ ...overview, enabled: nextEnabled });
       try {
-        applyResult(await miraHostClient.updateMemorySettings(nextEnabled));
+        applyResult(await service.setEnabled(nextEnabled));
       } catch (error) {
         setActionError(errorMessage(error));
         void reload();
       }
     },
-    [overview, applyResult, reload],
+    [overview, service, applyResult, reload],
   );
 
   const handleCreate = useCallback(
-    async (kind: RemoteMemoryKind, content: string) => {
+    async (kind: MemoryKind, content: string) => {
       try {
-        applyResult(await miraHostClient.createMemory(kind, content));
+        applyResult(await service.createManual({ kind, content }));
       } catch (error) {
         setActionError(errorMessage(error));
-        // MEMORY_CREATE_UNCERTAIN means the request may have already created
-        // the record on the Host while we lost the response; reload before
-        // the user is allowed to try again so we do not post duplicates.
-        if (
-          error instanceof RemoteHostError &&
-          error.code === 'MEMORY_CREATE_UNCERTAIN'
-        ) {
-          await reload();
-        }
       }
     },
-    [applyResult, reload],
+    [service, applyResult],
   );
 
   const handleEdit = useCallback(
-    async (id: string, kind: RemoteMemoryKind, content: string) => {
+    async (id: string, kind: MemoryKind, content: string) => {
       try {
-        applyResult(await miraHostClient.updateMemory(id, kind, content));
+        const next = await service.updateManual(id, { kind, content });
+        if (next) {
+          applyResult(next);
+        } else {
+          // The target vanished underneath us; reload so the list is truthful.
+          await reload();
+        }
       } catch (error) {
         setActionError(errorMessage(error));
       }
     },
-    [applyResult],
+    [service, applyResult, reload],
   );
 
   const requestDelete = useCallback(
-    (record: RemoteMemoryRecord) => {
+    (record: MemoryOverviewRecord) => {
       setActionError(null);
       Alert.alert(
         '删除记忆？',
@@ -150,18 +149,14 @@ export function MemoryScreen() {
             onPress: async () => {
               setPendingDeleteId(record.id);
               try {
-                applyResult(await miraHostClient.deleteMemory(record.id));
-              } catch (error) {
-                setActionError(errorMessage(error));
-                // MEMORY_DELETE_UNCERTAIN means the Host may have already
-                // removed the record while we lost the response; reload so
-                // the list no longer offers ghost actions against it.
-                if (
-                  error instanceof RemoteHostError &&
-                  error.code === 'MEMORY_DELETE_UNCERTAIN'
-                ) {
+                const next = await service.deleteManual(record.id);
+                if (next) {
+                  applyResult(next);
+                } else {
                   await reload();
                 }
+              } catch (error) {
+                setActionError(errorMessage(error));
               } finally {
                 setPendingDeleteId(null);
               }
@@ -170,7 +165,7 @@ export function MemoryScreen() {
         ],
       );
     },
-    [applyResult, reload],
+    [service, applyResult, reload],
   );
 
   const renderDisabled = useCallback(() => {
@@ -178,9 +173,12 @@ export function MemoryScreen() {
     return (
       <View style={[styles.disabledBox, { backgroundColor: colors.status.errorBg }]}>
         <Text style={[styles.disabledTitle, { color: colors.status.error }]}>
-          记忆功能暂不可用
+          本机记忆暂不可用
         </Text>
         <Text style={[styles.disabledBody, { color: colors.status.error }]}>{message}</Text>
+        <Text style={[styles.disabledBody, { color: colors.status.error }]}>
+          为避免覆盖你可能已有的记忆，本机记忆不会自动重置。请重试或检查设备存储。
+        </Text>
         <Pressable
           onPress={reload}
           style={({ pressed }) => [
@@ -189,7 +187,7 @@ export function MemoryScreen() {
             pressed && { opacity: 0.7 },
           ]}
           accessibilityRole="button"
-          accessibilityLabel="重试加载记忆"
+          accessibilityLabel="重试加载本机记忆"
         >
           <Text style={[styles.retryLabel, { color: colors.text.ink }]}>重试</Text>
         </Pressable>
@@ -237,7 +235,7 @@ export function MemoryScreen() {
               />
             </View>
             <Text style={[styles.help, { color: colors.text.muted }]}>
-              记忆由 Mira Host 保管，本机不做本地副本。开启 / 关闭、添加 / 编辑 / 删除都会立即与 Host 同步。
+              这些记忆仅保存在本机，供手机直连的 Local Provider 使用；不会上传到 Mira Host，也不与远程记忆同步。
             </Text>
 
             {actionError ? (
@@ -250,7 +248,10 @@ export function MemoryScreen() {
                 { backgroundColor: colors.bg.card },
                 pressed && { opacity: 0.8 },
               ]}
-              onPress={() => setCreateOpen(true)}
+              onPress={() => {
+                setCreateKind('preference');
+                setCreateOpen(true);
+              }}
               accessibilityRole="button"
               accessibilityLabel="添加记忆"
             >
@@ -284,7 +285,7 @@ export function MemoryScreen() {
                 </View>
                 <View style={styles.rowActions}>
                   <Pressable
-                    onPress={() => setEditTarget({ record, text: record.content })}
+                    onPress={() => setEditTarget({ record })}
                     style={({ pressed }) => [
                       styles.iconButton,
                       pressed && { opacity: 0.6 },
@@ -330,10 +331,34 @@ export function MemoryScreen() {
           return null;
         }}
         onSubmit={value => {
-          // Default kind = preference; the user can edit later.
-          void handleCreate('preference', value);
+          void handleCreate(createKind, value);
         }}
         onClose={() => setCreateOpen(false)}
+        footer={
+          <Pressable
+            onPress={() => setKindPickerForCreate(true)}
+            style={({ pressed }) => [
+              styles.kindRow,
+              { borderColor: colors.border.default },
+              pressed && { opacity: 0.7 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="选择记忆类型"
+          >
+            <Text style={[styles.kindRowLabel, { color: colors.text.muted }]}>类型</Text>
+            <Text style={[styles.kindRowValue, { color: colors.text.ink }]}>
+              {formatKindLabel(createKind)}
+            </Text>
+          </Pressable>
+        }
+      />
+
+      <SettingsChoiceModal
+        visible={kindPickerForCreate}
+        value={createKind}
+        options={kindChoices}
+        onChange={setCreateKind}
+        onClose={() => setKindPickerForCreate(false)}
       />
 
       <MemoryEditSheet
@@ -353,36 +378,69 @@ export function MemoryScreen() {
 interface MemoryEditSheetProps {
   target: PendingEdit | null;
   onClose: () => void;
-  onSubmit: (kind: RemoteMemoryKind, content: string) => void;
+  onSubmit: (kind: MemoryKind, content: string) => void;
 }
 
 function MemoryEditSheet({ target, onClose, onSubmit }: MemoryEditSheetProps) {
-  // Reuse SettingsInputModal for the multi-line content. Changing the kind
-  // is intentionally not exposed in this flow because every record the user
-  // created here already starts with kind='preference'; for conversational
-  // origins the kind is Host-authoritative and should not be mutated from
-  // a settings UI.
+  // Editing always goes through the same Memory Service / Policy path as
+  // create, so a manual edit can never bypass the kernel and touch storage.
+  const { colors } = useTheme();
+  const [draftKind, setDraftKind] = useState<MemoryKind>('preference');
+  const [kindPickerOpen, setKindPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (target) {
+      setDraftKind(target.record.kind);
+      setKindPickerOpen(false);
+    }
+  }, [target]);
+
   const visible = target !== null;
-  const currentKind = target?.record.kind ?? 'preference';
 
   return (
-    <SettingsInputModal
-      visible={visible}
-      title="编辑记忆"
-      placeholder="更新这条记忆的内容"
-      confirmLabel="保存"
-      maxLength={MAX_MEMORY_CONTENT_LENGTH}
-      multiline
-      initialValue={target?.text}
-      validate={value => {
-        if (value.length < MIN_MEMORY_CONTENT_LENGTH) {
-          return `记忆内容至少 ${MIN_MEMORY_CONTENT_LENGTH} 个字符。`;
+    <>
+      <SettingsInputModal
+        visible={visible}
+        title="编辑记忆"
+        placeholder="更新这条记忆的内容"
+        confirmLabel="保存"
+        maxLength={MAX_MEMORY_CONTENT_LENGTH}
+        multiline
+        initialValue={target?.record.content}
+        validate={value => {
+          if (value.length < MIN_MEMORY_CONTENT_LENGTH) {
+            return `记忆内容至少 ${MIN_MEMORY_CONTENT_LENGTH} 个字符。`;
+          }
+          return null;
+        }}
+        onSubmit={value => onSubmit(draftKind, value)}
+        onClose={onClose}
+        footer={
+          <Pressable
+            onPress={() => setKindPickerOpen(true)}
+            style={({ pressed }) => [
+              styles.kindRow,
+              { borderColor: colors.border.default },
+              pressed && { opacity: 0.7 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="更改记忆类型"
+          >
+            <Text style={[styles.kindRowLabel, { color: colors.text.muted }]}>类型</Text>
+            <Text style={[styles.kindRowValue, { color: colors.text.ink }]}>
+              {formatKindLabel(draftKind)}
+            </Text>
+          </Pressable>
         }
-        return null;
-      }}
-      onSubmit={value => onSubmit(currentKind, value)}
-      onClose={onClose}
-    />
+      />
+      <SettingsChoiceModal
+        visible={kindPickerOpen}
+        value={draftKind}
+        options={kindChoices}
+        onChange={setDraftKind}
+        onClose={() => setKindPickerOpen(false)}
+      />
+    </>
   );
 }
 
@@ -404,6 +462,17 @@ const styles = StyleSheet.create({
   meta: { fontSize: fontSize.caption, marginTop: spacing.xs },
   help: { fontSize: fontSize.button, lineHeight: 20 },
   sectionLabel: { fontSize: fontSize.button, marginTop: spacing.sm },
+  kindRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  kindRowLabel: { fontSize: fontSize.button },
+  kindRowValue: { fontSize: fontSize.button, fontWeight: '600' },
   rowActions: { flexDirection: 'row', gap: spacing.sm },
   iconButton: {
     width: sizing.iconButton,
