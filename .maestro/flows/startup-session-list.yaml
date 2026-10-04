@@ -1,0 +1,9 @@
+appId: io.tomz.mira.mobile
+name: Startup and session list
+tags:
+  - critical
+---
+- runFlow: ../setup/pair-fixture.yaml
+- assertVisible: "全部任务"
+- assertVisible: "E2E Fixture Thread"
+- takeScreenshot: startup-session-list
