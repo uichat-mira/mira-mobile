@@ -1,0 +1,9 @@
+appId: io.tomz.mira.mobile
+---
+- assertVisible: "Mira 授权"
+- assertVisible: "已识别配对请求"
+- tapOn: "提交配对申请"
+- extendedWaitUntil:
+    visible: "MOB-059 Fixture Thread"
+    timeout: 20000
+- assertVisible: "普通对话：MOB-059 Fixture Thread"
