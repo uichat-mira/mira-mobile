@@ -1,0 +1,17 @@
+appId: io.tomz.mira.mobile
+---
+- tapOn: "设置"
+- assertVisible: "我的 Mira"
+- scrollUntilVisible:
+    element:
+      text: "常规"
+    direction: DOWN
+    timeout: 10000
+    speed: 40
+- tapOn: "常规"
+- assertVisible: "启动时打开"
+- back
+- back
+- extendedWaitUntil:
+    visible: "MOB-059 Fixture Thread"
+    timeout: 10000

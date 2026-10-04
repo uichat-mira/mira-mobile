@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
           add(MiraNetworkMonitorPackage())
           add(MiraAudioRecorderPackage())
           add(MiraImageSharePackage())
+          add(MiraNotificationsPackage())
         },
       useDevSupport = BuildConfig.DEBUG,
     )
@@ -26,6 +27,7 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    MiraNotificationsModule.ensureNotificationChannel(this)
     loadReactNative(this)
   }
 }

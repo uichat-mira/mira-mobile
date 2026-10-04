@@ -11,6 +11,12 @@ on:
       - 'feature/**'
       - 'fix/**'
   workflow_dispatch:
+    inputs:
+      android_e2e_failure_probe:
+        description: 'Deliberately fail one Maestro probe after normal flows to validate failure evidence'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +46,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test Mira Gate policy
+        run: node --test .github/scripts/evaluate-mobile-gate.test.cjs
+
+      - name: Test Android E2E fixture contract
+        run: node --test .github/e2e/host-fixture.test.cjs
 
       - name: Typecheck
         run: npm run typecheck
@@ -108,6 +120,90 @@ jobs:
           name: uichat-mira-mobile-android-debug
           path: android/app/build/outputs/apk/debug/uichat-mira-mobile-dev.apk
           if-no-files-found: error
+          retention-days: 14
+
+  android-maestro:
+    name: Android Maestro critical smoke
+    needs:
+      - android
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/test') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MIRA_E2E_FAILURE_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.android_e2e_failure_probe && '1' || '0' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.11.0
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install JavaScript dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download Android debug artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: uichat-mira-mobile-android-debug
+          path: e2e-input
+
+      - name: Verify downloaded APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk='e2e-input/uichat-mira-mobile-dev.apk'
+          test -s "$apk"
+          sha256sum "$apk"
+          echo "MOB-059 reuses the Android debug artifact built by job 'android' for commit $GITHUB_SHA."
+
+      - name: Install Maestro CLI 2.11.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$HOME/.local/share/maestro-2.11.0"
+          rm -rf "$install_root"
+          mkdir -p "$install_root"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --retry 3 \
+            'https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.11.0/maestro.zip' \
+            --output "$RUNNER_TEMP/maestro.zip"
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$install_root"
+          maestro_bin=$(find "$install_root" -type f -path '*/bin/maestro' -print -quit)
+          if [ -z "$maestro_bin" ]; then
+            echo 'Pinned Maestro archive did not contain bin/maestro.' >&2
+            exit 1
+          fi
+          chmod +x "$maestro_bin"
+          echo "$(dirname "$maestro_bin")" >> "$GITHUB_PATH"
+          "$maestro_bin" --version
+
+      - name: Run Android emulator and Maestro critical smoke
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash .github/scripts/run-android-maestro-e2e.sh
+
+      - name: Upload Maestro evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: uichat-mira-mobile-android-maestro
+          path: artifacts/android-maestro
+          if-no-files-found: warn
           retention-days: 14
 
   android-release:
@@ -678,3 +774,29 @@ jobs:
           fi
 
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+
+  mira-gate:
+    name: Mira Gate
+    needs:
+      - quality
+      - android
+      - android-maestro
+      - android-release
+      - ios
+      - publish-dev-release
+      - publish-prod-release
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Evaluate required Mobile CI jobs
+        env:
+          MIRA_GATE_EVENT: ${{ github.event_name }}
+          MIRA_GATE_REF: ${{ github.ref }}
+          MIRA_GATE_NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/evaluate-mobile-gate.cjs
