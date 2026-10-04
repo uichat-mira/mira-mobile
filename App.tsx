@@ -48,7 +48,7 @@ import { miraHostClient } from './src/api/miraHostClient';
 import { deviceCredentialStore } from './src/security/deviceCredentialStore';
 import { useHostStore } from './src/store/hostStore';
 import { runtimeRegistry } from './src/runtime/runtimeRegistry';
-import { fetchLatestRelease, isUpdateAvailable } from './src/update/appUpdate';
+import { classifyAvailableUpdate, fetchLatestRelease } from './src/update/appUpdate';
 import { parseSemver } from './src/update/semver';
 import { presentUpdatePrompt } from './src/update/updatePrompt';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from './src/screens/generalSettings';
@@ -243,7 +243,15 @@ function AppInner() {
           // cancellation flag also guards this alert.
           const latest = await fetchLatestRelease(releaseChannel, fetch).catch(() => null);
           if (cancelled || !latest) return;
-          if (isUpdateAvailable(parseSemver(version)!, latest)) {
+
+          // Only major/minor bumps interrupt the user. A patch-only release is
+          // quiet-notified through the About badge (same source of truth) and
+          // must not auto-prompt. A broken installed semver is treated as
+          // "cannot decide" rather than silently as no update.
+          const current = parseSemver(version);
+          if (!current) return;
+          const level = classifyAvailableUpdate(current, latest);
+          if (level === 'major' || level === 'minor') {
             presentUpdatePrompt(latest);
           }
         }

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   Alert,
   Image,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,7 +16,6 @@ import {
   Smile,
   BookOpen,
   Grid3x3,
-  Mail,
   Monitor,
   Sun,
   Moon,
@@ -46,25 +44,9 @@ import { SettingsChoiceModal, type SettingsChoice } from '../components/settings
 import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
-import { PUBLIC_FEEDBACK_EMAIL } from '../data/feedbackContact';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
-
-// 客服 / 反馈邮箱。设置页"电子邮件"按钮通过系统 mailto: 唤起原生邮件客户端，
-// 用户最终选哪个客户端由系统决定，移动端不强绑定具体 Provider。
-const contactEmailUrl = `mailto:${PUBLIC_FEEDBACK_EMAIL}`;
-
-const openContactEmail = () => {
-  // mailto: 没有可用 handler 时（设备无邮件客户端、桌面模拟器等）回退到一次提示，
-  // 避免按了按钮"看起来什么都没发生"。
-  Linking.openURL(contactEmailUrl).catch(() => {
-    Alert.alert(
-      '无法打开邮件客户端',
-      `未找到可用的邮件应用。可手动发送邮件至 ${PUBLIC_FEEDBACK_EMAIL}。`,
-    );
-  });
-};
 
 const appearanceOptions: readonly SettingsChoice<ThemeMode>[] = [
   { value: 'system', label: '系统（默认）' },
@@ -180,9 +162,6 @@ export function SettingsScreen() {
       case 'plugins':
         navigation.navigate('Plugins');
         break;
-      case 'contact-email':
-        openContactEmail();
-        break;
       case 'storage':
         navigation.navigate('Storage');
         break;
@@ -246,23 +225,34 @@ export function SettingsScreen() {
           </View>
         </View>
 
+        <SectionHeader>连接</SectionHeader>
+        <RowGroup onAction={handleSettingAction}>
+          <Row
+            icon={MessageCircle}
+            title="本地连接"
+            subtitle="管理手机直连的 OpenAI-compatible Provider"
+            actionId="local-provider"
+            isFirst
+            isLast={false}
+            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
+            showChevron={false}
+          />
+          <Row
+            icon={Monitor}
+            title="远程连接"
+            subtitle="管理 Mira Host 连接"
+            actionId="host-config"
+            isLast
+            right={<ConnectionStatusDot status={remoteVisualStatus} />}
+            showChevron={false}
+          />
+        </RowGroup>
+
         <SectionHeader>我的 Mira</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row icon={Smile} title="个性化" actionId="personalization" isFirst isLast={false} />
           <Row icon={BookOpen} title="记忆" isLast={false} />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
-        </RowGroup>
-
-        <SectionHeader>账户</SectionHeader>
-        <RowGroup onAction={handleSettingAction}>
-          <Row
-            icon={Mail}
-            title="电子邮件"
-            subtitle={`${PUBLIC_FEEDBACK_EMAIL} · 发送反馈`}
-            actionId="contact-email"
-            isFirst
-            isLast
-          />
         </RowGroup>
 
         <SectionHeader>外观</SectionHeader>
@@ -300,29 +290,6 @@ export function SettingsScreen() {
             title="设备同步"
             subtitle="所有设备"
             isLast
-          />
-        </RowGroup>
-
-        <SectionHeader>连接</SectionHeader>
-        <RowGroup onAction={handleSettingAction}>
-          <Row
-            icon={MessageCircle}
-            title="本地连接"
-            subtitle="管理手机直连的 OpenAI-compatible Provider"
-            actionId="local-provider"
-            isFirst
-            isLast={false}
-            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
-            showChevron={false}
-          />
-          <Row
-            icon={Monitor}
-            title="远程连接"
-            subtitle="管理 Mira Host 连接"
-            actionId="host-config"
-            isLast
-            right={<ConnectionStatusDot status={remoteVisualStatus} />}
-            showChevron={false}
           />
         </RowGroup>
 
