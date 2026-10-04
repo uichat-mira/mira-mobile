@@ -127,7 +127,7 @@ function messagesForId(state, id) {
 }
 
 function handleFixtureRequest({ method, url, headers = {}, body }, state) {
-  const parsed = new URL(url, 'http://fixture.local');
+  const parsed = new URL(url, 'https://fixture.invalid');
   const path = parsed.pathname;
 
   if (method === 'GET' && path === '/health') {
