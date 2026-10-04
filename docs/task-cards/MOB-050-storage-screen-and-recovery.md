@@ -82,4 +82,6 @@
 
 ## Handoff
 
-1–11 中必测项（Android 必测全部，iOS 至少覆盖 1、2、3、5、7、8、9、10）全部 ✅ → 本卡标 PASS，PR 可合入 `dev`，状态回写 `docs/workbench/00-work-ledger.md`。任一核心项 ❌ → 失败项回到施工方修复，本卡重新进入待验收。用例 4 未验证不阻塞，但须如实标注。
+当前人工主验收面为 **Android 真机**。Android 核心“统计 / 清理 / 保留 / 重启后状态”路径通过，且自动化与双平台 CI build 绿色，即可进入 PASS 判断；iOS 普通共性路径由 iOS build / Simulator 证据覆盖，iOS 真机无设备时记 `validation gap`，不阻塞本卡。只有后续出现明确 iOS 原生存储差异时，才追加对应 iOS 真机专项。
+
+用例 4 等需要故障注入的 developer-only 场景无条件时可标「未验证」，不要求真人构造异常。任一 Android 核心项 ❌ → 失败项回施工方修复，本卡重新进入待验收。
