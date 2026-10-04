@@ -39,7 +39,6 @@ import {
   useThreadReadStore,
 } from '../store/threadReadStore';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../screens/generalSettings';
-import { lightImpact } from '../haptics/haptics';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
@@ -214,7 +213,6 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
 
   const handleCreateChat = useCallback(async () => {
     if (creatingChat) return;
-    void lightImpact();
     const settings = await loadGeneralSettings().catch(() => DEFAULT_GENERAL_SETTINGS);
     if (settings.defaultSessionSource === 'remote-host') {
       void createRemoteChat();
