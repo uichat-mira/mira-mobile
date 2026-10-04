@@ -125,6 +125,37 @@ describe('createLocalProviderConsolidator', () => {
     expect(userMessage?.content).toContain('用户偏好先看结论。');
   });
 
+  it('presents the newest 40 existing memories to the consolidator', async () => {
+    const memories: MemoryRecord[] = Array.from({ length: 41 }, (_, index) => {
+      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString();
+      return {
+        id: `mem-${index}`,
+        kind: 'fact',
+        content: `memory-${index}`,
+        sources: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+    });
+    const chat = chatReturning([{ type: 'text-delta', delta: '{"patches":[]}' }]);
+    const consolidator = createLocalProviderConsolidator({ model: 'model-a', chat });
+
+    await consolidator.propose({ ...input, existing: memories });
+
+    const request = chat.mock.calls[0]![0];
+    const userMessage = request.messages.find(
+      (message: { role: string }) => message.role === 'user',
+    );
+    const memoryLines =
+      userMessage?.content
+        ?.split('\n')
+        .filter(line => line.startsWith('- id=')) ?? [];
+
+    expect(memoryLines).toHaveLength(40);
+    expect(memoryLines[0]).toContain('id=mem-40 ');
+    expect(memoryLines.some(line => line.includes('id=mem-0 '))).toBe(false);
+  });
+
   it('returns null on provider failure so the turn is not marked processed', async () => {
     const chat = jest.fn(async () => {
       throw new RemoteHostError('NETWORK_ERROR', 'Unable to reach Provider');

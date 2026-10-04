@@ -146,7 +146,8 @@ export function parseConsolidationProposals(
 
 const renderExistingMemories = (records: MemoryRecord[]): string => {
   if (records.length === 0) return '(none)';
-  return records
+  return [...records]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, MAX_EXISTING_IN_PROMPT)
     .map(record => `- id=${record.id} kind=${record.kind}: ${record.content}`)
     .join('\n');
