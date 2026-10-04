@@ -20,9 +20,7 @@ describe('Shiyan navigation contract', () => {
     const bootstrap = readSource('src/screens/BootstrapScreen.tsx');
     const app = readSource('App.tsx');
 
-    expect(app).toContain(
-      "hasDeviceCredential ? (restoreTarget ? 'Chat' : 'SessionList') : 'Bootstrap'",
-    );
+    expect(app).toContain("hasDeviceCredential ? 'SessionList' : 'Bootstrap'");
     expect(app).toContain('<Stack.Screen name="Bootstrap" component={BootstrapScreen} />');
     expect(bootstrap).toContain("navigation.navigate('HostConfig')");
     expect(bootstrap).toContain("navigation.navigate('Plugins')");
