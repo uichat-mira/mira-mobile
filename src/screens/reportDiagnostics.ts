@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
+import { PUBLIC_FEEDBACK_EMAIL } from '../data/feedbackContact';
 
-export const REPORT_FEEDBACK_EMAIL = 'hello@mira.io';
+export const REPORT_FEEDBACK_EMAIL = PUBLIC_FEEDBACK_EMAIL;
 
 export type ReportConnectionMode = 'remote' | 'local-provider' | 'none';
 
