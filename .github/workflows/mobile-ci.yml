@@ -44,6 +44,9 @@ jobs:
       - name: Test Mira Gate policy
         run: node --test .github/scripts/evaluate-mobile-gate.test.cjs
 
+      - name: Test Android E2E harness
+        run: node --test scripts/e2e/*.test.cjs
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -111,6 +114,83 @@ jobs:
           name: uichat-mira-mobile-android-debug
           path: android/app/build/outputs/apk/debug/uichat-mira-mobile-dev.apk
           if-no-files-found: error
+          retention-days: 14
+
+  android-e2e:
+    name: Android Maestro critical smoke
+    needs:
+      - android
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/test') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.11.0
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore Maestro CLI cache
+        id: maestro-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.maestro
+          key: maestro-${{ runner.os }}-2.11.0
+
+      - name: Install Maestro CLI
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
+        env:
+          MAESTRO_VERSION: '2.11.0'
+        run: curl -Ls "https://get.maestro.mobile.dev" | bash
+
+      - name: Add Maestro to PATH
+        run: echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Download Android debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: uichat-mira-mobile-android-debug
+          path: e2e-apk
+
+      - name: Run Android critical smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: bash .github/scripts/run-android-e2e.sh
+
+      - name: Publish E2E summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -f e2e-artifacts/summary.md ]; then
+            cat e2e-artifacts/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Android E2E summary was not produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Android E2E evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-mobile-android-maestro-${{ github.sha }}
+          path: e2e-artifacts
+          if-no-files-found: warn
           retention-days: 14
 
   android-release:
@@ -688,6 +768,7 @@ jobs:
     needs:
       - quality
       - android
+      - android-e2e
       - android-release
       - ios
       - publish-dev-release
