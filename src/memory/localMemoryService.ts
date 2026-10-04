@@ -1,4 +1,5 @@
 import type { LocalMemoryRepository } from './localMemoryRepository';
+import { memoryTurnKey } from './localMemoryTurnLedger';
 import {
   createManualOperationId,
   validateMemoryPatchProposals,
@@ -87,6 +88,10 @@ export class LocalMemoryService {
     LocalMemoryRepository,
     Promise<void>
   >();
+  private readonly inFlightTurnCommits = new Map<
+    string,
+    Promise<MemoryTurnCommitResult>
+  >();
 
   constructor(
     private readonly repository: LocalMemoryRepository,
@@ -95,7 +100,10 @@ export class LocalMemoryService {
 
   private runCommitSerialized<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.commitQueues.get(this.repository) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
+    const current = previous.catch(() => undefined).then(async () => {
+      await this.recoverPendingCommit();
+      return operation();
+    });
     this.commitQueues.set(
       this.repository,
       current.then(
@@ -104,6 +112,19 @@ export class LocalMemoryService {
       ),
     );
     return current;
+  }
+
+  private async recoverPendingCommit(): Promise<void> {
+    const pending = await this.repository.getPendingCommitIntent();
+    if (!pending) return;
+
+    if (!(await this.turnLedger.has(pending.source))) {
+      if (pending.patches.length > 0) {
+        await this.repository.apply(pending.patches);
+      }
+      await this.turnLedger.mark(pending.source);
+    }
+    await this.repository.clearPendingCommitIntent();
   }
 
   private async readOverview(): Promise<MemoryOverview> {
@@ -120,12 +141,12 @@ export class LocalMemoryService {
   }
 
   getOverview(): Promise<MemoryOverview> {
-    return this.readOverview();
+    return this.runCommitSerialized(() => this.readOverview());
   }
 
   /** Whether this canonical turn was already consolidated (successfully). */
   isProcessed(source: ConversationMemorySource): Promise<boolean> {
-    return this.turnLedger.has(source);
+    return this.runCommitSerialized(() => this.turnLedger.has(source));
   }
 
   setEnabled(enabled: boolean): Promise<MemoryOverview> {
@@ -135,14 +156,16 @@ export class LocalMemoryService {
     });
   }
 
-  async buildContext(): Promise<MemoryContextSnapshot> {
-    if (!(await this.repository.getSettings()).enabled) {
-      return { ...EMPTY_CONTEXT };
-    }
-    return buildSnapshot(
-      await this.repository.list(),
-      await this.repository.updatedAt(),
-    );
+  buildContext(): Promise<MemoryContextSnapshot> {
+    return this.runCommitSerialized(async () => {
+      if (!(await this.repository.getSettings()).enabled) {
+        return { ...EMPTY_CONTEXT };
+      }
+      return buildSnapshot(
+        await this.repository.list(),
+        await this.repository.updatedAt(),
+      );
+    });
   }
 
   /**
@@ -169,40 +192,98 @@ export class LocalMemoryService {
       return { applied: { ...EMPTY_APPLY_RESULT }, processed: false };
     }
 
+    const key = memoryTurnKey(input.source);
+    const existingCommit = this.inFlightTurnCommits.get(key);
+    if (existingCommit) return existingCommit;
+
+    const commit = this.commitTurnOnce({
+      ...input,
+      userText,
+      assistantText,
+    });
+    this.inFlightTurnCommits.set(key, commit);
+    try {
+      return await commit;
+    } finally {
+      if (this.inFlightTurnCommits.get(key) === commit) {
+        this.inFlightTurnCommits.delete(key);
+      }
+    }
+  }
+
+  private async commitTurnOnce(input: {
+    source: ConversationMemorySource;
+    userText: string;
+    assistantText: string;
+    consolidator: MemoryConsolidator;
+  }): Promise<MemoryTurnCommitResult> {
+    const preflight = await this.runCommitSerialized(async () => {
+      if (await this.turnLedger.has(input.source)) {
+        return { kind: 'processed' as const };
+      }
+
+      if (!(await this.repository.getSettings()).enabled) {
+        await this.turnLedger.mark(input.source);
+        return { kind: 'processed' as const };
+      }
+
+      return {
+        kind: 'propose' as const,
+        existing: await this.repository.list(),
+      };
+    });
+
+    if (preflight.kind === 'processed') {
+      return { applied: { ...EMPTY_APPLY_RESULT }, processed: true };
+    }
+
+    // The Provider/model call is intentionally outside the Memory mutation
+    // critical section. A slow consolidation must not block manual Memory CRUD,
+    // settings changes, or unrelated turn commits.
+    const proposals = await input.consolidator.propose({
+      source: input.source,
+      userText: input.userText,
+      assistantText: input.assistantText,
+      existing: preflight.existing,
+    });
+    if (proposals === null) {
+      return { applied: { ...EMPTY_APPLY_RESULT }, processed: false };
+    }
+
     return this.runCommitSerialized(async () => {
       if (await this.turnLedger.has(input.source)) {
         return { applied: { ...EMPTY_APPLY_RESULT }, processed: true };
       }
 
+      // Memory may have been disabled or manually edited while the Provider was
+      // consolidating. Re-check settings and revalidate against current state.
       if (!(await this.repository.getSettings()).enabled) {
         await this.turnLedger.mark(input.source);
         return { applied: { ...EMPTY_APPLY_RESULT }, processed: true };
       }
 
       const existing = await this.repository.list();
-      const proposals = await input.consolidator.propose({
-        source: input.source,
-        userText,
-        assistantText,
-        existing,
-      });
-      // A `null` proposal means consolidation itself failed (provider error /
-      // invalid JSON / empty output). Do not write and do not mark the turn
-      // processed, so a later attempt can still consolidate this evidence.
-      if (proposals === null) {
-        return { applied: { ...EMPTY_APPLY_RESULT }, processed: false };
-      }
       const patches = validateMemoryPatchProposals({
         proposals,
         existing,
         source: input.source,
       });
+
+      // Persist the exact validated commit intent before touching authoritative
+      // Memory state. If the process dies between state apply and ledger mark,
+      // the next Memory access replays this idempotent intent, marks the ledger,
+      // then clears it. No half-written state is exposed after recovery.
+      await this.repository.setPendingCommitIntent({
+        source: input.source,
+        patches,
+      });
+
       const applied =
         patches.length > 0
           ? await this.repository.apply(patches)
           : { ...EMPTY_APPLY_RESULT };
-
       await this.turnLedger.mark(input.source);
+      await this.repository.clearPendingCommitIntent();
       return { applied, processed: true };
     });
   }

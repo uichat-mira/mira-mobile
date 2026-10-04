@@ -1,6 +1,7 @@
 import type { LocalKeyValueStore } from '../storage/localKeyValueStore';
 import { isSameMemorySource, normalizeMemoryContent } from './memoryPolicy';
 import type {
+  ConversationMemorySource,
   MemoryApplyResult,
   MemoryJournalEntry,
   MemoryKind,
@@ -41,6 +42,7 @@ export const MEMORY_STORAGE_KEYS = {
   state: MEMORY_STATE_KEY,
   settings: 'mira.local-memory.settings.v1',
   journal: 'mira.local-memory.journal.v1',
+  commitIntent: 'mira.local-memory.commit-intent.v1',
 } as const;
 
 // The journal is non-authoritative audit data, so a bounded retention window is
@@ -57,6 +59,11 @@ export class MemoryStorageCorruptionError extends Error {
 export interface MemoryAuthorityState {
   records: MemoryRecord[];
   tombstones: MemoryTombstone[];
+}
+
+export interface MemoryCommitIntent {
+  source: ConversationMemorySource;
+  patches: ValidatedMemoryPatch[];
 }
 
 const EMPTY_STATE: MemoryAuthorityState = { records: [], tombstones: [] };
@@ -159,6 +166,81 @@ const parseTombstone = (value: unknown): MemoryTombstone | null => {
   };
 };
 
+const parseConversationSource = (
+  value: unknown,
+): ConversationMemorySource | null => {
+  const source = parseMemorySource(value);
+  return source?.type === 'conversation' ? source : null;
+};
+
+const parseValidatedPatch = (value: unknown): ValidatedMemoryPatch | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const patch = value as Record<string, unknown>;
+  if (typeof patch.reason !== 'string') return null;
+
+  if (patch.operation === 'delete') {
+    return typeof patch.targetId === 'string'
+      ? {
+          operation: 'delete',
+          targetId: patch.targetId,
+          reason: patch.reason,
+        }
+      : null;
+  }
+
+  const record = parseMemoryRecord(patch.record);
+  if (!record) return null;
+
+  if (patch.operation === 'create') {
+    return {
+      operation: 'create',
+      record,
+      reason: patch.reason,
+    };
+  }
+
+  if (patch.operation === 'replace' && typeof patch.targetId === 'string') {
+    return {
+      operation: 'replace',
+      targetId: patch.targetId,
+      record,
+      reason: patch.reason,
+    };
+  }
+
+  return null;
+};
+
+const parseCommitIntent = (value: string): MemoryCommitIntent => {
+  const parsed = parseJson(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MemoryStorageCorruptionError(
+      'Stored local memory commit intent must be an object',
+    );
+  }
+  const document = parsed as Record<string, unknown>;
+  const source = parseConversationSource(document.source);
+  if (!source || !Array.isArray(document.patches)) {
+    throw new MemoryStorageCorruptionError(
+      'Stored local memory commit intent is incomplete',
+    );
+  }
+  const patches = document.patches.map(parseValidatedPatch);
+  if (
+    patches.some(
+      (patch): patch is null => patch === null,
+    )
+  ) {
+    throw new MemoryStorageCorruptionError(
+      'Stored local memory commit intent contains an invalid patch',
+    );
+  }
+  return {
+    source,
+    patches: patches as ValidatedMemoryPatch[],
+  };
+};
+
 const parseStateDocument = (value: string): MemoryAuthorityState => {
   const parsed = parseJson(value);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -231,6 +313,32 @@ export class LocalMemoryRepository {
     const raw = await this.store.get(MEMORY_STATE_KEY);
     if (!raw) return { ...EMPTY_STATE };
     return parseStateDocument(raw);
+  }
+
+  getPendingCommitIntent(): Promise<MemoryCommitIntent | null> {
+    return this.enqueueWrite(async () => {
+      const raw = await this.store.get(MEMORY_STORAGE_KEYS.commitIntent);
+      return raw ? parseCommitIntent(raw) : null;
+    });
+  }
+
+  setPendingCommitIntent(intent: MemoryCommitIntent): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const existing = await this.store.get(MEMORY_STORAGE_KEYS.commitIntent);
+      if (existing) {
+        throw new Error('A local memory commit intent is already pending');
+      }
+      await this.store.set(
+        MEMORY_STORAGE_KEYS.commitIntent,
+        JSON.stringify(intent),
+      );
+    });
+  }
+
+  clearPendingCommitIntent(): Promise<void> {
+    return this.enqueueWrite(() =>
+      this.store.remove(MEMORY_STORAGE_KEYS.commitIntent),
+    );
   }
 
   getSettings(): Promise<MemorySettings> {

@@ -570,6 +570,53 @@ describe('MOB-064 Local Memory runtime integration', () => {
     expect(consolidationModels.filter(model => model === 'model-b')).toHaveLength(1);
   });
 
+  it.each(['length', 'content_filter'])(
+    'does not consolidate a Local Chat reply finished with %s',
+    async finishReason => {
+      const service = createMemoryService();
+      const { runtime, stats } = await createScriptedRuntime({
+        memoryService: service,
+        chatEvents: [
+          { type: 'text-delta', delta: '这是未完整的回复。' },
+          { type: 'finish', reason: finishReason },
+        ],
+        consolidationEvents: [{ type: 'text-delta', delta: PROPOSAL_JSON }],
+      });
+      const session = await runtime.createSession('Chat', config.id);
+
+      await drain(await runtime.sendMessage(session.id, '请继续。'));
+
+      expect(stats().consolidation).toBe(0);
+      expect((await service.getOverview()).records).toHaveLength(0);
+    },
+  );
+
+  it.each(['length', 'content_filter'])(
+    'does not consolidate a Local Agent reply finished with %s',
+    async finishReason => {
+      const service = createMemoryService();
+      const { runtime, stats } = await createScriptedRuntime({
+        memoryService: service,
+        chatEvents: [
+          { type: 'text-delta', delta: '这是未完整的 Agent 回复。' },
+          { type: 'finish', reason: finishReason },
+        ],
+        consolidationEvents: [{ type: 'text-delta', delta: PROPOSAL_JSON }],
+        toolGateway: agentGateway(),
+      });
+      const session = await runtime.createSession('Agent', config.id);
+
+      await drain(
+        await runtime.sendMessage(session.id, '请继续。', {
+          agentEnabled: true,
+        }),
+      );
+
+      expect(stats().consolidation).toBe(0);
+      expect((await service.getOverview()).records).toHaveLength(0);
+    },
+  );
+
   it('does not consolidate an Agent turn that errors after emitting text', async () => {
     const service = createMemoryService();
     const { runtime, stats } = await createScriptedRuntime({

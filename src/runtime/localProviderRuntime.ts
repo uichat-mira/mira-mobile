@@ -46,6 +46,9 @@ const applyProviderCompatibility = (
     ? filterReasoningTagEvents(stream)
     : stream;
 
+const isCompletedAssistantFinishReason = (reason: string | null): boolean =>
+  reason === 'stop' || reason === null;
+
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
   credentialStore?: ProviderCredentialStore;
@@ -313,7 +316,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           !sawError &&
           !paused &&
           finished &&
-          finishReason !== 'tool_calls';
+          isCompletedAssistantFinishReason(finishReason);
         if (completedTurn) {
           // Detached, best-effort side effect: the canonical reply is already
           // durable, so the Chat stream / UI must complete without waiting for

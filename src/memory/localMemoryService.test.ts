@@ -1,6 +1,9 @@
 import { LocalMemoryRepository, MEMORY_STORAGE_KEYS } from './localMemoryRepository';
 import { LocalMemoryService, MAX_CONTEXT_CHARACTERS, MAX_CONTEXT_RECORDS } from './localMemoryService';
-import { LocalMemoryTurnLedger } from './localMemoryTurnLedger';
+import {
+  LocalMemoryTurnLedger,
+  MEMORY_LEDGER_SHARD_PREFIX,
+} from './localMemoryTurnLedger';
 import { FakeLocalKeyValueStore } from './testSupport/fakeLocalKeyValueStore';
 import type {
   ConversationMemorySource,
@@ -389,4 +392,108 @@ describe('LocalMemoryService', () => {
     await service.commitTurn(turn);
     expect(await service.isProcessed(turn.source)).toBe(true);
   });
+  it('does not hold the Memory mutation queue while Provider consolidation is pending', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      signalStarted = resolve;
+    });
+    let releaseProposal!: (value: MemoryPatchProposal[] | null) => void;
+    const proposal = new Promise<MemoryPatchProposal[] | null>(resolve => {
+      releaseProposal = resolve;
+    });
+
+    const pendingCommit = service.commitTurn({
+      source: createSource('slow-provider'),
+      userText: '记住这个偏好。',
+      assistantText: '好的。',
+      consolidator: {
+        async propose() {
+          signalStarted();
+          return proposal;
+        },
+      },
+    });
+
+    await started;
+    const overview = await service.createManual({
+      kind: 'fact',
+      content: '用户手工新增的记忆。',
+    });
+    expect(overview.records.some(record => record.content === '用户手工新增的记忆。')).toBe(true);
+
+    releaseProposal([]);
+    await expect(pendingCommit).resolves.toMatchObject({ processed: true });
+  });
+
+  it('shares one in-flight consolidation for concurrent replay of the same evidence', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    let calls = 0;
+    const turn = {
+      source: createSource('singleflight'),
+      userText: '以后先给结论。',
+      assistantText: '好的。',
+      consolidator: consolidatorReturning(() => {
+        calls += 1;
+        return [];
+      }),
+    };
+
+    await Promise.all([service.commitTurn(turn), service.commitTurn(turn)]);
+
+    expect(calls).toBe(1);
+    expect(await service.isProcessed(turn.source)).toBe(true);
+  });
+
+  it('recovers a state-applied ledger-failed commit after restart', async () => {
+    const store = new FakeLocalKeyValueStore();
+    const service = createService(store);
+    const turn = {
+      source: createSource('crash-window'),
+      userText: '以后技术问题先给结论。',
+      assistantText: '记住了。',
+      consolidator: consolidatorReturning(() => [
+        {
+          operation: 'create',
+          kind: 'preference',
+          content: '用户偏好先看结论。',
+          confidence: 0.99,
+          reason: 'explicit',
+        },
+      ]),
+    };
+
+    const originalSet = store.set.bind(store);
+    let failedLedgerWrite = false;
+    const setSpy = jest
+      .spyOn(store, 'set')
+      .mockImplementation(async (key: string, value: string) => {
+        if (!failedLedgerWrite && key.startsWith(MEMORY_LEDGER_SHARD_PREFIX)) {
+          failedLedgerWrite = true;
+          throw new Error('simulated ledger write failure');
+        }
+        await originalSet(key, value);
+      });
+
+    await expect(service.commitTurn(turn)).rejects.toThrow(
+      'simulated ledger write failure',
+    );
+    expect(store.raw(MEMORY_STORAGE_KEYS.state)).toContain('用户偏好先看结论。');
+    expect(store.raw(MEMORY_STORAGE_KEYS.commitIntent)).not.toBeNull();
+
+    setSpy.mockRestore();
+
+    // Recreate the service as after an app restart. The first Memory read must
+    // reconcile the pending intent before exposing state.
+    const recovered = createService(store);
+    const overview = await recovered.getOverview();
+    expect(overview.records.map(record => record.content)).toEqual([
+      '用户偏好先看结论。',
+    ]);
+    expect(await recovered.isProcessed(turn.source)).toBe(true);
+    expect(store.raw(MEMORY_STORAGE_KEYS.commitIntent)).toBeNull();
+  });
+
 });
