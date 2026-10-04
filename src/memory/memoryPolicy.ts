@@ -163,18 +163,19 @@ export const validateMemoryPatchProposals = (
 // React Native does not guarantee a global Web Crypto implementation, so the
 // Memory Kernel keeps its own identifier generator instead of relying on
 // `crypto.randomUUID`.
+// These identifiers are local record/operation keys, not secrets or authorization
+// tokens. A monotonic sequence plus the current timestamp is sufficient for
+// uniqueness within this process without using a pseudorandom generator.
 let memoryIdSequence = 0;
 
 export const createMemoryId = (): string => {
   memoryIdSequence += 1;
-  const random = Math.random().toString(36).slice(2, 10);
-  return `mem_${Date.now().toString(36)}_${memoryIdSequence.toString(36)}_${random}`;
+  return `mem_${Date.now().toString(36)}_${memoryIdSequence.toString(36)}`;
 };
 
 let operationIdSequence = 0;
 
 export const createManualOperationId = (): string => {
   operationIdSequence += 1;
-  const random = Math.random().toString(36).slice(2, 10);
-  return `manual_${Date.now().toString(36)}_${operationIdSequence.toString(36)}_${random}`;
+  return `manual_${Date.now().toString(36)}_${operationIdSequence.toString(36)}`;
 };
