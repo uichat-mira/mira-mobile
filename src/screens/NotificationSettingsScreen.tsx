@@ -77,7 +77,17 @@ export function NotificationSettingsScreen() {
           'Mira 没有获得系统通知权限。你可以稍后重试，或前往系统通知设置手动开启。',
           [
             { text: '取消', style: 'cancel' },
-            { text: '系统设置', onPress: () => void openNotificationSettings() },
+            {
+              text: '系统设置',
+              onPress: () => {
+                void openNotificationSettings().catch(() => {
+                  Alert.alert(
+                    '无法打开通知设置',
+                    '请在系统「设置 → 应用 → Mira → 通知」中手动管理。',
+                  );
+                });
+              },
+            },
           ],
         );
       }
