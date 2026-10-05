@@ -169,6 +169,22 @@ const toolResultMessage = (
   tool_call_id: callId,
 });
 
+const interleavedToolTranscript = (
+  toolName: string,
+): OpenAiMessage[] => [
+  {
+    role: 'assistant',
+    content: null,
+    tool_calls: [{
+      id: 'call-1',
+      type: 'function',
+      function: { name: toolName, arguments: '{}' },
+    }],
+  },
+  { role: 'assistant', content: 'interleaved' },
+  toolResultMessage('call-1', '{}'),
+];
+
 const createQueuedResponsesClient = (xhrs: readonly FakeXhr[]) => {
   let xhrIndex = 0;
   return new OpenAiStandardClient({
@@ -505,10 +521,7 @@ describe('OpenAiStandardClient Responses', () => {
           content_index: 0,
           delta: 'I cannot help with that.',
         },
-        {
-          type: 'response.completed',
-          response: { status: 'completed', output: [] },
-        },
+        completedResponse([]),
       ),
     );
 
@@ -529,10 +542,7 @@ describe('OpenAiStandardClient Responses', () => {
     ['https://provider.example.com/v1', 'https://provider.example.com/v1/responses'],
   ])('uses only the standard endpoint for %s', async (baseUrl, expectedUrl) => {
     const xhr = new FakeXhr(
-      sse({
-        type: 'response.completed',
-        response: { status: 'completed' },
-      }),
+      sse(completedResponse()),
     );
 
     const stream = await createClient(
@@ -550,10 +560,7 @@ describe('OpenAiStandardClient Responses', () => {
   it('accepts a trailing SSE done sentinel after response.completed', async () => {
     const xhr = new FakeXhr(
       sse(
-        {
-          type: 'response.completed',
-          response: { status: 'completed' },
-        },
+        completedResponse(),
         '[DONE]',
       ),
     );
@@ -591,10 +598,7 @@ describe('OpenAiStandardClient Responses', () => {
           content_index: 0,
           delta: 'hello',
         },
-        {
-          type: 'response.completed',
-          response: { status: 'completed' },
-        },
+        completedResponse(),
       ),
     );
 
@@ -653,10 +657,7 @@ describe('OpenAiStandardClient Responses', () => {
 
   it('preserves mixed assistant text and multiple tool-call outputs in standard order', async () => {
     const xhr = new FakeXhr(
-      sse({
-        type: 'response.completed',
-        response: { status: 'completed' },
-      }),
+      sse(completedResponse()),
     );
 
     const stream = await createClient(
@@ -722,22 +723,11 @@ describe('OpenAiStandardClient Responses', () => {
     const client = createClient('openai-responses', xhr);
 
     await expect(
-      client.streamMessages({
-        model: 'model-1',
-        messages: [
-          {
-            role: 'assistant',
-            content: null,
-            tool_calls: [{
-              id: 'call-1',
-              type: 'function',
-              function: { name: 'lookup', arguments: '{}' },
-            }],
-          },
-          { role: 'assistant', content: 'interleaved' },
-          { role: 'tool', content: '{}', tool_call_id: 'call-1' },
-        ],
-      }),
+      client.streamMessages(
+        request('invalid', {
+          messages: interleavedToolTranscript('lookup'),
+        }),
+      ),
     ).rejects.toThrow(
       'Responses transcript has a function call without its tool output',
     );
@@ -783,10 +773,7 @@ describe('OpenAiStandardClient Responses', () => {
             status: 'completed',
           },
         },
-        {
-          type: 'response.completed',
-          response: { status: 'completed' },
-        },
+        completedResponse(),
       ),
     );
 
@@ -885,30 +872,16 @@ describe('OpenAiStandardClient transport', () => {
       xhrFactory,
     });
 
-    const firstStream = await client.streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'first' }],
-    });
+    const firstStream = await client.streamMessages(request('first'));
     const firstPending = collect(firstStream);
     await Promise.resolve();
 
     await expect(
-      client.streamMessages({
-        model: 'model-1',
-        messages: [
-          {
-            role: 'assistant',
-            content: null,
-            tool_calls: [{
-              id: 'call-1',
-              type: 'function',
-              function: { name: 'search', arguments: '{}' },
-            }],
-          },
-          { role: 'assistant', content: 'interleaved' },
-          { role: 'tool', content: '{}', tool_call_id: 'call-1' },
-        ],
-      }),
+      client.streamMessages(
+        request('invalid', {
+          messages: interleavedToolTranscript('search'),
+        }),
+      ),
     ).rejects.toThrow(
       'Responses transcript has a function call without its tool output',
     );
