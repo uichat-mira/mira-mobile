@@ -346,7 +346,7 @@ export function LocalProviderConfigScreen() {
         </Text>
         {config.requiresStandardProtocolReview ? (
           <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
-            此配置由旧版本迁移而来，Base URL 含非标准路径。请改为 API 根地址或标准 /v1 根地址并重新保存。
+            此配置由旧版本迁移而来，需要确认标准协议设置。旧版 reasoning-tag 兼容已移除；请检查 Base URL、协议和模型后重新保存。
           </Text>
         ) : null}
         <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey && !deletingProvider} />
