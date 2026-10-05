@@ -178,11 +178,27 @@ describe('#227 boundary routing', () => {
     const first = await harness.runtime.createSession('First', config.id);
     const second = await harness.runtime.createSession('Second', config.id);
 
-    await harness.runtime.sendMessage(first.id, 'first', { agentEnabled: true });
-    await harness.runtime.sendMessage(second.id, 'second', { agentEnabled: true });
+    const firstStream = await harness.runtime.sendMessage(
+      first.id,
+      'first',
+      { agentEnabled: true },
+    );
+    const firstIterator = firstStream[Symbol.asyncIterator]();
+    await expect(firstIterator.next()).resolves.toMatchObject({ done: false });
+
+    const secondStream = await harness.runtime.sendMessage(
+      second.id,
+      'second',
+      { agentEnabled: true },
+    );
+    const secondIterator = secondStream[Symbol.asyncIterator]();
+    await expect(secondIterator.next()).resolves.toMatchObject({ done: false });
 
     expect(harness.clients[0].cancelActiveRun).toHaveBeenCalledTimes(1);
     expect(harness.clients[1].cancelActiveRun).not.toHaveBeenCalled();
+
+    await firstIterator.return?.();
+    await secondIterator.return?.();
   });
 
   it('rejects a stale approval after cancel so no cross-run approval resolves', async () => {
@@ -196,10 +212,18 @@ describe('#227 boundary routing', () => {
     });
     const session = await harness.runtime.createSession('Agent', config.id);
 
-    await harness.runtime.sendMessage(session.id, 'hi', { agentEnabled: true });
+    const stream = await harness.runtime.sendMessage(
+      session.id,
+      'hi',
+      { agentEnabled: true },
+    );
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
+
     // A stale approval id must be a no-op, not throw or resolve a live run.
     expect(() => harness.runtime.resolveToolApproval('missing', 'approved')).not.toThrow();
     expect(() => harness.runtime.cancelActiveRun()).not.toThrow();
+    await iterator.return?.();
   });
 
   it('cancels the real Provider request for an ordinary Local Chat turn', async () => {
@@ -211,12 +235,15 @@ describe('#227 boundary routing', () => {
     });
     const session = await harness.runtime.createSession('Chat', config.id);
 
-    await harness.runtime.sendMessage(session.id, '你好');
+    const stream = await harness.runtime.sendMessage(session.id, '你好');
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
     expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
 
     harness.runtime.cancelActiveRun();
 
     expect(harness.clients[0].cancelActiveRun).toHaveBeenCalledTimes(1);
+    await iterator.return?.();
   });
 
   it('cancels the real Provider request when ordinary Local Chat is suspended', async () => {
@@ -228,12 +255,15 @@ describe('#227 boundary routing', () => {
     });
     const session = await harness.runtime.createSession('Chat', config.id);
 
-    await harness.runtime.sendMessage(session.id, '你好');
+    const stream = await harness.runtime.sendMessage(session.id, '你好');
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
     expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
 
     harness.runtime.setExecutionSuspended(true);
 
     expect(harness.clients[0].cancelActiveRun).toHaveBeenCalledTimes(1);
+    await iterator.return?.();
   });
 
   it('does not retain a completed Agent Provider client for later cancel or suspend', async () => {
