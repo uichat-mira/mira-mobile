@@ -26,6 +26,7 @@ import type {
   ToolApprovalDecision,
   ToolGatewayClient,
 } from '../tools/toolGatewayClient';
+import { stageLocalSessionReferenceRemoval } from '../session/localSessionReferenceCleanup';
 
 export interface LocalProviderDeletionImpact {
   providerId: string;
@@ -35,6 +36,19 @@ export interface LocalProviderDeletionImpact {
 export interface LocalProviderDeletionResult extends LocalProviderDeletionImpact {
   deletedSessionIds: string[];
 }
+
+export class LocalProviderDeletionScopeChangedError extends Error {
+  readonly code = 'LOCAL_PROVIDER_DELETION_SCOPE_CHANGED';
+
+  constructor(readonly actualSessionCount: number) {
+    super('关联本地对话数量已变化，请重新确认删除范围。');
+    this.name = 'LocalProviderDeletionScopeChangedError';
+  }
+}
+
+export type StageLocalSessionReferenceRemoval = (
+  sessionIds: readonly string[],
+) => Promise<() => Promise<void>>;
 
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
@@ -47,6 +61,7 @@ export interface LocalProviderRuntimeOptions {
   toolGateway?: ToolGatewayClient;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
+  stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
 }
 
 /**
@@ -73,6 +88,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   ) => OpenAiCompatibleClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
   private readonly memoryService: LocalMemoryService;
+  private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
   private readonly providerExecution = new LocalProviderExecutionController();
   private readonly agentRun: LocalAgentRunController | null;
   private readonly activeProviderOperations = new Map<string, number>();
@@ -94,6 +110,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.loadPersonalization =
       options.loadPersonalization ?? loadPersonalizationSettings;
     this.memoryService = options.memoryService ?? getLocalMemoryService();
+    this.stageSessionReferenceRemoval =
+      options.stageSessionReferenceRemoval ?? stageLocalSessionReferenceRemoval;
     this.agentRun = options.toolGateway
       ? new LocalAgentRunController(options.toolGateway)
       : null;
@@ -181,6 +199,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.deletingProviderIds.add(normalizedProviderId);
     let configToRestore: LocalProviderConfig | null = null;
     let credentialToRestore: string | null = null;
+    let restoreSessionReferences: (() => Promise<void>) | null = null;
     let credentialCleared = false;
     let configRemoved = false;
 
@@ -194,11 +213,15 @@ export class LocalProviderRuntime implements ConversationRuntime {
         expectedSessionCount !== undefined &&
         sessions.length !== expectedSessionCount
       ) {
-        throw new Error('关联本地对话数量已变化，请重新确认删除范围。');
+        throw new LocalProviderDeletionScopeChangedError(sessions.length);
       }
 
       credentialToRestore =
         await this.credentialStore.load(normalizedProviderId);
+      const sessionIds = sessions.map((session) => session.id);
+      restoreSessionReferences =
+        await this.stageSessionReferenceRemoval(sessionIds);
+
       await this.credentialStore.clear(normalizedProviderId);
       credentialCleared = true;
 
@@ -224,6 +247,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
         rollback.push(
           this.credentialStore.save(normalizedProviderId, credentialToRestore),
         );
+      }
+      if (restoreSessionReferences) {
+        rollback.push(restoreSessionReferences());
       }
       const rollbackResults = await Promise.allSettled(rollback);
       if (rollbackResults.some((result) => result.status === 'rejected')) {
