@@ -276,11 +276,24 @@ export async function loadPersonalizationSettings(
 
   const v2Raw = await store.get(LEGACY_PERSONALIZATION_V2_KEY);
   if (v2Raw !== null) {
-    const migrated = migrateV2Settings(parseStoredJson(v2Raw));
-    // Keep the legacy payload as a read-only recovery snapshot. v3 is
-    // authoritative on every later load, while retaining v2 avoids a
-    // cross-platform durability gap between writing v3 and deleting v2.
-    await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
+    let migrated: PersonalizationSettings;
+    try {
+      migrated = migrateV2Settings(parseStoredJson(v2Raw));
+    } catch {
+      // Legacy data is not authoritative. Preserve its original bytes for
+      // recovery, but never lock the Personalization UI because an old payload
+      // is malformed.
+      return DEFAULT_PERSONALIZATION_SETTINGS;
+    }
+
+    // Keep the legacy payload as a read-only recovery snapshot. If persisting
+    // v3 fails, the migrated in-memory value is still safe to use and the next
+    // load can retry from the untouched v2 snapshot.
+    try {
+      await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
+    } catch {
+      return migrated;
+    }
     return migrated;
   }
 
@@ -297,7 +310,12 @@ export async function loadPersonalizationSettings(
 
   // Same recovery rule for v1: once v3 exists it wins, but the legacy value is
   // retained until an explicit UI-state reset removes all personalization keys.
-  await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
+  // A failed v3 write must not make readable legacy settings unusable.
+  try {
+    await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
+  } catch {
+    return migrated;
+  }
   return migrated;
 }
 
