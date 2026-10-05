@@ -34,6 +34,10 @@ import {
 import type { RootStackParamList } from '../types/navigation';
 import type { ChatMessage } from '../types';
 import type { ConversationMatch } from '../chat/conversationTools';
+import {
+  ConversationOrchestrator,
+  type ConversationLifecycleEvent,
+} from '../chat/conversationOrchestration';
 import { miraHostClient } from '../api/miraHostClient';
 import { RemoteHostError } from '../api/remoteHttp';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
@@ -57,7 +61,6 @@ import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageH
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
-  getChatSendErrorMessage,
   readCanonicalSessionTitle,
   readLocalSessionTitle,
 } from './chatSessionState';
@@ -250,7 +253,7 @@ export function ChatScreen() {
   );
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const menuButtonRef = useRef<View>(null);
-  const abortRef = useRef(false);
+  const orchestratorRef = useRef<ConversationOrchestrator | null>(null);
   const assistantHapticsRef = useRef<AssistantMessageHapticsObserver | null>(null);
   if (assistantHapticsRef.current === null) {
     assistantHapticsRef.current = new AssistantMessageHapticsObserver();
@@ -559,6 +562,123 @@ export function ChatScreen() {
     });
   }, []);
 
+  const handleLifecycleEvent = useCallback(
+    (event: ConversationLifecycleEvent) => {
+      switch (event.type) {
+        case 'turn-started':
+          setFailedMessages((prev) => {
+            if (!prev.has(event.messageId)) return prev;
+            const next = new Map(prev);
+            next.delete(event.messageId);
+            return next;
+          });
+          setInputText('');
+          setIsLoading(true);
+          setStreamingText('');
+          break;
+        case 'agent-reset':
+          setAgentActivities([]);
+          setPendingAgentApproval(null);
+          setApprovalAction(null);
+          setAgentPauseReason(null);
+          setAgentError(null);
+          break;
+        case 'clear-approval':
+          setPendingAgentApproval(null);
+          setApprovalAction(null);
+          break;
+        case 'text':
+          setStreamingText(event.text);
+          scrollToBottom();
+          break;
+        case 'activity':
+          upsertAgentActivity(
+            event.callId,
+            event.name,
+            event.status,
+            event.detail,
+          );
+          break;
+        case 'approval-required':
+          setPendingAgentApproval({
+            invocationId: event.approval.invocationId,
+            callId: event.approval.callId,
+            name: event.approval.name,
+            message: event.approval.message,
+            ...(event.approval.scope ? { scope: event.approval.scope } : {}),
+          });
+          break;
+        case 'phase':
+          setAgentPhase(event.phase);
+          break;
+        case 'pause':
+          setAgentPauseReason(event.reason);
+          break;
+        case 'canonical-reload':
+          setMessages(event.messages);
+          assistantHapticsRef.current?.observe(event.messages);
+          break;
+        case 'failure':
+          // A user cancel is never reported as an ordinary failure.
+          if (event.kind !== 'cancelled') {
+            setFailedMessages((prev) =>
+              new Map(prev).set(event.messageId, event.message),
+            );
+            if (supportsLocalAgent && agentEnabled) {
+              setAgentError(event.message);
+            }
+          }
+          break;
+        default:
+          break;
+      }
+    },
+    [
+      agentEnabled,
+      scrollToBottom,
+      supportsLocalAgent,
+      upsertAgentActivity,
+    ],
+  );
+
+  const getOrchestrator = useCallback(
+    (): ConversationOrchestrator =>
+      new ConversationOrchestrator(
+        {
+          runtime,
+          loadCanonicalMessages: loadMessages,
+          refreshSessionTitle: () => {
+            void refreshSessionTitle();
+          },
+        },
+        (input) =>
+          runtime.sendMessage(sessionId, input.content, {
+            messageId: input.messageId,
+            agentEnabled: input.agentEnabled,
+          }),
+      ),
+    [loadMessages, refreshSessionTitle, runtime, sessionId],
+  );
+
+  const runTurn = useCallback(
+    async (content: string, messageId: string, useLocalAgent: boolean) => {
+      const orchestrator = getOrchestrator();
+      orchestratorRef.current = orchestrator;
+      try {
+        await orchestrator.dispatchTurn(
+          { content, messageId, agentEnabled: useLocalAgent },
+          { emit: handleLifecycleEvent },
+          createLocalMessageId,
+        );
+      } finally {
+        orchestratorRef.current = null;
+        setStreamingText('');
+        setIsLoading(false);
+      }
+    },
+    [getOrchestrator, handleLifecycleEvent],
+  );
+
   const sendMessage = useCallback(
     async (text?: string, existingMessage?: ChatMessage) => {
       const content = (text ?? existingMessage?.content ?? inputText).trim();
@@ -570,181 +690,38 @@ export function ChatScreen() {
         return;
       }
 
-      const userMsg: ChatMessage =
-        existingMessage ?? {
-          id: createLocalMessageId(),
-          role: 'user',
-          content,
-          timestamp: new Date(),
-        };
-
+      const useLocalAgent = supportsLocalAgent && agentEnabled;
+      // Retry reuses the same user message id so an uncertain reconnect cannot
+      // duplicate the user message (Remote Host V1 requires a stable messageId).
+      const userMsg: ChatMessage = existingMessage ?? {
+        id: createLocalMessageId(),
+        role: 'user',
+        content,
+        timestamp: new Date(),
+      };
       if (!existingMessage) {
         setMessages((prev) => [...prev, userMsg]);
       }
-      setFailedMessages((prev) => {
-        if (!prev.has(userMsg.id)) return prev;
-        const next = new Map(prev);
-        next.delete(userMsg.id);
-        return next;
-      });
-      setInputText('');
-      setIsLoading(true);
-      setStreamingText('');
-      abortRef.current = false;
-      const useLocalAgent = supportsLocalAgent && agentEnabled;
-      if (useLocalAgent) {
-        setAgentActivities([]);
-        setPendingAgentApproval(null);
-        setApprovalAction(null);
-        setAgentPauseReason(null);
-        setAgentError(null);
-        setAgentPhase('thinking');
-      }
 
-      try {
-        // Reuse the same user-message id on retry. Remote Host V1 requires a
-        // stable messageId so an uncertain reconnect cannot duplicate a user message.
-        const stream = await runtime.sendMessage(sessionId, content, {
-          messageId: userMsg.id,
-          agentEnabled: useLocalAgent,
-        });
-        let fullReply = '';
-        let agentPaused = false;
-        let sawToolResult = false;
-        for await (const event of stream) {
-          if (abortRef.current) break;
-          if (event.type === 'text-delta') {
-            fullReply += event.delta;
-            if (useLocalAgent && sawToolResult) {
-              setAgentPhase('continuing');
-            }
-          }
-          if (useLocalAgent && event.type === 'tool-call') {
-            upsertAgentActivity(
-              event.callId,
-              event.name,
-              'requested',
-            );
-          }
-          if (useLocalAgent && event.type === 'tool-running') {
-            upsertAgentActivity(
-              event.callId,
-              event.name,
-              'running',
-            );
-            setAgentPhase('running-tool');
-          }
-          if (useLocalAgent && event.type === 'approval-required') {
-            upsertAgentActivity(
-              event.callId,
-              event.name,
-              'awaiting-approval',
-            );
-            setPendingAgentApproval({
-              invocationId: event.invocationId,
-              callId: event.callId,
-              name: event.name,
-              message: event.message,
-              ...(event.scope ? { scope: event.scope } : {}),
-            });
-            setApprovalAction(null);
-            setAgentPhase('waiting-approval');
-          }
-          if (useLocalAgent && event.type === 'approval-resolved') {
-            upsertAgentActivity(
-              event.callId,
-              event.name,
-              event.decision === 'approved' ? 'approved' : 'rejected',
-            );
-            setPendingAgentApproval(null);
-            setApprovalAction(null);
-            setAgentPhase(
-              event.decision === 'approved' ? 'running-tool' : 'paused',
-            );
-          }
-          if (useLocalAgent && event.type === 'tool-result') {
-            sawToolResult = true;
-            upsertAgentActivity(
-              event.callId,
-              event.name,
-              event.truncated ? 'truncated' : 'completed',
-              event.truncated
-                ? `结果超过上下文限制，已截断后继续：${event.content}`
-                : event.content,
-            );
-            setAgentPhase('continuing');
-          }
-          if (useLocalAgent && event.type === 'run-paused') {
-            agentPaused = true;
-            setPendingAgentApproval(null);
-            setApprovalAction(null);
-            setAgentPauseReason(event.reason);
-            setAgentPhase('paused');
-          }
-          if (useLocalAgent && event.type === 'finish') {
-            if (event.reason !== 'tool_calls' && !agentPaused) {
-              setAgentPhase('completed');
-            }
-          }
-          if (event.type === 'error') {
-            if (useLocalAgent) setAgentPhase('error');
-            throw new Error(event.message);
-          }
-          setStreamingText(fullReply);
-          scrollToBottom();
-        }
-        if (useLocalAgent && !agentPaused && !abortRef.current) {
-          setAgentPhase('completed');
-        }
-
-        // The stream is a delivery channel only. Re-read canonical Thread /
-        // Message state so the UI never invents an Assistant message locally.
-        await loadMessages();
-        void refreshSessionTitle();
-        setStreamingText('');
-      } catch (error) {
-        setStreamingText('');
-        const canonicalMessages = await loadMessages();
-        void refreshSessionTitle();
-        const hasCanonicalAssistant = canonicalMessages?.some(
-          (message) =>
-            message.role === 'assistant' &&
-            message.timestamp.getTime() >= userMsg.timestamp.getTime(),
-        );
-        if (!abortRef.current && !hasCanonicalAssistant) {
-          const message = getChatSendErrorMessage(error, runtime.kind);
-          if (useLocalAgent) {
-            setPendingAgentApproval(null);
-            setApprovalAction(null);
-            setAgentError(message);
-            setAgentPhase('error');
-          }
-          setFailedMessages((prev) =>
-            new Map(prev).set(userMsg.id, message),
-          );
-        }
-      } finally {
-        setIsLoading(false);
-      }
+      await runTurn(content, userMsg.id, useLocalAgent);
     },
     [
       agentEnabled,
       agentModeLoading,
       inputText,
       isLoading,
-      loadMessages,
-      refreshSessionTitle,
-      scrollToBottom,
-      runtime,
-      sessionId,
+      runTurn,
       supportsLocalAgent,
-      upsertAgentActivity,
     ],
   );
 
   const handleStop = useCallback(() => {
-    abortRef.current = true;
-    runtime.cancelActiveRun();
+    const orchestrator = orchestratorRef.current;
+    if (orchestrator) {
+      orchestrator.cancel();
+    } else {
+      runtime.cancelActiveRun();
+    }
     if (supportsLocalAgent && agentEnabled) {
       setPendingAgentApproval(null);
       setApprovalAction(null);

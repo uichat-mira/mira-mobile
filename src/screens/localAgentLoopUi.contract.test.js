@@ -5,6 +5,10 @@ const chatSource = readFileSync(
   resolve(process.cwd(), 'src/screens/ChatScreen.tsx'),
   'utf8',
 );
+const orchestrationSource = readFileSync(
+  resolve(process.cwd(), 'src/chat/conversationOrchestration.ts'),
+  'utf8',
+);
 const cardSource = readFileSync(
   resolve(process.cwd(), 'src/components/LocalAgentRunCard.tsx'),
   'utf8',
@@ -22,17 +26,17 @@ describe('MOB-042 local Agent Loop UI contract', () => {
   });
 
   it('renders protocol-neutral tool lifecycle states without exposing raw arguments', () => {
-    expect(chatSource).toContain("event.type === 'tool-call'");
-    expect(chatSource).toContain("event.type === 'tool-running'");
-    expect(chatSource).toContain("event.type === 'tool-result'");
-    expect(chatSource).toContain("event.type === 'run-paused'");
+    expect(orchestrationSource).toContain("case 'tool-call'");
+    expect(orchestrationSource).toContain("case 'tool-running'");
+    expect(orchestrationSource).toContain("case 'tool-result'");
+    expect(orchestrationSource).toContain("case 'run-paused'");
     expect(cardSource).toContain('结果已截断');
     expect(cardSource).not.toContain('approval.arguments');
   });
 
   it('completes mobile approval through the runtime boundary', () => {
-    expect(chatSource).toContain("event.type === 'approval-required'");
-    expect(chatSource).toContain("event.type === 'approval-resolved'");
+    expect(orchestrationSource).toContain("case 'approval-required'");
+    expect(orchestrationSource).toContain("case 'approval-resolved'");
     expect(chatSource).toContain('runtime.resolveToolApproval(');
     expect(cardSource).toContain('批准工具调用');
     expect(cardSource).toContain('拒绝工具调用');
