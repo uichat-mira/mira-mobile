@@ -177,6 +177,56 @@ describe('LocalProviderRuntime', () => {
 });
 
 
+describe('LocalProviderRuntime standard protocol routing', () => {
+  it.each([
+    'openai-chat-completions',
+    'openai-responses',
+  ] as const)('uses the selected %s protocol through the same canonical turn path', async (protocol) => {
+    const selectedConfig: LocalProviderConfig = {
+      ...config,
+      id: `provider-${protocol}`,
+      protocol,
+    };
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([selectedConfig]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(selectedConfig.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const selectedProtocols: LocalProviderConfig['protocol'][] = [];
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory: (providerConfig) => {
+        selectedProtocols.push(providerConfig.protocol);
+        return {
+          cancelActiveRun: jest.fn(),
+          streamMessages: jest.fn(async () =>
+            (async function* () {
+              yield { type: 'text-delta' as const, delta: 'reply' };
+              yield { type: 'finish' as const, reason: 'stop' };
+            })(),
+          ),
+        } as unknown as OpenAiStandardClient;
+      },
+    });
+    const session = await runtime.createSession('Protocol', selectedConfig.id);
+
+    await expect(
+      drain(await runtime.sendMessage(session.id, 'hello')),
+    ).resolves.toEqual([
+      { type: 'text-delta', delta: 'reply' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+
+    expect(selectedProtocols).toEqual([protocol]);
+    await expect(repository.getMessages(session.id)).resolves.toMatchObject([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'reply' },
+    ]);
+  });
+});
+
 describe('LocalProviderRuntime send preflight', () => {
   it('rejects a missing API key before returning a stream', async () => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
