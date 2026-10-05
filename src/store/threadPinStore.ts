@@ -11,6 +11,7 @@ import {
   removeThreadReferences,
   restoreThreadReferences,
 } from './threadReferenceMutationFence';
+import { persistOptimisticThreadReferenceMap } from './threadReferencePersistence';
 
 const repository = new ThreadPinRepository(localKeyValueStore);
 let hydratePromise: Promise<void> | null = null;
@@ -59,15 +60,13 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
       ...previous,
       [threadId]: new Date().toISOString(),
     };
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   unpinThread: async (threadId) => {
@@ -78,15 +77,13 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
 
     const next = { ...previous };
     delete next[threadId];
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   removeThreads: async (threadIds) => {
@@ -95,16 +92,14 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
     const { next, removed } = removeThreadReferences(previous, threadIds);
     if (Object.keys(removed).length === 0) return removed;
 
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-      return removed;
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
+    return removed;
   },
 
   restoreThreads: async (pins) => {
@@ -112,14 +107,12 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
     await get().hydrate();
     const previous = get().pinnedAtByThreadId;
     const next = restoreThreadReferences(previous, pins);
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
   },
 }));
