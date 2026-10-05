@@ -3,6 +3,7 @@ import type { ThreadReadMap } from '../store/threadReadState';
 import { useThreadPinStore } from '../store/threadPinStore';
 import { useThreadReadStore } from '../store/threadReadStore';
 import {
+  loadLastOpenedSession,
   removeLastOpenedSessions,
   saveLastOpenedSession,
   type LastOpenedSession,
@@ -17,21 +18,33 @@ export interface LocalSessionReferenceSnapshot {
 export interface LocalSessionReferenceCleanupDependencies {
   removePins(threadIds: readonly string[]): Promise<ThreadPinMap>;
   restorePins(pins: ThreadPinMap): Promise<void>;
+  readPins(): Promise<ThreadPinMap>;
   removeReadProgress(threadIds: readonly string[]): Promise<ThreadReadMap>;
   restoreReadProgress(progress: ThreadReadMap): Promise<void>;
+  readReadProgress(): Promise<ThreadReadMap>;
   removeLastOpened(threadIds: readonly string[]): Promise<LastOpenedSession | null>;
   restoreLastOpened(record: LastOpenedSession): Promise<void>;
+  loadLastOpened(): Promise<LastOpenedSession | null>;
 }
 
 const defaultDependencies: LocalSessionReferenceCleanupDependencies = {
   removePins: (threadIds) => useThreadPinStore.getState().removeThreads(threadIds),
   restorePins: (pins) => useThreadPinStore.getState().restoreThreads(pins),
+  readPins: async () => {
+    await useThreadPinStore.getState().hydrate();
+    return { ...useThreadPinStore.getState().pinnedAtByThreadId };
+  },
   removeReadProgress: (threadIds) =>
     useThreadReadStore.getState().removeThreads(threadIds),
   restoreReadProgress: (progress) =>
     useThreadReadStore.getState().restoreThreads(progress),
+  readReadProgress: async () => {
+    await useThreadReadStore.getState().hydrate();
+    return { ...useThreadReadStore.getState().progressByThreadId };
+  },
   removeLastOpened: (threadIds) => removeLastOpenedSessions(threadIds),
   restoreLastOpened: (record) => saveLastOpenedSession(record),
+  loadLastOpened: () => loadLastOpenedSession(),
 };
 
 const restoreSnapshot = async (
@@ -48,6 +61,26 @@ const restoreSnapshot = async (
 
   const results = await Promise.allSettled(operations);
   if (results.some((result) => result.status === 'rejected')) {
+    throw new Error('本地会话引用回滚未完整完成。');
+  }
+
+  const [pins, readProgress, lastOpened] = await Promise.all([
+    dependencies.readPins(),
+    dependencies.readReadProgress(),
+    dependencies.loadLastOpened(),
+  ]);
+  const pinsRestored = Object.entries(snapshot.pins).every(
+    ([threadId, pinnedAt]) => pins[threadId] === pinnedAt,
+  );
+  const readsRestored = Object.entries(snapshot.readProgress).every(
+    ([threadId, progress]) =>
+      JSON.stringify(readProgress[threadId]) === JSON.stringify(progress),
+  );
+  const lastOpenedRestored =
+    snapshot.lastOpened === null ||
+    JSON.stringify(lastOpened) === JSON.stringify(snapshot.lastOpened);
+
+  if (!pinsRestored || !readsRestored || !lastOpenedRestored) {
     throw new Error('本地会话引用回滚未完整完成。');
   }
 };
