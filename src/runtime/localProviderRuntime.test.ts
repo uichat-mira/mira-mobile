@@ -489,6 +489,30 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
   });
 
+  it('escalates canonical rollback failure when credential restoration also fails', async () => {
+    const stageSessionReferenceRemoval = jest.fn(async () => ({
+      commit: jest.fn(),
+      rollback: jest.fn(async () => undefined),
+    }));
+    const { runtime, credentialStore, repository } =
+      await createDeletionRuntime(stageSessionReferenceRemoval);
+    await runtime.createSession('Credential rollback failure', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new LocalProviderSessionRollbackIncompleteError(
+        new Error('canonical restore failed'),
+      ),
+    );
+    jest.spyOn(credentialStore, 'save').mockRejectedValueOnce(
+      new Error('credential restore failed'),
+    );
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE',
+      reason: 'rollback',
+    });
+    await expect(credentialStore.load(config.id)).resolves.toBeNull();
+  });
+
   it('cancels a lazy send before its first iterator step without writing messages', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const session = await runtime.createSession('Cancel before start', config.id);
