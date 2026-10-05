@@ -36,7 +36,7 @@ describe('MOB-049 Remote Host personalization isolation', () => {
 
     const personalizationContext = buildLocalPersonalizationContext({
       baseStyle: { tone: 'professional' },
-      characteristics: { warmth: true, traits: ['讲话简短'], conciseFirst: true },
+      characteristics: { traits: ['给出反例'] },
       instructions: '保持克制',
     });
     expect(personalizationContext).not.toBeNull();
@@ -58,7 +58,7 @@ describe('MOB-049 Remote Host personalization isolation', () => {
     const payload = JSON.stringify(sendMessage.mock.calls[0][0]);
     const personalizationContext = buildLocalPersonalizationContext({
       baseStyle: { tone: 'professional' },
-      characteristics: { warmth: false, traits: ['讲话简短'], conciseFirst: false },
+      characteristics: { traits: ['给出反例'] },
       instructions: '保持克制',
     });
 
