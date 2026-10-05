@@ -1,5 +1,5 @@
 import { LocalSessionRepository } from '../local/localSessionRepository';
-import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
   ProviderConfigStore,
   type LocalProviderConfig,
@@ -32,7 +32,7 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const streaming = (events: RuntimeEvent[]): AsyncIterable<RuntimeEvent> => ({
@@ -114,7 +114,7 @@ interface ScriptedRuntimeOptions {
 /**
  * Build a runtime whose Provider client script distinguishes the chat request
  * from the follow-up consolidation request per turn: within each `sendMessage`
- * the factory hands out a fresh client, and the client's FIRST `streamChat`
+ * the factory hands out a fresh client, and the client's FIRST `streamMessages`
  * call is the chat request while the second is the consolidation request. This
  * mirrors production, where each `sendMessage` builds a new client.
  */
@@ -134,7 +134,7 @@ const createScriptedRuntime = async (options: ScriptedRuntimeOptions) => {
     let perClientCalls = 0;
     return {
       cancelActiveRun: jest.fn(),
-      streamChat: async (request: {
+      streamMessages: async (request: {
         model: string;
         messages: Array<{ role: string; content: string | null }>;
       }) => {
@@ -149,7 +149,7 @@ const createScriptedRuntime = async (options: ScriptedRuntimeOptions) => {
         }
         return streaming(options.consolidationEvents);
       },
-    } as unknown as OpenAiCompatibleClient;
+    } as unknown as OpenAiStandardClient;
   };
 
   const runtime = new LocalProviderRuntime({
@@ -536,7 +536,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       let perClientCalls = 0;
       return {
         cancelActiveRun: jest.fn(),
-        streamChat: async (request: { model: string }) => {
+        streamMessages: async (request: { model: string }) => {
           perClientCalls += 1;
           if (perClientCalls === 1) {
             return streaming(chatReply(`reply-${providerId}`));
@@ -544,7 +544,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
           consolidationModels.push(request.model);
           return streaming([{ type: 'text-delta', delta: '{"patches":[]}' }]);
         },
-      } as unknown as OpenAiCompatibleClient;
+      } as unknown as OpenAiStandardClient;
     };
 
     const runtime = new LocalProviderRuntime({
@@ -664,7 +664,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       clientFactory: () =>
         ({
           cancelActiveRun: jest.fn(),
-          streamChat: async () => {
+          streamMessages: async () => {
             modelCalls += 1;
             return streaming([
               { type: 'text-delta', delta: '继续调用工具…' },
@@ -672,7 +672,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
               { type: 'finish', reason: 'tool_calls' },
             ]);
           },
-        } as unknown as OpenAiCompatibleClient),
+        } as unknown as OpenAiStandardClient),
       toolGateway: {
         listTools: async () => [
           { name: 'remote_tool', parameters: { type: 'object' } },
@@ -718,7 +718,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       clientFactory: () =>
         ({
           cancelActiveRun: jest.fn(),
-          streamChat: async () => {
+          streamMessages: async () => {
             perClientCalls += 1;
             if (perClientCalls === 1) return streaming(chatReply('记住了。'));
             // The Provider prefixes the JSON with a reasoning tag; only after
@@ -730,7 +730,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
               { type: 'text-delta', delta: PROPOSAL_JSON },
             ]);
           },
-        } as unknown as OpenAiCompatibleClient),
+        } as unknown as OpenAiStandardClient),
       memoryService: service,
       loadPersonalization: async () => DEFAULT_PERSONALIZATION_SETTINGS,
     });
