@@ -114,6 +114,25 @@ describe('localSessionReferenceCleanup', () => {
     expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
   });
 
+  it('ignores unrelated pin and read changes when verifying rollback', async () => {
+    const { dependencies, removedPins, removedReadProgress } = makeDependencies();
+    const transaction = await stageLocalSessionReferenceRemoval(
+      ['local-a'],
+      dependencies,
+    );
+
+    (dependencies.readPins as jest.Mock).mockResolvedValueOnce({
+      ...removedPins,
+      'local-b': '2026-10-05T01:00:00.000Z',
+    });
+    (dependencies.readReadProgress as jest.Mock).mockResolvedValueOnce({
+      ...removedReadProgress,
+      'local-b': { observedMessageCount: 9 },
+    });
+
+    await expect(transaction.rollback()).resolves.toBeUndefined();
+  });
+
   it('treats a different concurrent last-opened record as incomplete rollback', async () => {
     const { dependencies } = makeDependencies();
     const transaction = await stageLocalSessionReferenceRemoval(
