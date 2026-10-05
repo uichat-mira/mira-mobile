@@ -179,6 +179,10 @@ export class ProviderConfigStore {
     return migrated;
   }
 
+  /**
+   * Low-level full-list persistence used by internal state/rollback paths.
+   * It deliberately does not acknowledge migration notices.
+   */
   async save(configs: readonly LocalProviderConfig[]): Promise<void> {
     const normalized = configs.map((config) =>
       normalizeConfigForWrite(config),
@@ -189,6 +193,11 @@ export class ProviderConfigStore {
     );
   }
 
+  /**
+   * User-authored Provider write. A successful validated upsert acknowledges
+   * non-blocking migration notices and clears a blocking review only after the
+   * Base URL has been corrected to a standard root.
+   */
   async upsert(config: LocalProviderConfig): Promise<void> {
     const configs = await this.load();
     const normalized = normalizeConfigForWrite(config, true);
