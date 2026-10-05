@@ -8,7 +8,10 @@ import type { RootStackParamList } from '../types/navigation';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
-import { LocalProviderDeletionScopeChangedError } from '../runtime/localProviderRuntime';
+import {
+  LocalProviderDeletionRollbackIncompleteError,
+  LocalProviderDeletionScopeChangedError,
+} from '../runtime/localProviderRuntime';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
@@ -161,6 +164,13 @@ export function LocalProviderConfigScreen() {
         Alert.alert(
           '删除范围已变化',
           `此 Provider 当前关联 ${error.actualSessionCount} 个本地对话。刚才的确认已失效；请再次点击“删除当前配置”，按最新范围重新确认。`,
+        );
+        return;
+      }
+      if (error instanceof LocalProviderDeletionRollbackIncompleteError) {
+        Alert.alert(
+          '删除未完整回滚',
+          '部分本地状态可能已经变化。请重新打开 Local Provider 设置检查配置、API Key 和关联对话后，再决定是否继续操作。',
         );
         return;
       }
