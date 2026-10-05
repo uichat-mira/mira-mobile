@@ -775,18 +775,22 @@ export class OpenAiStandardClient {
   async streamMessages(
     request: OpenAiModelRequest,
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    if (this.options.protocol === 'openai-responses') {
-      this.responsesContinuationBatches = selectResponsesContinuationBatches(
-        request.messages,
-        this.responsesContinuationBatches,
-      );
-    }
+    this.cancelActiveRun();
+    const continuationBatches =
+      this.options.protocol === 'openai-responses'
+        ? selectResponsesContinuationBatches(
+            request.messages,
+            this.responsesContinuationBatches,
+          )
+        : [];
     const wireRequest = buildWireRequest(
       this.options.protocol,
       request,
-      this.responsesContinuationBatches,
+      continuationBatches,
     );
-    this.cancelActiveRun();
+    if (this.options.protocol === 'openai-responses') {
+      this.responsesContinuationBatches = continuationBatches;
+    }
     const controller = new AbortController();
     this.activeAbort = controller;
     let timedOut = false;
