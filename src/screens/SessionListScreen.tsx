@@ -88,6 +88,7 @@ export function SessionListScreen() {
     canDeleteRemoteSessions: () => miraHostClient.canDeleteSession(),
     syncUnreadSessions,
     hydrateLocalState,
+    autoLoad: false,
     filter: sourceFilter,
   });
 
@@ -146,13 +147,8 @@ export function SessionListScreen() {
 
   const loadSessionsRef = useRef(loadSessions);
   loadSessionsRef.current = loadSessions;
-  const hasFocusedOnceRef = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      if (!hasFocusedOnceRef.current) {
-        hasFocusedOnceRef.current = true;
-        return;
-      }
       hydrateLocalState()
         .then(() => loadSessionsRef.current())
         .catch(() => undefined);

@@ -13,6 +13,8 @@ export interface UseSessionCollectionOptions {
   syncUnreadSessions?: (sessions: Session[]) => Promise<void>;
   /** Hydrates device-local pin/read state before the collection is read. */
   hydrateLocalState?: () => Promise<void>;
+  /** Defaults to true. SessionList disables this and drives reads from focus. */
+  autoLoad?: boolean;
   filter?: SessionSourceFilter;
 }
 
@@ -80,6 +82,12 @@ export const useSessionCollection = (
   // retrigger the collection load on every render. The mount effect is the
   // single load lifecycle; `reload` handles explicit refreshes.
   useEffect(() => {
+    if (optionsRef.current.autoLoad === false) {
+      return () => {
+        requestSequenceRef.current += 1;
+      };
+    }
+
     let cancelled = false;
     (async () => {
       const hydrate = optionsRef.current.hydrateLocalState;

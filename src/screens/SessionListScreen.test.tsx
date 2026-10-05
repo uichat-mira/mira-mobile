@@ -6,10 +6,13 @@ import renderer, { act } from 'react-test-renderer';
 import { SessionListScreen } from './SessionListScreen';
 import { resolveSessionOpenTarget } from '../session/sessionNavigation';
 
+let mockFocusCallback: (() => void) | null = null;
+
 jest.mock('@react-navigation/native', () => ({
   useNavigation: jest.fn(() => ({ navigate: jest.fn(), goBack: jest.fn() })),
   useFocusEffect: (callback: () => void) => {
     const ReactActual = jest.requireActual('react') as typeof import('react');
+    mockFocusCallback = callback;
     ReactActual.useEffect(callback, [callback]);
   },
 }));
@@ -178,6 +181,23 @@ describe('SessionListScreen session collection', () => {
     expect(texts).toContain('最近会话');
     // Pinned section label must render above the recent section.
     expect(texts.indexOf('置顶')).toBeLessThan(texts.indexOf('最近对话'));
+    await act(async () => tree.unmount());
+  });
+
+  it('loads exactly once on first focus and reloads on later focus', async () => {
+    runtimeRegistry.listSessions.mockResolvedValue([]);
+
+    const tree = await renderScreen();
+    expect(runtimeRegistry.listSessions).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mockFocusCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(runtimeRegistry.listSessions).toHaveBeenCalledTimes(2);
     await act(async () => tree.unmount());
   });
 

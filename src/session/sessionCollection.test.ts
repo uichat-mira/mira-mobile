@@ -102,6 +102,28 @@ describe('loadSessionCollection', () => {
     expect(observed[0].map((item) => item.id)).toEqual(['remote-1']);
   });
 
+  it('keeps unread observation best-effort and retries it on the next reload', async () => {
+    const syncUnreadSessions = jest.fn(async () => {
+      throw new Error('read observation unavailable');
+    });
+    const deps = {
+      listSessions: async () => [session('remote-1')],
+      syncUnreadSessions,
+      filter: 'remote-host' as const,
+    };
+
+    await expect(loadSessionCollection(deps)).resolves.toEqual({
+      sessions: [expect.objectContaining({ id: 'remote-1' })],
+      canDeleteSessions: false,
+    });
+    await expect(loadSessionCollection(deps)).resolves.toEqual({
+      sessions: [expect.objectContaining({ id: 'remote-1' })],
+      canDeleteSessions: false,
+    });
+
+    expect(syncUnreadSessions).toHaveBeenCalledTimes(2);
+  });
+
   it('degrades remote delete capability to false when the probe fails', async () => {
     const snapshot = await loadSessionCollection({
       listSessions: async () => [session('remote-1')],
