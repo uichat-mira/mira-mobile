@@ -22,7 +22,7 @@ const createService = (store = new MemoryLocalKeyValueStore()) =>
 
 const executorWith = (
   streamMessages: (
-    messages: readonly Array<{ role: string; content: string | null }>,
+    messages: ReadonlyArray<{ role: string; content: string | null }>,
   ) => Promise<AsyncIterable<RuntimeEvent>>,
 ): LocalProviderExecutor =>
   ({
