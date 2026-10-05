@@ -68,6 +68,20 @@ describe('LocalSessionRepository', () => {
     ]);
   });
 
+  it('rejects a cascade when the frozen Provider session ids changed', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const first = await repository.create('provider-a', 'A1');
+    const second = await repository.create('provider-a', 'A2');
+
+    await expect(
+      repository.deleteByProvider('provider-a', [first.id, 'local-stale']),
+    ).rejects.toMatchObject({
+      actualSessionIds: [second.id, first.id],
+    });
+
+    await expect(repository.list('provider-a')).resolves.toHaveLength(2);
+  });
+
   it('treats provider cascade deletion with no owned sessions as a no-op', async () => {
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const otherProvider = await repository.create('provider-b', 'B1');
