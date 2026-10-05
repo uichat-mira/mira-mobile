@@ -108,6 +108,12 @@ export const useSessionCollection = (
   useEffect(() => {
     if (previousFilterRef.current === filter) return;
     previousFilterRef.current = filter;
+    // A source transition changes the collection's authority. Do not keep
+    // rendering rows from the previous source while the new read is pending.
+    setSessions([]);
+    setCanDeleteSessions(false);
+    setDiagnostic(null);
+    setLoading(true);
     reload().catch(() => undefined);
   }, [filter, reload]);
 

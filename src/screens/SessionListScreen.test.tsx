@@ -224,6 +224,53 @@ describe('SessionListScreen session collection', () => {
     await act(async () => tree.unmount());
   });
 
+  it('does not keep previous-source rows visible while a filter reload is pending', async () => {
+    let resolveLocal!: (value: unknown[]) => void;
+    runtimeRegistry.listSessions.mockImplementation((filter: string) => {
+      if (filter === 'local-provider') {
+        return new Promise((resolve) => {
+          resolveLocal = resolve;
+        });
+      }
+      return Promise.resolve([
+        {
+          id: 'remote-old',
+          title: '远程旧会话',
+          updatedAt: new Date('2026-08-28T00:10:00.000Z'),
+        },
+      ]);
+    });
+
+    const tree = await renderScreen();
+    expect(collectText(tree)).toContain('远程旧会话');
+
+    const switcher = tree.root.findAll(
+      (node) => node.props.accessibilityLabel === '切换到本地连接',
+    )[0];
+    await act(async () => {
+      switcher.props.onPress();
+      await Promise.resolve();
+    });
+
+    expect(collectText(tree)).not.toContain('远程旧会话');
+
+    await act(async () => {
+      resolveLocal([
+        {
+          id: 'local-new',
+          title: '本地新会话',
+          source: 'local-provider',
+          updatedAt: new Date('2026-08-28T00:11:00.000Z'),
+        },
+      ]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(collectText(tree)).toContain('本地新会话');
+    await act(async () => tree.unmount());
+  });
+
   it('does not degrade a Remote collection failure into an empty list', async () => {
     const { RemoteHostError } = jest.requireActual('../api/remoteHttp');
     runtimeRegistry.listSessions.mockImplementation(async () => {
