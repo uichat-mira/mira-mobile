@@ -64,12 +64,23 @@ export async function loadLastOpenedSession(
   }
 }
 
+export async function removeLastOpenedSessions(
+  sessionIds: readonly string[],
+  store: LocalKeyValueStore = localKeyValueStore,
+): Promise<LastOpenedSession | null> {
+  const ids = new Set(sessionIds.filter((sessionId) => sessionId.trim().length > 0));
+  if (ids.size === 0) return null;
+
+  const record = await loadLastOpenedSession(store);
+  if (!record || !ids.has(record.sessionId)) return null;
+
+  await store.remove(LAST_OPENED_SESSION_KEY);
+  return record;
+}
+
 export async function removeLastOpenedSession(
   sessionId: string,
   store: LocalKeyValueStore = localKeyValueStore,
 ): Promise<void> {
-  const record = await loadLastOpenedSession(store);
-  if (record?.sessionId === sessionId) {
-    await store.remove(LAST_OPENED_SESSION_KEY);
-  }
+  await removeLastOpenedSessions([sessionId], store);
 }
