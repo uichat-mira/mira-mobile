@@ -447,6 +447,32 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(second.id)).resolves.toBeDefined();
   });
 
+  it('accepts a semantically restored Provider config regardless of object key order', async () => {
+    const { runtime, configStore, repository } = await createDeletionRuntime();
+    await runtime.createSession('Keep me', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new Error('session persistence failed'),
+    );
+    const originalUpsert = configStore.upsert.bind(configStore);
+    jest.spyOn(configStore, 'upsert').mockImplementationOnce(async (value) => {
+      const reordered: LocalProviderConfig = {
+        protocol: value.protocol,
+        model: value.model,
+        baseUrl: value.baseUrl,
+        name: value.name,
+        id: value.id,
+        compatibility: value.compatibility,
+        ...(value.toolGatewayId ? { toolGatewayId: value.toolGatewayId } : {}),
+      };
+      await originalUpsert(reordered);
+    });
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      'session persistence failed',
+    );
+    await expect(configStore.load()).resolves.toContainEqual(storedConfig(config));
+  });
+
   it('detects a config rollback that resolves without restoring persisted state', async () => {
     const { runtime, configStore, repository } = await createDeletionRuntime();
     await runtime.createSession('Keep me', config.id);
@@ -514,6 +540,64 @@ describe('LocalProviderRuntime Provider deletion', () => {
       reason: 'provider-missing',
     });
     await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
+  it('lets Provider deletion win if a single-session delete has not acquired its mutation lease yet', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const first = await runtime.createSession('Delete first', config.id);
+    await runtime.createSession('Cascade second', config.id);
+    const originalGetProviderId = repository.getProviderId.bind(repository);
+    let releaseProviderId!: () => void;
+    let signalProviderIdResolved!: () => void;
+    const providerIdGate = new Promise<void>((resolve) => {
+      releaseProviderId = resolve;
+    });
+    const providerIdResolved = new Promise<void>((resolve) => {
+      signalProviderIdResolved = resolve;
+    });
+    jest.spyOn(repository, 'getProviderId').mockImplementationOnce(
+      async (sessionId) => {
+        const providerId = await originalGetProviderId(sessionId);
+        signalProviderIdResolved();
+        await providerIdGate;
+        return providerId;
+      },
+    );
+
+    const singleDelete = runtime.deleteSession(first.id);
+    await providerIdResolved;
+    const providerDelete = runtime.deleteProvider(config.id, 2);
+
+    releaseProviderId();
+
+    await expect(singleDelete).rejects.toThrow('正在删除');
+    await expect(providerDelete).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 2,
+    });
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
+  it('reserves Provider deletion synchronously before the first await', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Delete now', config.id);
+
+    const deletion = runtime.deleteProvider(config.id, 1);
+
+    await expect(runtime.sendMessage(session.id, 'Too late')).rejects.toThrow(
+      '正在删除',
+    );
+    await expect(runtime.createSession('Too late', config.id)).rejects.toThrow(
+      '正在删除',
+    );
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      '正在删除',
+    );
+
+    await expect(deletion).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
   });
 
   it('waits for an in-flight single-session mutation instead of reporting an active request', async () => {
