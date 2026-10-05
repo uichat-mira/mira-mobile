@@ -54,14 +54,15 @@ describe('MOB-064 local memory boundary contract', () => {
     expect(memoryRuntime).not.toContain('configureLocalMemoryConsolidator');
   });
 
-  it('runs consolidation through the same provider compatibility normalization', () => {
+  it('runs consolidation through the same selected standard protocol executor', () => {
     const execution = read('src/runtime/localProviderExecution.ts');
-    expect(execution).toContain('applyProviderCompatibility');
-    expect(execution).toContain('filterReasoningTagEvents');
-    // The consolidation path delegates to the per-turn executor so it cannot
-    // diverge from the chat path's compatibility normalization.
+    expect(execution).toContain('client.streamMessages');
+    expect(execution).not.toContain('filterReasoningTagEvents');
+    expect(execution).not.toContain('applyProviderCompatibility');
+
     const consolidation = read('src/runtime/localTurnConsolidation.ts');
-    expect(consolidation).toContain('executor.client.streamChat');
-    expect(consolidation).toContain('filterReasoningTagEvents');
+    expect(consolidation).toContain('executor.streamMessages(request.messages)');
+    expect(consolidation).not.toContain('reasoningTagFilter');
+    expect(consolidation).not.toContain('streamChat');
   });
 });
