@@ -5,6 +5,7 @@ import {
   stageLocalSessionReferenceRemoval,
   type LocalSessionReferenceCleanupDependencies,
 } from './localSessionReferenceCleanup';
+import { assertThreadReferenceMutationAllowed } from '../store/threadReferenceMutationFence';
 
 const lastOpened: LastOpenedSession = {
   sessionId: 'local-a',
@@ -59,7 +60,7 @@ describe('localSessionReferenceCleanup', () => {
   it('stages exact session references and exposes a rollback callback', async () => {
     const { dependencies, removedPins, removedReadProgress } = makeDependencies();
 
-    const rollback = await stageLocalSessionReferenceRemoval(
+    const transaction = await stageLocalSessionReferenceRemoval(
       ['local-a', 'local-b', 'local-a'],
       dependencies,
     );
@@ -74,7 +75,7 @@ describe('localSessionReferenceCleanup', () => {
       'local-b',
     ]);
 
-    await rollback();
+    await transaction.rollback();
 
     expect(dependencies.restorePins).toHaveBeenCalledWith(removedPins);
     expect(dependencies.restoreReadProgress).toHaveBeenCalledWith(
@@ -104,7 +105,7 @@ describe('localSessionReferenceCleanup', () => {
       async () => undefined,
     );
 
-    const rollback = await stageLocalSessionReferenceRemoval(
+    const transaction = await stageLocalSessionReferenceRemoval(
       ['local-a'],
       dependencies,
     );
@@ -112,11 +113,29 @@ describe('localSessionReferenceCleanup', () => {
     await expect(rollback()).rejects.toThrow('回滚未完整完成');
   });
 
+  it('fences only staged session ids until the transaction settles', async () => {
+    const { dependencies } = makeDependencies();
+
+    const transaction = await stageLocalSessionReferenceRemoval(
+      ['local-a'],
+      dependencies,
+    );
+
+    expect(() => assertThreadReferenceMutationAllowed('local-a')).toThrow(
+      'locked',
+    );
+    expect(() => assertThreadReferenceMutationAllowed('local-b')).not.toThrow();
+
+    transaction.commit();
+
+    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
+  });
+
   it('does not touch reference stores for a zero-session cascade', async () => {
     const { dependencies } = makeDependencies();
 
-    const rollback = await stageLocalSessionReferenceRemoval([], dependencies);
-    await rollback();
+    const transaction = await stageLocalSessionReferenceRemoval([], dependencies);
+    transaction.commit();
 
     expect(dependencies.removePins).not.toHaveBeenCalled();
     expect(dependencies.removeReadProgress).not.toHaveBeenCalled();
