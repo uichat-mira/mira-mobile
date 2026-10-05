@@ -153,6 +153,39 @@ describe('ProviderConfigStore', () => {
     expect(loaded[0]).not.toHaveProperty('compatibility');
   });
 
+  it('clears a stale migration review flag when a corrected HTTPS Base URL is upserted', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
+      JSON.stringify([
+        {
+          id: 'legacy-private',
+          name: 'Legacy private',
+          baseUrl: 'https://provider.example.com/api/v1',
+          model: 'legacy-model',
+          protocol: 'chat-completions',
+        },
+      ]),
+    );
+    const store = new ProviderConfigStore(storage);
+    const [flagged] = await store.load();
+
+    await store.upsert({
+      ...flagged,
+      baseUrl: 'https://provider.example.com/v1',
+    });
+
+    await expect(store.load()).resolves.toEqual([
+      {
+        id: 'legacy-private',
+        name: 'Legacy private',
+        baseUrl: 'https://provider.example.com/v1',
+        model: 'legacy-model',
+        protocol: 'openai-chat-completions',
+      },
+    ]);
+  });
+
   it('prefers current v2 storage once migration has completed', async () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
