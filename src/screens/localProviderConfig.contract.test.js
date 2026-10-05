@@ -69,6 +69,15 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('请再次点击“删除当前配置”，按最新范围重新确认');
   });
 
+  it('reloads the persisted Provider list after a successful deletion', () => {
+    expect(source).toContain(
+      'new ProviderConfigStore().load().catch(() => null)',
+    );
+    expect(source).not.toContain(
+      'const nextConfigs = configs.filter((item) => item.id !== providerId)',
+    );
+  });
+
   it('surfaces incomplete rollback as a distinct recovery state', () => {
     expect(source).toContain(
       'error instanceof LocalProviderDeletionRollbackIncompleteError',
