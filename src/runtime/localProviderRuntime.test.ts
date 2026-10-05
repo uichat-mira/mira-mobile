@@ -4,7 +4,7 @@ import {
   LocalSessionRepository,
 } from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
-import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
@@ -17,12 +17,11 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const storedConfig = (value: LocalProviderConfig): LocalProviderConfig => ({
   ...value,
-  compatibility: value.compatibility ?? { reasoningTags: 'strip' },
 });
 
 const createSendReadyRuntime = async () => {
@@ -37,8 +36,8 @@ const createSendReadyRuntime = async () => {
     sessionRepository: repository,
     clientFactory: () => ({
       cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(async () => (async function* () {})()),
-    } as unknown as OpenAiCompatibleClient),
+      streamMessages: jest.fn(async () => (async function* () {})()),
+    } as unknown as OpenAiStandardClient),
   });
   return { runtime, repository };
 };
@@ -79,7 +78,7 @@ describe('LocalProviderRuntime', () => {
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const makeClient = () => ({
       cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(async () => (async function* () {
+      streamMessages: jest.fn(async () => (async function* () {
         yield { type: 'finish', reason: 'stop' as const };
       })()),
     });
@@ -243,10 +242,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
       stageSessionReferenceRemoval,
       clientFactory: () => ({
         cancelActiveRun: jest.fn(),
-        streamChat: jest.fn(async () => (async function* () {
+        streamMessages: jest.fn(async () => (async function* () {
           yield { type: 'finish', reason: 'stop' as const };
         })()),
-      } as unknown as OpenAiCompatibleClient),
+      } as unknown as OpenAiStandardClient),
     });
     return {
       runtime,
@@ -953,26 +952,26 @@ const createPersonalizationRuntime = async (
   const credentialStore = new MemoryProviderCredentialStore();
   await credentialStore.save(config.id, 'sk-test');
   const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
-  const streamChat = jest.fn(async () => (async function* () {})());
+  const streamMessages = jest.fn(async () => (async function* () {})());
   const runtime = new LocalProviderRuntime({
     configStore,
     credentialStore,
     sessionRepository: repository,
     clientFactory: () => ({
       cancelActiveRun: jest.fn(),
-      streamChat,
-    } as unknown as OpenAiCompatibleClient),
+      streamMessages,
+    } as unknown as OpenAiStandardClient),
     loadPersonalization,
     toolGateway: {
       listTools: async () => [],
       callTool: async () => ({ content: 'unused' }),
     },
   });
-  return { runtime, streamChat };
+  return { runtime, streamMessages };
 };
 
-const firstRequestMessages = (streamChat: jest.Mock) => {
-  const request = streamChat.mock.calls[0][0] as {
+const firstRequestMessages = (streamMessages: jest.Mock) => {
+  const request = streamMessages.mock.calls[0][0] as {
     messages: Array<{ role: string; content: string | null }>;
   };
   return request.messages;
@@ -995,12 +994,12 @@ describe('LocalProviderRuntime personalization context', () => {
   };
 
   it('injects a Personalization system context into plain Local Chat requests', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].role).toBe('system');
     expect(messages[0].content).toContain('professional');
     expect(messages[0].content).toContain('保持克制');
@@ -1008,35 +1007,35 @@ describe('LocalProviderRuntime personalization context', () => {
   });
 
   it('injects the same Personalization context into Local Agent requests', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Agent', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好', { agentEnabled: true }));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].role).toBe('system');
     expect(messages[0].content).toContain('professional');
   });
 
   it('does not inject a system context when personalization is default and no instruction is present', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(
+    const { runtime, streamMessages } = await createPersonalizationRuntime(
       DEFAULT_PERSONALIZATION_SETTINGS,
     );
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
   });
 
   it('carries the precedence note so the current user message can override the stored style', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '请用非常简短的一句话回答'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].content).toContain('follow the current user message');
   });
 
@@ -1051,7 +1050,7 @@ describe('LocalProviderRuntime personalization context', () => {
   });
 
   it('degrades to no personalization context when loading fails, without failing the send', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized, () => {
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized, () => {
       throw new Error('corrupted personalization payload');
     });
     const session = await runtime.createSession('Chat', config.id);
@@ -1060,7 +1059,7 @@ describe('LocalProviderRuntime personalization context', () => {
       drain(await runtime.sendMessage(session.id, '你好')),
     ).resolves.toBeUndefined();
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
   });
 });
