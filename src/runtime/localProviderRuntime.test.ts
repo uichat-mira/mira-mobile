@@ -552,6 +552,33 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).rejects.toThrow('not found');
   });
 
+  it('cancels only the current local send when two sends are active', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const firstSession = await runtime.createSession('First active', config.id);
+    const secondSession = await runtime.createSession('Second active', config.id);
+    const firstStream = await runtime.sendMessage(firstSession.id, 'first');
+    const secondStream = await runtime.sendMessage(secondSession.id, 'second');
+    const firstIterator = firstStream[Symbol.asyncIterator]();
+    const secondIterator = secondStream[Symbol.asyncIterator]();
+
+    await expect(firstIterator.next()).resolves.toMatchObject({ done: false });
+    await expect(secondIterator.next()).resolves.toMatchObject({ done: false });
+
+    runtime.cancelActiveRun();
+
+    await expect(runtime.deleteProvider(config.id, 2)).rejects.toThrow(
+      '正在执行本地请求',
+    );
+
+    await firstIterator.return?.();
+
+    await expect(runtime.deleteProvider(config.id, 2)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 2,
+    });
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
   it('rejects the cascade when the frozen session id set changes at the same count', async () => {
     const stageSessionReferenceRemoval = jest.fn(async () => ({
       commit: jest.fn(),
