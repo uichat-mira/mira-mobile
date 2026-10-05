@@ -459,6 +459,54 @@ describe('LocalProviderRuntime Provider deletion', () => {
     ).resolves.toEqual([storedConfig(otherConfig)]);
   });
 
+  it('blocks deletion while a started send is paused before Provider config resolves', async () => {
+    const { runtime, configStore, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Paused send', config.id);
+    const originalLoad = configStore.load.bind(configStore);
+    let releaseLoad!: () => void;
+    let signalLoadStarted!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const loadStarted = new Promise<void>((resolve) => {
+      signalLoadStarted = resolve;
+    });
+    jest.spyOn(configStore, 'load').mockImplementationOnce(async () => {
+      signalLoadStarted();
+      await loadGate;
+      return originalLoad();
+    });
+
+    const stream = await runtime.sendMessage(session.id, 'hello');
+    const iterator = stream[Symbol.asyncIterator]();
+    const firstEvent = iterator.next();
+    await loadStarted;
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      '正在执行本地请求',
+    );
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+
+    releaseLoad();
+    await expect(firstEvent).resolves.toMatchObject({ done: false });
+    await iterator.return?.();
+  });
+
+  it('keeps an unconsumed stream inert after its Provider is deleted', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Never started', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+
+    await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow('not found');
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
   it('refuses deletion while the selected Provider still owns an active run', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
