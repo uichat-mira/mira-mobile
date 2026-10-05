@@ -1335,12 +1335,13 @@ const firstRequestMessages = (streamMessages: jest.Mock) => {
 };
 
 const drain = async (stream: AsyncIterable<unknown>) => {
-  // Exhaust the runtime stream so lazy model calls are dispatched.
-  const iterator = stream[Symbol.asyncIterator]();
-  let result = await iterator.next();
-  while (!result.done) {
-    result = await iterator.next();
+  // Exhaust the runtime stream so lazy model calls are dispatched, while
+  // preserving the emitted events for assertions that verify lifecycle order.
+  const events: unknown[] = [];
+  for await (const event of stream) {
+    events.push(event);
   }
+  return events;
 };
 
 describe('LocalProviderRuntime personalization context', () => {
