@@ -513,6 +513,27 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(credentialStore.load(config.id)).resolves.toBeNull();
   });
 
+  it('cancels every unconsumed send for the Provider before cascade deletion', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const first = await runtime.createSession('Pending first', config.id);
+    const second = await runtime.createSession('Pending second', config.id);
+    const firstStream = await runtime.sendMessage(first.id, 'first');
+    const secondStream = await runtime.sendMessage(second.id, 'second');
+
+    await expect(runtime.deleteProvider(config.id, 2)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 2,
+    });
+
+    await expect(
+      firstStream[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('Local Provider request was cancelled');
+    await expect(
+      secondStream[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('Local Provider request was cancelled');
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
   it('cancels a lazy send before its first iterator step without writing messages', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const session = await runtime.createSession('Cancel before start', config.id);
