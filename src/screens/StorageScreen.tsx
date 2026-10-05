@@ -28,7 +28,7 @@ import {
 import {
   computeDeviceStorageUsage,
   formatBytes,
-  UI_STATE_UI_STATE_STORAGE_KEY_GROUPS_TO_RESET,
+  UI_STATE_STORAGE_KEY_GROUPS_TO_RESET,
   type DeviceStorageUsage,
 } from '../storage/deviceStorageUsage';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
