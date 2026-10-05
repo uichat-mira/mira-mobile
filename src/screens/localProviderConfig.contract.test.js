@@ -44,6 +44,23 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('!editable && styles.disabledButton');
   });
 
+  it('offers only standard OpenAI protocol choices', () => {
+    expect(source).toContain('OPENAI_STANDARD_PROTOCOL_OPTIONS.map((option) =>');
+    expect(source).toContain('OpenAI Chat Completions');
+    expect(source).toContain('OpenAI Responses');
+    expect(source).not.toContain('OpenAI-compatible Provider');
+    expect(source).not.toContain('opencode');
+    expect(source).not.toContain('ark');
+    expect(source).not.toContain('minimax');
+  });
+
+  it('requires migrated private-path configs to be corrected before use', () => {
+    expect(source).toContain('config.requiresStandardProtocolReview');
+    expect(source).toContain('Base URL 含非标准路径');
+    expect(source).toContain('normalizeOpenAiStandardBaseUrl(config.baseUrl)');
+    expect(source).toContain('API 根地址或标准 /v1 根地址');
+  });
+
   it('creates a local conversation with the selected Provider', () => {
     expect(source).toContain('runtimeRegistry.createLocalSession(undefined, config.id)');
     expect(source).toContain("source: 'local-provider'");
