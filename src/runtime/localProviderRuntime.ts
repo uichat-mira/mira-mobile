@@ -69,6 +69,17 @@ export class LocalProviderDeletionRollbackIncompleteError extends Error {
   }
 }
 
+export class LocalProviderConfigReviewRequiredError extends Error {
+  readonly code = 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED';
+
+  constructor() {
+    super(
+      '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
+    );
+    this.name = 'LocalProviderConfigReviewRequiredError';
+  }
+}
+
 export class LocalProviderSendUnavailableError extends Error {
   readonly code = 'LOCAL_PROVIDER_SEND_UNAVAILABLE';
 
@@ -332,9 +343,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
     if (config.requiresStandardProtocolReview) {
-      throw new Error(
-        '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
-      );
+      throw new LocalProviderConfigReviewRequiredError();
     }
 
     const release = this.acquireProviderMutation(config.id);
@@ -561,9 +570,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           throw new LocalProviderSendUnavailableError('provider-missing');
         }
         if (config.requiresStandardProtocolReview) {
-          throw new Error(
-            '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
-          );
+          throw new LocalProviderConfigReviewRequiredError();
         }
 
         const session = await runtime.sessionRepository.get(sessionId);
