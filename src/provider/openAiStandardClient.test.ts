@@ -240,6 +240,46 @@ describe('OpenAiStandardClient Responses', () => {
     expect(xhr.requestUrl).toBe(expectedUrl);
   });
 
+  it('accepts a trailing SSE done sentinel after response.completed', async () => {
+    const xhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.completed',
+          response: { status: 'completed' },
+        },
+        '[DONE]',
+      ),
+    );
+
+    const stream = await createClient(
+      'openai-responses',
+      xhr,
+    ).streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    await expect(collect(stream)).resolves.toEqual([
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+  it('rejects a Responses stream that ends without a typed terminal event', async () => {
+    const xhr = new FakeXhr(sse('[DONE]'));
+
+    const stream = await createClient(
+      'openai-responses',
+      xhr,
+    ).streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    await expect(collect(stream)).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_EVENT',
+    });
+  });
+
   it('streams output text and maps canonical transcript to Responses input items', async () => {
     const xhr = new FakeXhr(
       sse(
