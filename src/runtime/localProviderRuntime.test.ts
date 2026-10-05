@@ -384,7 +384,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).rejects.toThrow('not found');
   });
 
-  it('keeps a cancelled send tracked until its stream unwinds', async () => {
+  it('releases a started send for deletion when runtime cleanup cancels an abandoned iterator', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const session = await runtime.createSession('Running', config.id);
     const stream = await runtime.sendMessage(session.id, 'hello');
@@ -396,12 +396,6 @@ describe('LocalProviderRuntime Provider deletion', () => {
     );
 
     runtime.cancelActiveRun();
-
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
-      '正在执行本地请求',
-    );
-
-    await iterator.return?.();
 
     await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
       providerId: config.id,
