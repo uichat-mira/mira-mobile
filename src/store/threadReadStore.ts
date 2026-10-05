@@ -32,6 +32,8 @@ interface ThreadReadStore {
     observedMessageCount: number,
   ) => Promise<void>;
   clearThread: (threadId: string) => Promise<void>;
+  removeThreads: (threadIds: readonly string[]) => Promise<ThreadReadMap>;
+  restoreThreads: (progress: ThreadReadMap) => Promise<void>;
   syncSessions: (sessions: Session[]) => Promise<void>;
 }
 
@@ -114,6 +116,48 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     if (!previousMap[threadId]) return;
     const nextMap = { ...previousMap };
     delete nextMap[threadId];
+    set({ progressByThreadId: nextMap });
+    try {
+      await repository.save(nextMap);
+    } catch (error) {
+      if (get().progressByThreadId === nextMap) {
+        set({ progressByThreadId: previousMap });
+      }
+      throw error;
+    }
+  },
+
+  removeThreads: async (threadIds) => {
+    await get().hydrate();
+    const ids = new Set(threadIds.filter((threadId) => threadId.trim().length > 0));
+    const previousMap = get().progressByThreadId;
+    const removed: ThreadReadMap = {};
+    const nextMap = { ...previousMap };
+    for (const threadId of ids) {
+      const progress = previousMap[threadId];
+      if (!progress) continue;
+      removed[threadId] = progress;
+      delete nextMap[threadId];
+    }
+    if (Object.keys(removed).length === 0) return removed;
+
+    set({ progressByThreadId: nextMap });
+    try {
+      await repository.save(nextMap);
+      return removed;
+    } catch (error) {
+      if (get().progressByThreadId === nextMap) {
+        set({ progressByThreadId: previousMap });
+      }
+      throw error;
+    }
+  },
+
+  restoreThreads: async (progress) => {
+    if (Object.keys(progress).length === 0) return;
+    await get().hydrate();
+    const previousMap = get().progressByThreadId;
+    const nextMap = { ...previousMap, ...progress };
     set({ progressByThreadId: nextMap });
     try {
       await repository.save(nextMap);
