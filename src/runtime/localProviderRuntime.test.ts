@@ -1,5 +1,8 @@
 import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
-import { LocalSessionRepository } from '../local/localSessionRepository';
+import {
+  LocalProviderSessionRollbackIncompleteError,
+  LocalSessionRepository,
+} from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
@@ -174,6 +177,44 @@ describe('LocalProviderRuntime', () => {
   });
 });
 
+
+describe('LocalProviderRuntime send preflight', () => {
+  it('rejects a missing API key before returning a stream', async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([config]);
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore: new MemoryProviderCredentialStore(),
+      sessionRepository: repository,
+    });
+    const session = await runtime.createSession('Missing key', config.id);
+
+    await expect(runtime.sendMessage(session.id, 'hello')).rejects.toThrow(
+      'Local Provider API key is not configured',
+    );
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+  });
+
+  it('rejects a missing Provider before returning a stream', async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'key-a');
+    const session = await repository.create(config.id, 'Missing provider');
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+    });
+
+    await expect(runtime.sendMessage(session.id, 'hello')).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_SEND_UNAVAILABLE',
+      reason: 'provider-missing',
+    });
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+  });
+});
 
 describe('LocalProviderRuntime Provider deletion', () => {
   const otherConfig: LocalProviderConfig = {
@@ -369,6 +410,34 @@ describe('LocalProviderRuntime Provider deletion', () => {
     ]);
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
     await expect(repository.get(session.id)).resolves.toBeDefined();
+  });
+
+  it('keeps staged references removed when canonical session rollback is incomplete', async () => {
+    const rollbackReferences = jest.fn(async () => undefined);
+    const commitReferences = jest.fn();
+    const stageSessionReferenceRemoval = jest.fn(async () => ({
+      commit: commitReferences,
+      rollback: rollbackReferences,
+    }));
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime(stageSessionReferenceRemoval);
+    const session = await runtime.createSession('Partial canonical rollback', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new LocalProviderSessionRollbackIncompleteError(
+        new Error('canonical restore failed'),
+      ),
+    );
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE',
+      reason: 'canonical-sessions',
+    });
+
+    expect(stageSessionReferenceRemoval).toHaveBeenCalledWith([session.id]);
+    expect(commitReferences).toHaveBeenCalledTimes(1);
+    expect(rollbackReferences).not.toHaveBeenCalled();
+    await expect(configStore.load()).resolves.toContainEqual(storedConfig(config));
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
   });
 
   it('does not acquire a Provider lease for an unconsumed send stream', async () => {
