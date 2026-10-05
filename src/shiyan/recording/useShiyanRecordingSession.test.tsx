@@ -8,6 +8,7 @@ import type {
 } from './RecordingAdapter';
 import type { LocalCaptureMetadata } from './localCaptureRepository';
 import {
+  createShiyanRecordingId,
   useShiyanRecordingSession,
   type ShiyanRecordingSession,
   type ShiyanRecordingSessionDeps,
@@ -136,6 +137,17 @@ afterEach(() => {
     activeRenderer = null;
   }
   handle = null;
+});
+
+describe('createShiyanRecordingId', () => {
+  it('creates unique local capture ids without pseudorandom input', () => {
+    const first = createShiyanRecordingId();
+    const second = createShiyanRecordingId();
+
+    expect(first).toMatch(/^capture_[a-z0-9]+_[a-z0-9]+$/);
+    expect(second).toMatch(/^capture_[a-z0-9]+_[a-z0-9]+$/);
+    expect(second).not.toBe(first);
+  });
 });
 
 describe('useShiyanRecordingSession lifecycle', () => {

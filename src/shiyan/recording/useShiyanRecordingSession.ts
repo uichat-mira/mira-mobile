@@ -52,11 +52,17 @@ export interface ShiyanRecordingSession {
 
 // Singletons are resolved at call time (not captured) so tests can replace them
 // after module import, matching the task-detail orchestration convention.
+let recordingIdSequence = 0;
+
+export const createShiyanRecordingId = (): string => {
+  recordingIdSequence += 1;
+  return `capture_${Date.now().toString(36)}_${recordingIdSequence.toString(36)}`;
+};
+
 const createDefaultDeps = (): ShiyanRecordingSessionDeps => ({
   adapter: recordingAdapter,
   saveCompleted: input => localCaptureRepository.saveCompleted(input),
-  createRecordingId: () =>
-    `capture_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  createRecordingId: createShiyanRecordingId,
 });
 
 const recordingIdFromFilePath = (filePath: string): string | null =>
