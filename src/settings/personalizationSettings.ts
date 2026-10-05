@@ -216,7 +216,8 @@ const migrateV2Settings = (value: unknown): PersonalizationSettings => {
   ) {
     throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
   }
-  const legacyTraits = requireStringTraits(characteristics.traits);
+  const legacyTraits =
+    characteristics.traits === undefined ? [] : requireStringTraits(characteristics.traits);
 
   const sanitizedLegacyTraits = sanitizeTraits(legacyTraits);
   const firstTraitTone = sanitizedLegacyTraits
