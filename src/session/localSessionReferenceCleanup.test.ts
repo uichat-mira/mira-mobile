@@ -114,6 +114,30 @@ describe('localSessionReferenceCleanup', () => {
     expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
   });
 
+  it('treats a different concurrent last-opened record as incomplete rollback', async () => {
+    const { dependencies } = makeDependencies();
+    const transaction = await stageLocalSessionReferenceRemoval(
+      ['local-a'],
+      dependencies,
+    );
+    const concurrentLastOpened: LastOpenedSession = {
+      sessionId: 'remote-new',
+      title: 'New current session',
+      source: 'remote-host',
+      providerName: null,
+      providerModel: null,
+    };
+    (dependencies.restoreLastOpened as jest.Mock).mockImplementationOnce(
+      async () => undefined,
+    );
+    (dependencies.loadLastOpened as jest.Mock).mockResolvedValueOnce(
+      concurrentLastOpened,
+    );
+
+    await expect(transaction.rollback()).rejects.toThrow('回滚未完整完成');
+    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
+  });
+
   it('fences only staged session ids until the transaction settles', async () => {
     const { dependencies } = makeDependencies();
 
