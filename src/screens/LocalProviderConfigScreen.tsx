@@ -9,6 +9,7 @@ import { ProviderConfigStore, type LocalProviderConfig } from '../provider/provi
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import {
+  LocalProviderDeletionBlockedByActiveRunError,
   LocalProviderDeletionRollbackIncompleteError,
   LocalProviderDeletionScopeChangedError,
 } from '../runtime/localProviderRuntime';
@@ -176,7 +177,14 @@ export function LocalProviderConfigScreen() {
         }
       }
     } catch (error) {
-      if (error instanceof LocalProviderDeletionScopeChangedError) {
+      if (error instanceof LocalProviderDeletionBlockedByActiveRunError) {
+        Alert.alert(
+          'Provider 正在执行请求',
+          '请先返回对应的本地对话停止当前生成，再回来删除此 Provider。',
+        );
+        return;
+      }
+            if (error instanceof LocalProviderDeletionScopeChangedError) {
         Alert.alert(
           '删除范围已变化',
           `此 Provider 当前关联 ${error.actualSessionCount} 个本地对话。刚才的确认已失效；请再次点击“删除当前配置”，按最新范围重新确认。`,
