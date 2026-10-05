@@ -14,6 +14,7 @@ import {
 import {
   LocalProviderConfigReviewRequiredError,
   LocalProviderRuntime,
+  type LocalProviderRuntimeOptions,
 } from './localProviderRuntime';
 
 const config: LocalProviderConfig = {
@@ -44,6 +45,32 @@ const createSendReadyRuntime = async () => {
     } as unknown as OpenAiStandardClient),
   });
   return { runtime, repository };
+};
+
+const createConfiguredRuntime = async (options: {
+  providerConfig?: LocalProviderConfig;
+  configStore?: ProviderConfigStore;
+  clientFactory?: LocalProviderRuntimeOptions['clientFactory'];
+  toolGateway?: LocalProviderRuntimeOptions['toolGateway'];
+}) => {
+  const providerConfig = options.providerConfig ?? config;
+  const configStore =
+    options.configStore ??
+    new ProviderConfigStore(new MemoryLocalKeyValueStore());
+  if (!options.configStore) {
+    await configStore.save([providerConfig]);
+  }
+  const credentialStore = new MemoryProviderCredentialStore();
+  await credentialStore.save(providerConfig.id, 'sk-test');
+  const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+  const runtime = new LocalProviderRuntime({
+    configStore,
+    credentialStore,
+    sessionRepository: repository,
+    ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
+    ...(options.toolGateway ? { toolGateway: options.toolGateway } : {}),
+  });
+  return { runtime, repository, configStore, credentialStore };
 };
 
 describe('LocalProviderRuntime', () => {
@@ -191,16 +218,9 @@ describe('LocalProviderRuntime standard protocol routing', () => {
       id: `provider-${protocol}`,
       protocol,
     };
-    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    await configStore.save([selectedConfig]);
-    const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(selectedConfig.id, 'sk-test');
-    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const selectedProtocols: LocalProviderConfig['protocol'][] = [];
-    const runtime = new LocalProviderRuntime({
-      configStore,
-      credentialStore,
-      sessionRepository: repository,
+    const { runtime, repository } = await createConfiguredRuntime({
+      providerConfig: selectedConfig,
       clientFactory: (providerConfig) => {
         selectedProtocols.push(providerConfig.protocol);
         return {
@@ -237,11 +257,6 @@ describe('LocalProviderRuntime Responses Agent client reuse', () => {
       ...config,
       protocol: 'openai-responses',
     };
-    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    await configStore.save([responsesConfig]);
-    const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(responsesConfig.id, 'sk-test');
-    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const streamMessages = jest
       .fn()
       .mockImplementationOnce(async () =>
@@ -267,10 +282,8 @@ describe('LocalProviderRuntime Responses Agent client reuse', () => {
     } as unknown as OpenAiStandardClient;
     const clientFactory = jest.fn(() => client);
     const callTool = jest.fn(async () => ({ content: '{"result":"ok"}' }));
-    const runtime = new LocalProviderRuntime({
-      configStore,
-      credentialStore,
-      sessionRepository: repository,
+    const { runtime, repository } = await createConfiguredRuntime({
+      providerConfig: responsesConfig,
       clientFactory,
       toolGateway: {
         listTools: async () => [{
@@ -300,15 +313,7 @@ describe('LocalProviderRuntime Responses Agent client reuse', () => {
 
 describe('LocalProviderRuntime rejected provider streams', () => {
   it('does not persist partial assistant text when a provider stream fails late', async () => {
-    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    await configStore.save([config]);
-    const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(config.id, 'sk-test');
-    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
-    const runtime = new LocalProviderRuntime({
-      configStore,
-      credentialStore,
-      sessionRepository: repository,
+    const { runtime, repository } = await createConfiguredRuntime({
       clientFactory: () => ({
         cancelActiveRun: jest.fn(),
         streamMessages: jest.fn(async () =>
@@ -337,16 +342,8 @@ describe('LocalProviderRuntime rejected provider streams', () => {
   });
 
   it('does not execute a pending Agent tool call when the provider stream fails before completion', async () => {
-    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    await configStore.save([config]);
-    const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(config.id, 'sk-test');
-    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const callTool = jest.fn(async () => ({ content: 'should-not-run' }));
-    const runtime = new LocalProviderRuntime({
-      configStore,
-      credentialStore,
-      sessionRepository: repository,
+    const { runtime, repository } = await createConfiguredRuntime({
       toolGateway: {
         listTools: async () => [{
           name: 'search',
