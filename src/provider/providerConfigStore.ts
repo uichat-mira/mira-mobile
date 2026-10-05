@@ -79,10 +79,8 @@ const normalizeConfigForWrite = (
     isOpenAiStandardBaseUrl(parsed.baseUrl);
   if (!isCorrectedHttpsBase) return parsed;
 
-  const {
-    requiresStandardProtocolReview: _reviewFlag,
-    ...corrected
-  } = parsed;
+  const corrected = { ...parsed };
+  delete corrected.requiresStandardProtocolReview;
   return corrected;
 };
 
