@@ -278,6 +278,31 @@ describe('ProviderConfigStore', () => {
     ]);
   });
 
+  it('retains the original v1 migration source byte-for-byte after writing v2', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    const legacyRaw = JSON.stringify([{
+      id: 'legacy-source',
+      name: 'Legacy source',
+      baseUrl: 'https://provider.example.com',
+      model: 'legacy-model',
+      protocol: 'chat-completions',
+      compatibility: { reasoningTags: 'strip' },
+    }], null, 2);
+    await storage.set(
+      LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
+      legacyRaw,
+    );
+
+    await new ProviderConfigStore(storage).load();
+
+    await expect(
+      storage.get(LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1),
+    ).resolves.toBe(legacyRaw);
+    await expect(
+      storage.get(LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.current),
+    ).resolves.not.toBeNull();
+  });
+
   it('prefers current v2 storage once migration has completed', async () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
