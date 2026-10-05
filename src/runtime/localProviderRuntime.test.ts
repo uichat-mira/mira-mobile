@@ -433,8 +433,8 @@ describe('LocalProviderRuntime Provider deletion', () => {
     });
 
     await expect(configStore.load()).resolves.toEqual([
-      storedConfig(config),
       storedConfig(otherConfig),
+      storedConfig(config),
     ]);
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
     await expect(repository.list(config.id)).resolves.toHaveLength(2);
