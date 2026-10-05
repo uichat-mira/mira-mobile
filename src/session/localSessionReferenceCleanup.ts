@@ -64,6 +64,11 @@ export async function stageLocalSessionReferenceRemoval(
   sessionIds: readonly string[],
   dependencies: LocalSessionReferenceCleanupDependencies = defaultDependencies,
 ): Promise<() => Promise<void>> {
+  const normalizedIds = [...new Set(sessionIds.filter((sessionId) => sessionId.trim().length > 0))];
+  if (normalizedIds.length === 0) {
+    return async () => undefined;
+  }
+
   const snapshot: LocalSessionReferenceSnapshot = {
     pins: {},
     readProgress: {},
@@ -74,11 +79,11 @@ export async function stageLocalSessionReferenceRemoval(
   let lastOpenedRemoved = false;
 
   try {
-    snapshot.pins = await dependencies.removePins(sessionIds);
+    snapshot.pins = await dependencies.removePins(normalizedIds);
     pinsRemoved = true;
-    snapshot.readProgress = await dependencies.removeReadProgress(sessionIds);
+    snapshot.readProgress = await dependencies.removeReadProgress(normalizedIds);
     readProgressRemoved = true;
-    snapshot.lastOpened = await dependencies.removeLastOpened(sessionIds);
+    snapshot.lastOpened = await dependencies.removeLastOpened(normalizedIds);
     lastOpenedRemoved = snapshot.lastOpened !== null;
   } catch (error) {
     const rollback: Promise<void>[] = [];
