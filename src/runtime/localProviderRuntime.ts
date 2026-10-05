@@ -227,8 +227,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private cancelTrackedProviderSends(): void {
-    for (const send of this.activeProviderSends) {
+    for (const send of [...this.activeProviderSends]) {
       send.cancelled = true;
+      this.finishProviderSend(send);
     }
   }
 
