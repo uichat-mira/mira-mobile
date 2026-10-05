@@ -73,12 +73,6 @@ const BASE_STYLE_DUPLICATE_TRAITS: Readonly<Record<string, Exclude<BaseStyleTone
   '快速回答': 'concise',
 };
 
-const MIGRATION_STYLE_INSTRUCTIONS: Record<Exclude<BaseStyleTone, 'default'>, string> = {
-  friendly: '保持亲和友善的表达。',
-  professional: '保持专业严谨的表达。',
-  concise: '优先简洁直接，先给结论。',
-};
-
 const traitKey = (value: string): string => normalizeTrait(value).toLocaleLowerCase();
 
 const baseStyleToneForTrait = (
@@ -203,29 +197,15 @@ const parseCurrentSettings = (value: unknown): PersonalizationSettings => {
   };
 };
 
-const appendMigrationInstructions = (
-  instructions: string,
-  additions: readonly string[],
-): string => {
-  const existing = normalizeInstructions(instructions);
-  const uniqueAdditions = additions.filter(
-    (addition, index) =>
-      additions.indexOf(addition) === index && !existing.includes(addition),
-  );
-  return [existing, ...uniqueAdditions]
-    .filter((part) => part.length > 0)
-    .join('\n')
-    .slice(0, MAX_INSTRUCTIONS_LENGTH);
-};
-
 /**
  * v2 carried two built-in characteristic toggles that overlapped Base style:
  * warmth ~= friendly and conciseFirst ~= concise. v3 removes those controls.
  *
- * Migration keeps one compatible signal as the Base style when no Base style
- * was explicitly selected. Any additional/conflicting legacy style signal is
- * moved into visible Custom Instructions instead of becoming a hidden runtime
- * preference. Base-style-like free-text traits are handled the same way.
+ * Migration always resolves to one effective Base style. An explicitly chosen
+ * v2 Base style wins. Otherwise the deterministic legacy precedence is:
+ * conciseFirst > warmth > first Base-style-like free-text Trait. All losing
+ * style signals are dropped instead of being smuggled into Traits or Custom
+ * Instructions, so the migrated context cannot contain competing tone rules.
  */
 const migrateV2Settings = (value: unknown): PersonalizationSettings => {
   const stored = parseStoredEnvelope(value);
@@ -238,38 +218,26 @@ const migrateV2Settings = (value: unknown): PersonalizationSettings => {
   }
   const legacyTraits = requireStringTraits(characteristics.traits);
 
-  let tone: BaseStyleTone = stored.tone;
-  const migratedInstructions: string[] = [];
-  const absorbStyleSignal = (target: Exclude<BaseStyleTone, 'default'>) => {
-    if (tone === 'default') {
-      tone = target;
-      return;
-    }
-    if (tone !== target) {
-      migratedInstructions.push(MIGRATION_STYLE_INSTRUCTIONS[target]);
-    }
-  };
+  const sanitizedLegacyTraits = sanitizeTraits(legacyTraits);
+  const firstTraitTone = sanitizedLegacyTraits
+    .map(baseStyleToneForTrait)
+    .find((tone): tone is Exclude<BaseStyleTone, 'default'> => tone !== null);
 
-  if (characteristics.warmth) absorbStyleSignal('friendly');
-  if (characteristics.conciseFirst) absorbStyleSignal('concise');
-
-  const traits: string[] = [];
-  for (const trait of sanitizeTraits(legacyTraits)) {
-    const duplicateTone = baseStyleToneForTrait(trait);
-    if (duplicateTone) {
-      absorbStyleSignal(duplicateTone);
-      continue;
-    }
-    traits.push(trait);
-  }
+  const tone: BaseStyleTone =
+    stored.tone !== 'default'
+      ? stored.tone
+      : characteristics.conciseFirst
+        ? 'concise'
+        : characteristics.warmth
+          ? 'friendly'
+          : firstTraitTone ?? 'default';
 
   return {
     baseStyle: { tone },
-    characteristics: { traits },
-    instructions: appendMigrationInstructions(
-      stored.instructions,
-      migratedInstructions,
-    ),
+    characteristics: {
+      traits: sanitizedLegacyTraits.filter((trait) => baseStyleToneForTrait(trait) === null),
+    },
+    instructions: normalizeInstructions(stored.instructions),
   };
 };
 
@@ -308,8 +276,10 @@ export async function loadPersonalizationSettings(
   const v2Raw = await store.get(LEGACY_PERSONALIZATION_V2_KEY);
   if (v2Raw !== null) {
     const migrated = migrateV2Settings(parseStoredJson(v2Raw));
+    // Keep the legacy payload as a read-only recovery snapshot. v3 is
+    // authoritative on every later load, while retaining v2 avoids a
+    // cross-platform durability gap between writing v3 and deleting v2.
     await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
-    await store.remove(LEGACY_PERSONALIZATION_V2_KEY);
     return migrated;
   }
 
@@ -324,8 +294,9 @@ export async function loadPersonalizationSettings(
   }
   if (!migrated) return DEFAULT_PERSONALIZATION_SETTINGS;
 
+  // Same recovery rule for v1: once v3 exists it wins, but the legacy value is
+  // retained until an explicit UI-state reset removes all personalization keys.
   await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
-  await store.remove(LEGACY_PERSONALIZATION_V1_KEY);
   return migrated;
 }
 
