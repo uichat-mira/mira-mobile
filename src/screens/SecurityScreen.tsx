@@ -257,17 +257,6 @@ export function SecurityScreen() {
               />
             </RowGroup>
 
-            <SectionHeader>其它</SectionHeader>
-            <RowGroup onAction={(actionId) => navigation.navigate(actionId as never)}>
-              <Row
-                icon={AlertCircle}
-                title="关于设备安全存储"
-                subtitle="说明各类凭据的存储方式与边界"
-                actionId="About"
-                isFirst
-                isLast
-              />
-            </RowGroup>
           </>
         ) : null}
       </ScrollView>
