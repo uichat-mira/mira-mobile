@@ -51,10 +51,13 @@ const restoreSnapshot = async (
   snapshot: LocalSessionReferenceSnapshot,
   dependencies: LocalSessionReferenceCleanupDependencies,
 ): Promise<void> => {
-  const operations: Promise<void>[] = [
-    dependencies.restorePins(snapshot.pins),
-    dependencies.restoreReadProgress(snapshot.readProgress),
-  ];
+  const operations: Promise<void>[] = [];
+  if (Object.keys(snapshot.pins).length > 0) {
+    operations.push(dependencies.restorePins(snapshot.pins));
+  }
+  if (Object.keys(snapshot.readProgress).length > 0) {
+    operations.push(dependencies.restoreReadProgress(snapshot.readProgress));
+  }
   if (snapshot.lastOpened) {
     operations.push(dependencies.restoreLastOpened(snapshot.lastOpened));
   }
