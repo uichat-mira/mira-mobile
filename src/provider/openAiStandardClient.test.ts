@@ -121,7 +121,6 @@ describe('OpenAiStandardClient Chat Completions', () => {
       code: 'INVALID_PROVIDER_EVENT',
     });
   });
-});
 
   it('rejects a Chat Completions stream truncated during a tool call', async () => {
     const xhr = new FakeXhr(
@@ -148,3 +147,4 @@ describe('OpenAiStandardClient Chat Completions', () => {
       message: 'Chat Completions stream ended during a tool call',
     });
   });
+});
