@@ -228,6 +228,73 @@ describe('LocalProviderRuntime standard protocol routing', () => {
   });
 });
 
+describe('LocalProviderRuntime Responses Agent client reuse', () => {
+  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
+    const responsesConfig: LocalProviderConfig = {
+      ...config,
+      protocol: 'openai-responses',
+    };
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([responsesConfig]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(responsesConfig.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const streamMessages = jest
+      .fn()
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield {
+            type: 'tool-call' as const,
+            callId: 'call-1',
+            name: 'search',
+            arguments: '{"q":"mira"}',
+          };
+          yield { type: 'finish' as const, reason: 'tool_calls' };
+        })(),
+      )
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield { type: 'text-delta' as const, delta: 'done' };
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      );
+    const client = {
+      cancelActiveRun: jest.fn(),
+      streamMessages,
+    } as unknown as OpenAiStandardClient;
+    const clientFactory = jest.fn(() => client);
+    const callTool = jest.fn(async () => ({ content: '{"result":"ok"}' }));
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory,
+      toolGateway: {
+        listTools: async () => [{
+          name: 'search',
+          description: 'Search',
+          parameters: { type: 'object' },
+        }],
+        callTool,
+      },
+    });
+    const session = await runtime.createSession('Responses Agent', config.id);
+
+    const events = await drain(await runtime.sendMessage(session.id, 'find', {
+      agentEnabled: true,
+    }));
+
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(streamMessages).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual({ type: 'text-delta', delta: 'done' });
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'find' }),
+      expect.objectContaining({ role: 'assistant', content: 'done' }),
+    ]);
+  });
+});
+
 describe('LocalProviderRuntime rejected provider streams', () => {
   it('does not persist partial assistant text when a provider stream fails late', async () => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
