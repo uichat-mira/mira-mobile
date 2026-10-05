@@ -3,6 +3,7 @@ import {
   FakeXhr,
   HangingXhr,
   collect,
+  createClient,
   interleavedToolTranscript,
   request,
 } from './openAiStandardClientTestSupport';
@@ -80,10 +81,7 @@ describe('OpenAiStandardClient transport', () => {
         xhrFactory: () => xhr as unknown as XMLHttpRequest,
       });
 
-      const stream = await client.streamMessages({
-        model: 'model-1',
-        messages: [{ role: 'user', content: 'hello' }],
-      });
+      const stream = await client.streamMessages(request('hello'));
       const timeoutExpectation = expect(collect(stream)).rejects.toMatchObject({
         code: 'PROVIDER_TIMEOUT',
       });
