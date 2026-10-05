@@ -28,6 +28,13 @@ export class LocalProviderSessionSetChangedError extends Error {
   }
 }
 
+export class LocalProviderSessionRollbackIncompleteError extends Error {
+  constructor(readonly originalError: unknown) {
+    super('Local Provider sessions could not be restored after deletion failure');
+    this.name = 'LocalProviderSessionRollbackIncompleteError';
+  }
+}
+
 const createLocalSessionId = (): string => {
   localSessionIdSequence += 1;
   return `local-${Date.now()}-${localSessionIdSequence.toString(36)}`;
@@ -248,7 +255,27 @@ export class LocalSessionRepository {
       }
 
       if (deletedSessionIds.length === 0) return [];
-      await this.saveStored(values.filter((item) => item.providerId !== providerId));
+      const nextValues = values.filter((item) => item.providerId !== providerId);
+
+      try {
+        await this.saveStored(nextValues);
+        const persisted = await this.loadStored();
+        if (JSON.stringify(persisted) !== JSON.stringify(nextValues)) {
+          throw new Error('Local Provider session cascade did not persist');
+        }
+      } catch (error) {
+        try {
+          await this.saveStored(values);
+          const restored = await this.loadStored();
+          if (JSON.stringify(restored) !== JSON.stringify(values)) {
+            throw new Error('Local Provider session snapshot restore did not persist');
+          }
+        } catch {
+          throw new LocalProviderSessionRollbackIncompleteError(error);
+        }
+        throw error;
+      }
+
       return deletedSessionIds;
     });
   }
