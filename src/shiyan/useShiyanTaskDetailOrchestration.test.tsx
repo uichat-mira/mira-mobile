@@ -241,6 +241,36 @@ describe('useShiyanTaskDetailOrchestration data lifecycle', () => {
     expect(handle?.transcript.value).toEqual(makeTranscript());
   });
 
+  it('never lets a stale task response overwrite a newer refresh', async () => {
+    let resolveFirst: (value: { task: ShiyanCaptureTaskView }) => void = () => undefined;
+    const first = new Promise<{ task: ShiyanCaptureTaskView }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const getCaptureTask = jest
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(async () => ({
+        task: makeTask({ title: 'newer task' }),
+      }));
+    const deps = makeDeps({ getCaptureTask });
+    await renderProbe(deps);
+
+    await ReactTestRenderer.act(async () => {
+      void handle?.refreshAll();
+      void handle?.refreshAll();
+      await flush();
+    });
+    expect(handle?.task?.title).toBe('newer task');
+
+    await ReactTestRenderer.act(async () => {
+      resolveFirst({ task: makeTask({ title: 'stale task' }) });
+      await flush();
+    });
+
+    expect(handle?.task?.title).toBe('newer task');
+    expect(handle?.loading).toBe(false);
+  });
+
   it('never lets a stale content response overwrite a newer refresh', async () => {
     let resolveFirst: (value: ShiyanTaskContentView) => void = () => undefined;
     const first = new Promise<ShiyanTaskContentView>((resolve) => {

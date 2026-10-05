@@ -131,6 +131,8 @@ export const useShiyanTaskDetailOrchestration = (
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [retentionChoice, setRetentionChoice] = useState<boolean | null>(null);
   const [localCapture, setLocalCapture] = useState<LocalCaptureMetadata | null>(null);
+  const taskGeneration = useRef(0);
+  const activeTaskLoads = useRef(0);
   const contentGeneration = useRef(0);
   const finalSaveInFlight = useRef(false);
 
@@ -148,17 +150,26 @@ export const useShiyanTaskDetailOrchestration = (
   const finalDraftSaving = busyAction === 'save-final';
 
   const loadTask = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+    const generation = ++taskGeneration.current;
+    if (!silent) {
+      activeTaskLoads.current += 1;
+      setLoading(true);
+    }
     try {
       const result = await depsRef.current.getCaptureTask(taskId);
+      if (generation !== taskGeneration.current) return;
       setTask(result.task);
       setTaskError('');
     } catch (error) {
+      if (generation !== taskGeneration.current) return;
       if (!silent) {
         setTaskError(error instanceof Error ? error.message : '无法读取拾言任务。');
       }
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent) {
+        activeTaskLoads.current = Math.max(0, activeTaskLoads.current - 1);
+        if (activeTaskLoads.current === 0) setLoading(false);
+      }
     }
   }, [taskId]);
 
