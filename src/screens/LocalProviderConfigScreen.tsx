@@ -354,6 +354,11 @@ export function LocalProviderConfigScreen() {
             旧版 reasoning-tag 过滤兼容已移除；此标准协议配置仍可继续使用。请确认模型输出符合标准协议，重新保存后不再提示。
           </Text>
         ) : null}
+        {__DEV__ && /^http:\/\//iu.test(config.baseUrl.trim()) ? (
+          <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
+            开发模式 · HTTP 明文连接，仅用于受信任的局域网调试。
+          </Text>
+        ) : null}
         <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey && !deletingProvider} />
         <Field label="Provider 地址" value={config.baseUrl} onChangeText={(baseUrl) => setConfig((current) => ({ ...current, baseUrl }))} placeholder="https://example.com" colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
         <Field label="模型" value={config.model} onChangeText={(model) => setConfig((current) => ({ ...current, model }))} colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
