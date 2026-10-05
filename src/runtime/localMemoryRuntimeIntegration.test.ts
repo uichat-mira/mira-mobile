@@ -477,7 +477,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       consolidationEvents: [{ type: 'text-delta', delta: PROPOSAL_JSON }],
       personalization: async () => ({
         baseStyle: { tone: 'professional' },
-        characteristics: { warmth: false, traits: [], conciseFirst: false },
+        characteristics: { traits: [] },
         instructions: '',
       }),
     });

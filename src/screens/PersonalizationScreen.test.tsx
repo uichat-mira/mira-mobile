@@ -3,11 +3,18 @@ import { Text } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
-// MOB-049 blocker: a corrupted v2 payload must put the screen into a
+// A corrupted current payload must put the screen into a
 // load-failed / locked state instead of silently showing defaults, so the user
 // cannot overwrite the original persisted data with a single save.
 
 const mockLoadPersonalizationSettings = jest.fn();
+
+interface MockInputModalProps {
+  visible: boolean;
+  validate?: (value: string) => string | null;
+}
+
+let mockInputModalProps: MockInputModalProps | null = null;
 
 jest.mock('../settings/personalizationSettings', () => {
   const actual = jest.requireActual('../settings/personalizationSettings');
@@ -45,7 +52,10 @@ jest.mock('../settings/SettingsChoiceModal', () => ({
 }));
 
 jest.mock('../settings/SettingsInputModal', () => ({
-  SettingsInputModal: () => null,
+  SettingsInputModal: (props: MockInputModalProps) => {
+    mockInputModalProps = props;
+    return null;
+  },
 }));
 
 jest.mock('../settings/SettingsPageHeader', () => ({
@@ -80,6 +90,7 @@ const renderedStrings = (tree: ReactTestRenderer): string[] =>
 describe('PersonalizationScreen corrupted-payload handling', () => {
   afterEach(() => {
     mockLoadPersonalizationSettings.mockReset();
+    mockInputModalProps = null;
   });
 
   it('enters the load-failed state when loading a corrupted payload throws', async () => {
@@ -106,7 +117,7 @@ describe('PersonalizationScreen corrupted-payload handling', () => {
       (node) => node.props.accessibilityLabel === '基本风格和语调',
     );
     const addTraitButton = tree.root.find(
-      (node) => node.props.accessibilityLabel === '添加特征',
+      (node) => node.props.accessibilityLabel === '添加额外特征',
     );
 
     expect(toneButton.props.accessibilityState).toMatchObject({ disabled: true });
@@ -121,5 +132,27 @@ describe('PersonalizationScreen corrupted-payload handling', () => {
 
     expect(strings.some((value) => value.includes('个性化设置读取失败'))).toBe(false);
     expect(strings).toContain('基本风格和语调');
+    expect(strings).toContain('额外特征');
+    expect(strings.some((value) => value.includes('只在其上增量调整'))).toBe(true);
+    expect(strings).not.toContain('提高亲和度');
+    expect(strings).not.toContain('快速回答');
+  });
+
+  it('redirects Base-style duplicate Traits with a visible validation reason', async () => {
+    mockLoadPersonalizationSettings.mockResolvedValue(DEFAULT_PERSONALIZATION_SETTINGS);
+
+    const tree = await renderScreen();
+    const addTraitButton = tree.root.find(
+      (node) => node.props.accessibilityLabel === '添加额外特征',
+    );
+
+    act(() => {
+      addTraitButton.props.onPress();
+    });
+
+    expect(mockInputModalProps?.visible).toBe(true);
+    expect(mockInputModalProps?.validate?.('亲和友善')).toContain('基本风格和语调');
+    expect(mockInputModalProps?.validate?.('讲话简短')).toContain('基本风格和语调');
+    expect(mockInputModalProps?.validate?.('多用类比')).toBeNull();
   });
 });

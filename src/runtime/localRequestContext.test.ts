@@ -14,7 +14,7 @@ const history: ChatMessage[] = [
 
 const personalization = (): PersonalizationSettings => ({
   baseStyle: { tone: 'professional' },
-  characteristics: { warmth: false, traits: [], conciseFirst: false },
+  characteristics: { traits: [] },
   instructions: '',
 });
 
@@ -80,7 +80,7 @@ describe('#227 assembleLocalRequestContext', () => {
     const result = await assembleLocalRequestContext(history, {
       loadPersonalization: async () => ({
         baseStyle: { tone: 'default' },
-        characteristics: { warmth: false, traits: [], conciseFirst: false },
+        characteristics: { traits: [] },
         instructions: '',
       }),
       memoryService: memoryService(snapshot('   ')),
