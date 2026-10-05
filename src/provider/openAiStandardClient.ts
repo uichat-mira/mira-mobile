@@ -617,6 +617,7 @@ export class OpenAiStandardClient {
   async streamMessages(
     request: OpenAiModelRequest,
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    const wireRequest = buildWireRequest(this.options.protocol, request);
     this.cancelActiveRun();
     const controller = new AbortController();
     this.activeAbort = controller;
@@ -644,7 +645,7 @@ export class OpenAiStandardClient {
     });
 
     void this.consumeStream(
-      request,
+      wireRequest,
       controller,
       queue,
       () => timedOut,
@@ -659,7 +660,7 @@ export class OpenAiStandardClient {
   }
 
   private async consumeStream(
-    request: OpenAiModelRequest,
+    wireRequest: Record<string, unknown>,
     controller: AbortController,
     queue: AsyncPushQueue<RuntimeEvent>,
     wasTimedOut: () => boolean,
@@ -832,6 +833,6 @@ export class OpenAiStandardClient {
       }
     };
 
-    xhr.send(JSON.stringify(buildWireRequest(this.options.protocol, request)));
+    xhr.send(JSON.stringify(wireRequest));
   }
 }
