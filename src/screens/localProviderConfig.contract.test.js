@@ -54,11 +54,11 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).not.toContain('minimax');
   });
 
-  it('requires migrated private-path configs to be corrected before use', () => {
+  it('requires migrated configs with removed compatibility behavior to be reviewed before use', () => {
     expect(source).toContain('config.requiresStandardProtocolReview');
-    expect(source).toContain('Base URL 含非标准路径');
+    expect(source).toContain('需要确认标准协议设置');
+    expect(source).toContain('旧版 reasoning-tag 兼容已移除');
     expect(source).toContain('normalizeOpenAiStandardBaseUrl(config.baseUrl)');
-    expect(source).toContain('API 根地址或标准 /v1 根地址');
   });
 
   it('creates a local conversation with the selected Provider', () => {
