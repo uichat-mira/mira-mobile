@@ -11,7 +11,10 @@ import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
 } from '../settings/personalizationSettings';
-import { LocalProviderRuntime } from './localProviderRuntime';
+import {
+  LocalProviderConfigReviewRequiredError,
+  LocalProviderRuntime,
+} from './localProviderRuntime';
 
 const config: LocalProviderConfig = {
   id: 'provider-a',
@@ -427,6 +430,105 @@ describe('LocalProviderRuntime rejected provider streams', () => {
       { type: 'text-delta', delta: 'reply' },
       { type: 'finish', reason: 'stop' },
     ]);
+  });
+});
+
+describe('LocalProviderRuntime provider review and client isolation', () => {
+  it('uses a typed error for a migrated Provider that still requires standard-protocol review', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      'mira.local-provider.configs.v1',
+      JSON.stringify([{
+        id: config.id,
+        name: config.name,
+        baseUrl: 'https://provider.example.com/api/v1',
+        model: config.model,
+        protocol: 'chat-completions',
+      }]),
+    );
+    const runtime = new LocalProviderRuntime({
+      configStore: new ProviderConfigStore(storage),
+      credentialStore: new MemoryProviderCredentialStore(),
+      sessionRepository: new LocalSessionRepository(
+        new MemoryLocalKeyValueStore(),
+      ),
+    });
+
+    await expect(
+      runtime.createSession('Blocked', config.id),
+    ).rejects.toBeInstanceOf(LocalProviderConfigReviewRequiredError);
+    await expect(
+      runtime.createSession('Blocked', config.id),
+    ).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED',
+    });
+  });
+
+  it('creates a distinct Provider client for overlapping sends on the same session', async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([{
+      ...config,
+      protocol: 'openai-responses',
+    }]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstClient = {
+      cancelActiveRun: jest.fn(),
+      streamMessages: jest.fn(async () => {
+        markFirstStarted?.();
+        return (async function* () {
+          await firstGate;
+          yield { type: 'finish' as const, reason: 'stop' };
+        })();
+      }),
+    } as unknown as OpenAiStandardClient;
+    const secondClient = {
+      cancelActiveRun: jest.fn(),
+      streamMessages: jest.fn(async () =>
+        (async function* () {
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      ),
+    } as unknown as OpenAiStandardClient;
+    const clientFactory = jest
+      .fn()
+      .mockReturnValueOnce(firstClient)
+      .mockReturnValueOnce(secondClient);
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory,
+    });
+    const session = await runtime.createSession('Overlap', config.id);
+
+    const firstDrain = drain(
+      await runtime.sendMessage(session.id, 'first'),
+    );
+    await firstStarted;
+
+    await expect(
+      drain(await runtime.sendMessage(session.id, 'second')),
+    ).resolves.toContainEqual({ type: 'finish', reason: 'stop' });
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(firstClient).not.toBe(secondClient);
+
+    releaseFirst?.();
+    await expect(firstDrain).resolves.toContainEqual({
+      type: 'finish',
+      reason: 'stop',
+    });
   });
 });
 
