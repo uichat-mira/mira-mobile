@@ -19,7 +19,7 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const streaming = (events: RuntimeEvent[]): AsyncIterable<RuntimeEvent> => ({
@@ -72,7 +72,7 @@ const createHarness = async (options: {
     let perClientCalls = 0;
     return {
       ...client,
-      streamChat: async (request: Harness['requests'][number]) => {
+      streamMessages: async (request: Harness['requests'][number]) => {
         perClientCalls += 1;
         requests.push(request);
         // The first call on a fresh turn client is the model call; a later call
