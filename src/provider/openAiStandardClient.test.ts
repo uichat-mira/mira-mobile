@@ -213,6 +213,35 @@ describe('OpenAiStandardClient Chat Completions', () => {
   });
 });
 
+  it('rejects a Chat Completions stream truncated during a tool call', async () => {
+    const xhr = new FakeXhr(
+      sse({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: 'call-1',
+              function: { name: 'search', arguments: '{"q":' },
+            }],
+          },
+        }],
+      }),
+    );
+
+    const stream = await createClient(
+      'openai-chat-completions',
+      xhr,
+    ).streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'find' }],
+    });
+
+    await expect(collect(stream)).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_EVENT',
+      message: 'Chat Completions stream ended during a tool call',
+    });
+  });
+
 describe('OpenAiStandardClient Responses', () => {
   it.each([
     ['https://provider.example.com', 'https://provider.example.com/v1/responses'],
@@ -347,6 +376,99 @@ describe('OpenAiStandardClient Responses', () => {
         { role: 'assistant', content: 'previous answer' },
       ],
     });
+  });
+
+  it('preserves mixed assistant text and multiple tool-call outputs in standard order', async () => {
+    const xhr = new FakeXhr(
+      sse({
+        type: 'response.completed',
+        response: { status: 'completed' },
+      }),
+    );
+
+    const stream = await createClient(
+      'openai-responses',
+      xhr,
+    ).streamMessages({
+      model: 'model-1',
+      messages: [
+        { role: 'user', content: 'compare' },
+        {
+          role: 'assistant',
+          content: 'I will check both.',
+          tool_calls: [
+            {
+              id: 'call-a',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"id":"a"}' },
+            },
+            {
+              id: 'call-b',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"id":"b"}' },
+            },
+          ],
+        },
+        { role: 'tool', content: '{"value":1}', tool_call_id: 'call-a' },
+        { role: 'tool', content: '{"value":2}', tool_call_id: 'call-b' },
+      ],
+    });
+
+    await collect(stream);
+
+    expect(JSON.parse(xhr.requestBody ?? '{}').input).toEqual([
+      { role: 'user', content: 'compare' },
+      { role: 'assistant', content: 'I will check both.' },
+      {
+        type: 'function_call',
+        call_id: 'call-a',
+        name: 'lookup',
+        arguments: '{"id":"a"}',
+      },
+      {
+        type: 'function_call',
+        call_id: 'call-b',
+        name: 'lookup',
+        arguments: '{"id":"b"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call-a',
+        output: '{"value":1}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call-b',
+        output: '{"value":2}',
+      },
+    ]);
+  });
+
+  it('rejects an interleaved Responses transcript before opening the transport', async () => {
+    const xhr = new HangingXhr();
+    const client = createClient('openai-responses', xhr);
+
+    await expect(
+      client.streamMessages({
+        model: 'model-1',
+        messages: [
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{}' },
+            }],
+          },
+          { role: 'assistant', content: 'interleaved' },
+          { role: 'tool', content: '{}', tool_call_id: 'call-1' },
+        ],
+      }),
+    ).rejects.toThrow(
+      'Responses transcript has a function call without its tool output',
+    );
+    expect(xhr.requestUrl).toBeNull();
   });
 
   it('maps standard function-call streaming to the existing Agent lifecycle', async () => {
