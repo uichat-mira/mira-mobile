@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../types';
 import type { OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
-import type { PersonalizationSettings } from '../screens/personalizationSettings';
+import type { PersonalizationSettings } from '../settings/personalizationSettings';
 import type { LocalMemoryService } from '../memory';
 import { buildLocalPersonalizationContext } from './localPersonalizationContext';
 import { buildMemoryContext } from '../memory';

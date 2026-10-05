@@ -1,8 +1,8 @@
 import React from 'react';
 import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check } from 'lucide-react-native';
-import { useTheme } from '../../theme/ThemeContext';
-import { fontSize, radius, spacing } from '../../theme/tokens';
+import { useTheme } from '../theme/ThemeContext';
+import { fontSize, radius, spacing } from '../theme/tokens';
 
 export interface SettingsChoice<T extends string> {
   value: T;

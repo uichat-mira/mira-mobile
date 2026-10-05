@@ -19,17 +19,17 @@ import {
 } from 'lucide-react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import {
   SettingsGroup as RowGroup,
   SettingsRow as Row,
   SettingsSectionHeader as SectionHeader,
-} from '../components/settings/SettingsComponents';
+} from '../settings/SettingsComponents';
 import {
   computeDeviceStorageUsage,
   formatBytes,
   type DeviceStorageUsage,
-} from './deviceStorageUsage';
+} from '../storage/deviceStorageUsage';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
 import { localCaptureRepository } from '../shiyan/recording/localCaptureRepository';
 

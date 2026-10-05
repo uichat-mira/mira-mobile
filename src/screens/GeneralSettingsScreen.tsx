@@ -5,13 +5,13 @@ import { ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing, type TextScaleId } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
-import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
+import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsChoiceModal';
 import {
   SettingsGroup,
   SettingsRow,
   SettingsSectionHeader,
-} from '../components/settings/SettingsComponents';
+} from '../settings/SettingsComponents';
 import {
   DEFAULT_GENERAL_SETTINGS,
   loadGeneralSettings,
@@ -19,7 +19,7 @@ import {
   type DefaultSessionSource,
   type GeneralSettings,
   type LaunchBehavior,
-} from './generalSettings';
+} from '../settings/generalSettings';
 
 const defaultSessionSourceOptions: readonly SettingsChoice<DefaultSessionSource>[] = [
   { value: 'ask', label: '每次询问（默认）' },

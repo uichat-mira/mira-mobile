@@ -10,7 +10,7 @@ const orchestrationSource = readFileSync(
   'utf8',
 );
 const cardSource = readFileSync(
-  resolve(process.cwd(), 'src/components/LocalAgentRunCard.tsx'),
+  resolve(process.cwd(), 'src/agent/LocalAgentRunCard.tsx'),
   'utf8',
 );
 

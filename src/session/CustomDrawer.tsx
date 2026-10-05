@@ -36,22 +36,22 @@ import { splitSessionsByLocalPin } from '../store/threadPinning';
 import {
   useThreadReadStore,
 } from '../store/threadReadStore';
-import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../screens/generalSettings';
+import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../settings/generalSettings';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
 } from './SessionKindIcon';
-import { RemoteDiagnosticNotice } from './RemoteDiagnosticNotice';
+import { RemoteDiagnosticNotice } from '../connectivity/RemoteDiagnosticNotice';
 import type {
   RemoteConnectionDiagnosticAction,
 } from '../connectivity/remoteConnectionDiagnostics';
-import { useSessionCollection } from '../session/useSessionCollection';
-import { resolveSessionCollectionState } from '../session/sessionCollection';
-import { resolveSessionOpenTarget } from '../session/sessionNavigation';
+import { useSessionCollection } from './useSessionCollection';
+import { resolveSessionCollectionState } from './sessionCollection';
+import { resolveSessionOpenTarget } from './sessionNavigation';
 import {
   buildSessionRowAccessibilityLabel,
   projectSessionRow,
-} from '../session/sessionProjection';
+} from './sessionProjection';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');

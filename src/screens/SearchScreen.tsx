@@ -24,8 +24,8 @@ import { useThreadReadStore } from '../store/threadReadStore';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
-} from '../components/SessionKindIcon';
-import { RemoteDiagnosticNotice } from '../components/RemoteDiagnosticNotice';
+} from '../session/SessionKindIcon';
+import { RemoteDiagnosticNotice } from '../connectivity/RemoteDiagnosticNotice';
 import {
   classifySessionLoadFailure,
   type RemoteConnectionDiagnostic,

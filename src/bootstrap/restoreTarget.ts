@@ -1,4 +1,4 @@
-import type { LastOpenedSession } from '../screens/lastOpenedSession';
+import type { LastOpenedSession } from '../session/lastOpenedSession';
 
 /**
  * Whether a stored restore target can be confirmed gone.

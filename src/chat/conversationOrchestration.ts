@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types';
-import { getChatSendErrorMessage } from '../screens/chatSessionState';
+import { getChatSendErrorMessage } from './chatSessionState';
 import type {
   ConversationRuntime,
   RuntimeEvent,

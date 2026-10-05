@@ -6,7 +6,7 @@ import { MemoryProviderCredentialStore } from '../security/providerCredentialSto
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import { LocalProviderRuntime } from './localProviderRuntime';
 
 const config: LocalProviderConfig = {

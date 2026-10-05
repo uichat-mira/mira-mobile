@@ -1,4 +1,4 @@
-import type { LastOpenedSession } from '../screens/lastOpenedSession';
+import type { LastOpenedSession } from '../session/lastOpenedSession';
 import {
   resolveLocalRestoreVerdict,
   resolveRemoteRestoreVerdict,

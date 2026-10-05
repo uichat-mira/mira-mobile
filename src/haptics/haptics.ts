@@ -1,5 +1,5 @@
 import { Vibration } from 'react-native';
-import { loadGeneralSettings } from '../screens/generalSettings';
+import { loadGeneralSettings } from '../settings/generalSettings';
 
 const LIGHT_IMPACT_MS = 10;
 

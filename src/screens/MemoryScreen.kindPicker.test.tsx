@@ -7,7 +7,7 @@ import renderer, { act } from 'react-test-renderer';
 jest.setTimeout(15000);
 
 import { MemoryScreen } from './MemoryScreen';
-import { SettingsInputModal } from '../components/settings/SettingsInputModal';
+import { SettingsInputModal } from '../settings/SettingsInputModal';
 
 // MOB-051 review follow-up: the create flow must let the user pick any of the
 // four MemoryKind values. Previously the kind picker had no entry point, so
@@ -20,7 +20,7 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ goBack: jest.fn(), navigate: jest.fn() }),
 }));
 
-jest.mock('../components/settings/SettingsPageHeader', () => ({
+jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
 

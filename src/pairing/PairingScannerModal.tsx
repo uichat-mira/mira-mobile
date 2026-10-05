@@ -20,7 +20,7 @@ import {
   type Permission,
 } from 'react-native-permissions';
 import { ScanLine, Settings, X } from 'lucide-react-native';
-import { parseScannedPairingUri } from '../pairing/parseScannedPairingUri';
+import { parseScannedPairingUri } from './parseScannedPairingUri';
 
 type CameraState =
   | 'checking'

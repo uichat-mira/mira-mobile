@@ -6,8 +6,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import type { AgentRunAction } from '../agent/remoteAgentApproval';
-import { shouldDisplayAgentRun } from '../agent/remoteAgentApproval';
+import type { AgentRunAction } from './remoteAgentApproval';
+import { shouldDisplayAgentRun } from './remoteAgentApproval';
 import type { RemoteAgentRun } from '../protocol/remoteHostV1';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, shadows, spacing } from '../theme/tokens';

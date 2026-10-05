@@ -5,9 +5,9 @@ import { ChevronDown, X } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
-import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
-import { SettingsInputModal } from '../components/settings/SettingsInputModal';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
+import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsChoiceModal';
+import { SettingsInputModal } from '../settings/SettingsInputModal';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   MAX_INSTRUCTIONS_LENGTH,
@@ -20,7 +20,7 @@ import {
   savePersonalizationSettings,
   type BaseStyleTone,
   type PersonalizationSettings,
-} from './personalizationSettings';
+} from '../settings/personalizationSettings';
 
 const toneOptions: readonly SettingsChoice<BaseStyleTone>[] = [
   { value: 'default', label: '默认（不指定）' },

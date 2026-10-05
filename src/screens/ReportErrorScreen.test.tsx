@@ -27,7 +27,7 @@ jest.mock('../store/hostStore', () => ({
     selector({ config: null }),
 }));
 
-jest.mock('../components/settings/SettingsPageHeader', () => ({
+jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
 

@@ -34,7 +34,7 @@ jest.mock('../api/miraHostClient', () => ({
   miraHostClient: { disconnect: jest.fn(async () => undefined) },
 }));
 
-jest.mock('../components/settings/SettingsChoiceModal', () => ({
+jest.mock('../settings/SettingsChoiceModal', () => ({
   SettingsChoiceModal: () => null,
 }));
 

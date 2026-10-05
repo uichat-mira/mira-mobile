@@ -9,7 +9,7 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import {
   LocalMemoryRepository,
   LocalMemoryService,

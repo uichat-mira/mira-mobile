@@ -16,6 +16,7 @@ Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop /
 
 ## 工程与发布
 
+- [src/ 目录 ownership map](mobile-src-ownership.md)
 - [GitHub Actions 构建与发布](github-build-release.md)
 - [依赖安全技术债务](dependency-security-debt.md)
 - [iOS 模拟器 Metro 代理排障](ios-metro-proxy-troubleshooting.md)

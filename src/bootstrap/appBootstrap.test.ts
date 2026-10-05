@@ -2,8 +2,8 @@ import type { ConnectionStatus } from '../types';
 import {
   DEFAULT_GENERAL_SETTINGS,
   type GeneralSettings,
-} from '../screens/generalSettings';
-import type { LastOpenedSession } from '../screens/lastOpenedSession';
+} from '../settings/generalSettings';
+import type { LastOpenedSession } from '../session/lastOpenedSession';
 import type { AppRelease } from '../update/appUpdate';
 import type { SemverVersion } from '../update/semver';
 import { runAppBootstrap, type AppBootstrapDeps } from './appBootstrap';

@@ -9,8 +9,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useTheme } from '../../theme/ThemeContext';
-import { fontSize, radius, spacing } from '../../theme/tokens';
+import { useTheme } from '../theme/ThemeContext';
+import { fontSize, radius, spacing } from '../theme/tokens';
 
 interface SettingsInputModalProps {
   visible: boolean;

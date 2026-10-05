@@ -32,10 +32,10 @@ jest.mock('react-native-safe-area-context', () => ({
   SafeAreaView: ({ children }: { children: React.ReactNode }) => children ?? null,
 }));
 
-jest.mock('../components/RemoteDiagnosticNotice', () => ({
+jest.mock('../connectivity/RemoteDiagnosticNotice', () => ({
   RemoteDiagnosticNotice: () => null,
 }));
-jest.mock('../components/SessionKindIcon', () => ({
+jest.mock('../session/SessionKindIcon', () => ({
   SessionKindIcon: () => null,
   getSessionVisualKindLabel: () => '普通对话',
 }));
