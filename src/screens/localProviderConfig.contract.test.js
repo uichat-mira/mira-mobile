@@ -54,10 +54,12 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).not.toContain('minimax');
   });
 
-  it('requires migrated configs with removed compatibility behavior to be reviewed before use', () => {
+  it('blocks only non-standard migrated configs and keeps reasoning migration notice non-blocking', () => {
     expect(source).toContain('config.requiresStandardProtocolReview');
-    expect(source).toContain('需要确认标准协议设置');
-    expect(source).toContain('旧版 reasoning-tag 兼容已移除');
+    expect(source).toContain('Base URL 不是可确认的标准 OpenAI 根地址');
+    expect(source).toContain('config.legacyReasoningBehaviorChanged');
+    expect(source).toContain('旧版 reasoning-tag 过滤兼容已移除');
+    expect(source).toContain('此标准协议配置仍可继续使用');
     expect(source).toContain('normalizeOpenAiStandardBaseUrl(config.baseUrl)');
   });
 
