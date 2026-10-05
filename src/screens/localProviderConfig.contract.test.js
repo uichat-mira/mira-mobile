@@ -62,6 +62,12 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).not.toContain('当前 Provider 仍有本地对话，请先保留此配置');
   });
 
+  it('invalidates a destructive confirmation when the selected Provider identity changed', () => {
+    expect(source).toContain('selectedProviderIdRef.current !== providerId');
+    expect(source).toContain('当前选中的 Provider 已变化');
+    expect(source).toContain('刚才的删除确认已失效');
+  });
+
   it('reconfirms when the deletion scope changes before commit', () => {
     expect(source).toContain('error instanceof LocalProviderDeletionScopeChangedError');
     expect(source).toContain('error.actualSessionCount');
