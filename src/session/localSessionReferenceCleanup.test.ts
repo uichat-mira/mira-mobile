@@ -21,13 +21,36 @@ const makeDependencies = () => {
   const removedReadProgress: ThreadReadMap = {
     'local-a': { observedMessageCount: 1 },
   };
+  let pinsState: ThreadPinMap = { ...removedPins };
+  let readState: ThreadReadMap = { ...removedReadProgress };
+  let lastOpenedState: LastOpenedSession | null = lastOpened;
+
   const dependencies: LocalSessionReferenceCleanupDependencies = {
-    removePins: jest.fn(async () => removedPins),
-    restorePins: jest.fn(async () => undefined),
-    removeReadProgress: jest.fn(async () => removedReadProgress),
-    restoreReadProgress: jest.fn(async () => undefined),
-    removeLastOpened: jest.fn(async () => lastOpened),
-    restoreLastOpened: jest.fn(async () => undefined),
+    removePins: jest.fn(async () => {
+      pinsState = {};
+      return removedPins;
+    }),
+    restorePins: jest.fn(async (pins) => {
+      pinsState = { ...pinsState, ...pins };
+    }),
+    readPins: jest.fn(async () => ({ ...pinsState })),
+    removeReadProgress: jest.fn(async () => {
+      readState = {};
+      return removedReadProgress;
+    }),
+    restoreReadProgress: jest.fn(async (progress) => {
+      readState = { ...readState, ...progress };
+    }),
+    readReadProgress: jest.fn(async () => ({ ...readState })),
+    removeLastOpened: jest.fn(async () => {
+      const removed = lastOpenedState;
+      lastOpenedState = null;
+      return removed;
+    }),
+    restoreLastOpened: jest.fn(async (record) => {
+      lastOpenedState = record;
+    }),
+    loadLastOpened: jest.fn(async () => lastOpenedState),
   };
   return { dependencies, removedPins, removedReadProgress };
 };
@@ -73,6 +96,20 @@ describe('localSessionReferenceCleanup', () => {
     expect(dependencies.restorePins).toHaveBeenCalledWith(removedPins);
     expect(dependencies.restoreReadProgress).not.toHaveBeenCalled();
     expect(dependencies.removeLastOpened).not.toHaveBeenCalled();
+  });
+
+  it('detects a restore that resolves without restoring persisted reference state', async () => {
+    const { dependencies } = makeDependencies();
+    (dependencies.restorePins as jest.Mock).mockImplementationOnce(
+      async () => undefined,
+    );
+
+    const rollback = await stageLocalSessionReferenceRemoval(
+      ['local-a'],
+      dependencies,
+    );
+
+    await expect(rollback()).rejects.toThrow('回滚未完整完成');
   });
 
   it('does not touch reference stores for a zero-session cascade', async () => {
