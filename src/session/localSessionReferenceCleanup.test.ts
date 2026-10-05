@@ -133,7 +133,7 @@ describe('localSessionReferenceCleanup', () => {
     await expect(transaction.rollback()).resolves.toBeUndefined();
   });
 
-  it('treats a different concurrent last-opened record as incomplete rollback', async () => {
+  it('preserves a newer unrelated last-opened record during rollback', async () => {
     const { dependencies } = makeDependencies();
     const transaction = await stageLocalSessionReferenceRemoval(
       ['local-a'],
@@ -153,7 +153,7 @@ describe('localSessionReferenceCleanup', () => {
       concurrentLastOpened,
     );
 
-    await expect(transaction.rollback()).rejects.toThrow('回滚未完整完成');
+    await expect(transaction.rollback()).resolves.toBeUndefined();
     expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
   });
 
