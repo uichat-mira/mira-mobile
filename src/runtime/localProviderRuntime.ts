@@ -53,6 +53,15 @@ export class LocalProviderDeletionScopeChangedError extends Error {
   }
 }
 
+export class LocalProviderDeletionBlockedByActiveRunError extends Error {
+  readonly code = 'LOCAL_PROVIDER_DELETION_ACTIVE_RUN';
+
+  constructor() {
+    super('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
+    this.name = 'LocalProviderDeletionBlockedByActiveRunError';
+  }
+}
+
 export class LocalProviderDeletionRollbackIncompleteError extends Error {
   readonly code = 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE';
 
@@ -347,7 +356,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
     if (this.hasUncancelledProviderSend(providerKey)) {
-      throw new Error('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
+      throw new LocalProviderDeletionBlockedByActiveRunError();
     }
 
     this.deletingProviderIds.add(providerKey);
