@@ -5,7 +5,12 @@ import {
   ThreadPinRepository,
   type ThreadPinMap,
 } from './threadPinning';
-import { isThreadReferenceMutationFenced } from './threadReferenceMutationFence';
+import {
+  filterUnfencedThreadReferences,
+  isThreadReferenceMutationFenced,
+  removeThreadReferences,
+  restoreThreadReferences,
+} from './threadReferenceMutationFence';
 
 const repository = new ThreadPinRepository(localKeyValueStore);
 let hydratePromise: Promise<void> | null = null;
@@ -30,7 +35,11 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
       hydratePromise = repository
         .load()
         .then((pinnedAtByThreadId) => {
-          set({ pinnedAtByThreadId, hydrated: true });
+          set({
+            pinnedAtByThreadId:
+              filterUnfencedThreadReferences(pinnedAtByThreadId),
+            hydrated: true,
+          });
         })
         .finally(() => {
           hydratePromise = null;
@@ -82,15 +91,8 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
 
   removeThreads: async (threadIds) => {
     await get().hydrate();
-    const ids = new Set(threadIds.filter((threadId) => threadId.trim().length > 0));
     const previous = get().pinnedAtByThreadId;
-    const removed: ThreadPinMap = {};
-    const next = { ...previous };
-    for (const threadId of ids) {
-      if (!isThreadPinned(previous, threadId)) continue;
-      removed[threadId] = previous[threadId];
-      delete next[threadId];
-    }
+    const { next, removed } = removeThreadReferences(previous, threadIds);
     if (Object.keys(removed).length === 0) return removed;
 
     set({ pinnedAtByThreadId: next });
@@ -109,7 +111,7 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
     if (Object.keys(pins).length === 0) return;
     await get().hydrate();
     const previous = get().pinnedAtByThreadId;
-    const next = { ...previous, ...pins };
+    const next = restoreThreadReferences(previous, pins);
     set({ pinnedAtByThreadId: next });
     try {
       await repository.save(next);
