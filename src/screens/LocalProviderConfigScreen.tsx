@@ -43,6 +43,7 @@ export function LocalProviderConfigScreen() {
   const [saving, setSaving] = useState(false);
   const [clearingKey, setClearingKey] = useState(false);
   const [deletingProvider, setDeletingProvider] = useState(false);
+  const deletingProviderRef = useRef(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -145,7 +146,7 @@ export function LocalProviderConfigScreen() {
     providerId: string,
     expectedSessionCount: number,
   ) => {
-    if (deletingProvider) return;
+    if (deletingProviderRef.current) return;
     if (selectedProviderIdRef.current !== providerId) {
       Alert.alert(
         '删除范围已变化',
@@ -153,6 +154,7 @@ export function LocalProviderConfigScreen() {
       );
       return;
     }
+    deletingProviderRef.current = true;
     setDeletingProvider(true);
     try {
       await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount);
@@ -176,7 +178,7 @@ export function LocalProviderConfigScreen() {
         }
       }
     } catch (error) {
-            if (error instanceof LocalProviderDeletionScopeChangedError) {
+      if (error instanceof LocalProviderDeletionScopeChangedError) {
         Alert.alert(
           '删除范围已变化',
           `此 Provider 当前关联 ${error.actualSessionCount} 个本地对话。刚才的确认已失效；请再次点击“删除当前配置”，按最新范围重新确认。`,
@@ -204,17 +206,17 @@ export function LocalProviderConfigScreen() {
           : '无法删除当前 Local Provider，请稍后重试。',
       );
     } finally {
+      deletingProviderRef.current = false;
       setDeletingProvider(false);
     }
   }, [
     activateDraftProvider,
-    deletingProvider,
     navigation,
     selectProvider,
   ]);
 
   const removeProvider = useCallback(async () => {
-    if (deletingProvider) return;
+    if (deletingProviderRef.current) return;
     try {
       const impact = await runtimeRegistry.getLocalProviderDeletionImpact(config.id);
       const conversationText =
