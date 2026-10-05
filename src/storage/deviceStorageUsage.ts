@@ -79,7 +79,11 @@ const KEY_VALUE_CATEGORIES: readonly KeyValueCategorySpec[] = [
     id: 'local-provider',
     label: '本地 Provider 配置与会话',
     description: '本地 Provider 配置与设备侧会话（API Key 仍在设备安全存储中，不在此处）',
-    keys: ['mira.local-provider.configs.v1', 'mira.local-provider.sessions.v1'],
+    keys: [
+      'mira.local-provider.configs.v2',
+      'mira.local-provider.configs.v1',
+      'mira.local-provider.sessions.v1',
+    ],
   },
   {
     id: 'shiyan-drafts',
