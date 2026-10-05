@@ -5,7 +5,7 @@ const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('Shiyan confirmation UX wiring', () => {
   it('keeps service and custom-scene config reachable without a Shiyan home More button', () => {
-    const home = readSource('src/shiyan/ShiyanRecordingScreens.tsx');
+    const home = readSource('src/shiyan/ShiyanHomeScreen.tsx');
     const app = readSource('App.tsx');
 
     expect(home).toContain("title: '服务配置'");
