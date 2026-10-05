@@ -243,6 +243,156 @@ describe('OpenAiStandardClient Chat Completions', () => {
   });
 
 describe('OpenAiStandardClient Responses', () => {
+  it('replays opaque reasoning output items across a Responses tool round', async () => {
+    const reasoningItem = {
+      id: 'rs-1',
+      type: 'reasoning',
+      summary: [],
+      encrypted_content: 'opaque-reasoning',
+    };
+    const functionCallItem = {
+      id: 'fc-1',
+      type: 'function_call',
+      call_id: 'call-1',
+      name: 'search',
+      arguments: '{"q":"mira"}',
+      status: 'completed',
+    };
+    const firstXhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: reasoningItem,
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: functionCallItem,
+        },
+        {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [reasoningItem, functionCallItem],
+          },
+        },
+      ),
+    );
+    const secondXhr = new FakeXhr(
+      sse({
+        type: 'response.completed',
+        response: { status: 'completed', output: [] },
+      }),
+    );
+    const xhrs = [firstXhr, secondXhr];
+    let xhrIndex = 0;
+    const client = new OpenAiStandardClient({
+      baseUrl: 'https://provider.example.com',
+      apiKey: 'secret',
+      protocol: 'openai-responses',
+      xhrFactory: () => {
+        const xhr = xhrs[xhrIndex];
+        xhrIndex += 1;
+        if (!xhr) throw new Error('Unexpected extra Responses request');
+        return xhr as unknown as XMLHttpRequest;
+      },
+    });
+
+    const firstStream = await client.streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'find' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'search',
+          parameters: { type: 'object' },
+        },
+      }],
+    });
+    await expect(collect(firstStream)).resolves.toEqual([
+      {
+        type: 'tool-call',
+        callId: 'call-1',
+        name: 'search',
+        arguments: '{"q":"mira"}',
+      },
+      { type: 'finish', reason: 'tool_calls' },
+    ]);
+
+    const secondStream = await client.streamMessages({
+      model: 'model-1',
+      messages: [
+        { role: 'user', content: 'find' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'search', arguments: '{"q":"mira"}' },
+          }],
+        },
+        {
+          role: 'tool',
+          content: '{"result":"ok"}',
+          tool_call_id: 'call-1',
+        },
+      ],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'search',
+          parameters: { type: 'object' },
+        },
+      }],
+    });
+    await collect(secondStream);
+
+    expect(JSON.parse(secondXhr.requestBody ?? '{}').input).toEqual([
+      { role: 'user', content: 'find' },
+      reasoningItem,
+      functionCallItem,
+      {
+        type: 'function_call_output',
+        call_id: 'call-1',
+        output: '{"result":"ok"}',
+      },
+    ]);
+  });
+
+  it('surfaces standard Responses refusal deltas as visible assistant text', async () => {
+    const xhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.refusal.delta',
+          item_id: 'msg-1',
+          output_index: 0,
+          content_index: 0,
+          delta: 'I cannot help with that.',
+        },
+        {
+          type: 'response.completed',
+          response: { status: 'completed', output: [] },
+        },
+      ),
+    );
+
+    const stream = await createClient(
+      'openai-responses',
+      xhr,
+    ).streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'request' }],
+    });
+
+    await expect(collect(stream)).resolves.toEqual([
+      { type: 'text-delta', delta: 'I cannot help with that.' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+
   it.each([
     ['https://provider.example.com', 'https://provider.example.com/v1/responses'],
     ['https://provider.example.com/v1', 'https://provider.example.com/v1/responses'],
