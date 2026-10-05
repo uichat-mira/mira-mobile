@@ -159,6 +159,43 @@ describe('ProviderConfigStore', () => {
     expect(loaded[0]).not.toHaveProperty('legacyReasoningBehaviorChanged');
   });
 
+  it('rejects attempts to drop a blocking review flag while the Base URL is still non-standard', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
+      JSON.stringify([
+        {
+          id: 'legacy-private',
+          name: 'Legacy private',
+          baseUrl: 'https://provider.example.com/api/v1',
+          model: 'legacy-model',
+          protocol: 'chat-completions',
+        },
+      ]),
+    );
+    const store = new ProviderConfigStore(storage);
+    const [flagged] = await store.load();
+    expect(flagged.requiresStandardProtocolReview).toBe(true);
+
+    await expect(
+      store.upsert({
+        id: flagged.id,
+        name: 'Renamed only',
+        baseUrl: flagged.baseUrl,
+        model: flagged.model,
+        protocol: flagged.protocol,
+      }),
+    ).rejects.toThrow('API root or standard /v1 root');
+
+    await expect(store.load()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'legacy-private',
+        baseUrl: 'https://provider.example.com/api/v1',
+        requiresStandardProtocolReview: true,
+      }),
+    ]);
+  });
+
   it('clears a stale migration review flag when a corrected HTTPS Base URL is upserted', async () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
