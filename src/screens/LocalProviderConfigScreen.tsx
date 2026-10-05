@@ -8,13 +8,19 @@ import type { RootStackParamList } from '../types/navigation';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
-import { useThreadPinStore } from '../store/threadPinStore';
-import { useThreadReadStore } from '../store/threadReadStore';
-import { removeLastOpenedSession } from '../session/lastOpenedSession';
+import { LocalProviderDeletionScopeChangedError } from '../runtime/localProviderRuntime';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
+
+const createDraftProvider = (name: string): LocalProviderConfig => ({
+  id: `provider-${Date.now()}`,
+  name,
+  baseUrl: '',
+  model: '',
+  protocol: 'chat-completions',
+});
 
 export function LocalProviderConfigScreen() {
   const navigation = useNavigation<NavProp>();
@@ -117,22 +123,20 @@ export function LocalProviderConfigScreen() {
     }
   }, []);
 
-  const addProvider = useCallback(() => {
+  const activateDraftProvider = useCallback((name: string) => {
+    const next = createDraftProvider(name);
     credentialLoadRequestRef.current += 1;
-    const id = `provider-${Date.now()}`;
-    const next: LocalProviderConfig = {
-      id,
-      name: 'New Provider',
-      baseUrl: '',
-      model: '',
-      protocol: 'chat-completions',
-    };
-    setConfigs((current) => [...current, next]);
     selectedProviderIdRef.current = next.id;
     setConfig(next);
     setApiKeyDraft('');
     setHasStoredKey(false);
+    return next;
   }, []);
+
+  const addProvider = useCallback(() => {
+    const next = activateDraftProvider('New Provider');
+    setConfigs((current) => [...current, next]);
+  }, [activateDraftProvider]);
 
   const finishProviderRemoval = useCallback(async (
     providerId: string,
@@ -141,18 +145,7 @@ export function LocalProviderConfigScreen() {
     if (deletingProvider) return;
     setDeletingProvider(true);
     try {
-      const result = await runtimeRegistry.deleteLocalProvider(
-        providerId,
-        expectedSessionCount,
-      );
-
-      const cleanupResults = await Promise.allSettled(
-        result.deletedSessionIds.flatMap((sessionId) => [
-          useThreadPinStore.getState().unpinThread(sessionId),
-          useThreadReadStore.getState().clearThread(sessionId),
-          removeLastOpenedSession(sessionId),
-        ]),
-      );
+      await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount);
 
       const nextConfigs = configs.filter((item) => item.id !== providerId);
       setConfigs(nextConfigs);
@@ -160,28 +153,27 @@ export function LocalProviderConfigScreen() {
         if (nextConfigs[0]) {
           await selectProvider(nextConfigs[0]);
         } else {
-          const empty: LocalProviderConfig = {
-            id: `provider-${Date.now()}`,
-            name: 'Local Provider',
-            baseUrl: '',
-            model: '',
-            protocol: 'chat-completions',
-          };
-          credentialLoadRequestRef.current += 1;
-          selectedProviderIdRef.current = empty.id;
-          setConfig(empty);
-          setApiKeyDraft('');
-          setHasStoredKey(false);
+          activateDraftProvider('Local Provider');
         }
       }
-
-      if (cleanupResults.some((result) => result.status === 'rejected')) {
-        Alert.alert(
-          'Provider 已删除',
-          'Provider 与关联本地对话已删除，但部分本机置顶、未读或启动恢复引用清理失败；请重新打开应用后检查。',
-        );
-      }
     } catch (error) {
+      if (error instanceof LocalProviderDeletionScopeChangedError) {
+        const updatedCount = error.actualSessionCount;
+        Alert.alert(
+          '删除范围已变化',
+          `此 Provider 当前关联 ${updatedCount} 个本地对话。请按最新范围重新确认删除。`,
+          [
+            { text: '取消', style: 'cancel' },
+            {
+              text: `删除 Provider 和 ${updatedCount} 个对话`,
+              style: 'destructive',
+              onPress: () =>
+                void finishProviderRemoval(providerId, updatedCount),
+            },
+          ],
+        );
+        return;
+      }
       Alert.alert(
         '删除失败',
         error instanceof Error && error.message
@@ -191,7 +183,12 @@ export function LocalProviderConfigScreen() {
     } finally {
       setDeletingProvider(false);
     }
-  }, [configs, deletingProvider, selectProvider]);
+  }, [
+    activateDraftProvider,
+    configs,
+    deletingProvider,
+    selectProvider,
+  ]);
 
   const removeProvider = useCallback(async () => {
     if (deletingProvider) return;
@@ -322,7 +319,7 @@ export function LocalProviderConfigScreen() {
             <Text style={[styles.buttonText, { color: colors.status.error }]}>清除 API Key</Text>
           </Pressable>
         ) : null}
-        <Pressable accessibilityRole="button" disabled={saving || loading || clearingKey} onPress={() => void save()} style={[styles.primaryButton, { backgroundColor: colors.primary }, (saving || loading || clearingKey) && styles.disabledButton]}>
+        <Pressable accessibilityRole="button" disabled={saving || loading || clearingKey || deletingProvider} onPress={() => void save()} style={[styles.primaryButton, { backgroundColor: colors.primary }, (saving || loading || clearingKey || deletingProvider) && styles.disabledButton]}>
           <Save size={18} color={colors.onPrimary} />
           <Text style={[styles.buttonText, { color: colors.onPrimary }]}>{saving ? '保存中' : '保存配置'}</Text>
         </Pressable>
