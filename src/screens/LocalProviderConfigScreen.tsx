@@ -245,7 +245,7 @@ export function LocalProviderConfigScreen() {
           : '无法读取当前 Provider 的本地对话，请稍后重试。',
       );
     }
-  }, [config.id, config.name, deletingProvider, finishProviderRemoval]);
+  }, [config.id, config.name, finishProviderRemoval]);
 
   const clearApiKey = useCallback(() => {
     if (!hasStoredKey || saving || clearingKey || deletingProvider) return;
