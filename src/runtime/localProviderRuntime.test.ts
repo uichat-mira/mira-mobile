@@ -532,18 +532,13 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).rejects.toThrow('not found');
   });
 
-  it('releases a started send for deletion when runtime cleanup cancels an abandoned iterator', async () => {
+  it('stops an active send before cascading Provider deletion', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const session = await runtime.createSession('Running', config.id);
     const stream = await runtime.sendMessage(session.id, 'hello');
     const iterator = stream[Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toMatchObject({ done: false });
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toMatchObject({
-      code: 'LOCAL_PROVIDER_DELETION_ACTIVE_RUN',
-    });
-
-    runtime.cancelActiveRun();
 
     await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
       providerId: config.id,
@@ -552,7 +547,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).rejects.toThrow('not found');
   });
 
-  it('cancels only the current local send when two sends are active', async () => {
+  it('keeps ordinary cancel current-only while Provider deletion stops all remaining sends', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const firstSession = await runtime.createSession('First active', config.id);
     const secondSession = await runtime.createSession('Second active', config.id);
@@ -566,11 +561,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
 
     runtime.cancelActiveRun();
 
-    await expect(runtime.deleteProvider(config.id, 2)).rejects.toThrow(
-      '正在执行本地请求',
-    );
-
-    await firstIterator.return?.();
+    await expect(firstIterator.next()).resolves.toMatchObject({ done: true });
 
     await expect(runtime.deleteProvider(config.id, 2)).resolves.toMatchObject({
       providerId: config.id,
@@ -660,7 +651,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
     ).resolves.toEqual([storedConfig(otherConfig)]);
   });
 
-  it('blocks deletion while a started send is paused before Provider config resolves', async () => {
+  it('waits for a paused send to unwind before cascading deletion', async () => {
     const { runtime, configStore, repository } = await createDeletionRuntime();
     const session = await runtime.createSession('Paused send', config.id);
     const originalLoad = configStore.load.bind(configStore);
@@ -683,14 +674,15 @@ describe('LocalProviderRuntime Provider deletion', () => {
     const firstEvent = iterator.next();
     await loadStarted;
 
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
-      '正在执行本地请求',
-    );
+    const deletion = runtime.deleteProvider(config.id, 1);
     await expect(repository.getMessages(session.id)).resolves.toEqual([]);
 
     releaseLoad();
-    await expect(firstEvent).resolves.toMatchObject({ done: false });
-    await iterator.return?.();
+    await expect(firstEvent).rejects.toThrow('cancelled');
+    await expect(deletion).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
   });
 
   it('keeps an unconsumed stream inert after its Provider is deleted', async () => {
@@ -704,10 +696,9 @@ describe('LocalProviderRuntime Provider deletion', () => {
     });
 
     const iterator = stream[Symbol.asyncIterator]();
-    await expect(iterator.next()).rejects.toMatchObject({
-      code: 'LOCAL_PROVIDER_SEND_UNAVAILABLE',
-      reason: 'provider-missing',
-    });
+    await expect(iterator.next()).rejects.toThrow(
+      'Local Provider request was cancelled',
+    );
     await expect(repository.list(config.id)).resolves.toEqual([]);
   });
 
@@ -803,27 +794,25 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.list(config.id)).resolves.toEqual([]);
   });
 
-  it('refuses deletion while the selected Provider still owns an active run', async () => {
+  it('stops all selected-Provider runs without touching another Provider', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
-    const session = await runtime.createSession('Running', config.id);
-    const stream = await runtime.sendMessage(session.id, 'hello');
-    const iterator = stream[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toMatchObject({ done: false });
+    const selected = await runtime.createSession('Selected running', config.id);
+    const other = await runtime.createSession('Other provider', otherConfig.id);
+    const selectedStream = await runtime.sendMessage(selected.id, 'hello');
+    const selectedIterator = selectedStream[Symbol.asyncIterator]();
+    await expect(selectedIterator.next()).resolves.toMatchObject({ done: false });
 
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
-      '正在执行本地请求',
-    );
-    await expect(configStore.load()).resolves.toEqual([storedConfig(config), storedConfig(otherConfig)]);
-    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
-    await expect(repository.get(session.id)).resolves.toBeDefined();
-
-    await drain(stream);
     await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
       providerId: config.id,
       sessionCount: 1,
     });
-    await expect(repository.get(session.id)).rejects.toThrow('not found');
+
+    await expect(configStore.load()).resolves.toEqual([storedConfig(otherConfig)]);
+    await expect(credentialStore.load(config.id)).resolves.toBeNull();
+    await expect(credentialStore.load(otherConfig.id)).resolves.toBe('key-b');
+    await expect(repository.get(selected.id)).rejects.toThrow('not found');
+    await expect(repository.get(other.id)).resolves.toBeDefined();
   });
 
   it('blocks new sessions and sends while deletion is in progress', async () => {
