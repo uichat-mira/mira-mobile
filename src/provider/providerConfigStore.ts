@@ -44,19 +44,45 @@ const parseCurrentConfig = (value: unknown): LocalProviderConfig => {
     throw new Error('Stored local Provider protocol is unsupported');
   }
 
+  const baseUrl = record.baseUrl as string;
+  const requiresStandardProtocolReview =
+    record.requiresStandardProtocolReview === true;
+
+  if (!requiresStandardProtocolReview) {
+    normalizeOpenAiStandardBaseUrl(baseUrl);
+  }
+
   return {
     id: record.id as string,
     name: record.name as string,
-    baseUrl: record.baseUrl as string,
+    baseUrl,
     model: record.model as string,
     protocol: record.protocol,
     ...(typeof record.toolGatewayId === 'string'
       ? { toolGatewayId: record.toolGatewayId }
       : {}),
-    ...(record.requiresStandardProtocolReview === true
+    ...(requiresStandardProtocolReview
       ? { requiresStandardProtocolReview: true }
       : {}),
   };
+};
+
+const normalizeConfigForWrite = (
+  value: LocalProviderConfig,
+): LocalProviderConfig => {
+  const parsed = parseCurrentConfig(value);
+  if (!parsed.requiresStandardProtocolReview) return parsed;
+
+  const isCorrectedHttpsBase =
+    /^https:\/\//iu.test(parsed.baseUrl.trim()) &&
+    isOpenAiStandardBaseUrl(parsed.baseUrl);
+  if (!isCorrectedHttpsBase) return parsed;
+
+  const {
+    requiresStandardProtocolReview: _reviewFlag,
+    ...corrected
+  } = parsed;
+  return corrected;
 };
 
 const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
@@ -116,7 +142,7 @@ export class ProviderConfigStore {
   }
 
   async save(configs: readonly LocalProviderConfig[]): Promise<void> {
-    const normalized = configs.map(parseCurrentConfig);
+    const normalized = configs.map(normalizeConfigForWrite);
     await this.store.set(
       LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.current,
       JSON.stringify(normalized),
@@ -125,7 +151,7 @@ export class ProviderConfigStore {
 
   async upsert(config: LocalProviderConfig): Promise<void> {
     const configs = await this.load();
-    const normalized = parseCurrentConfig(config);
+    const normalized = normalizeConfigForWrite(config);
     const index = configs.findIndex((item) => item.id === normalized.id);
     if (index < 0) {
       await this.save([...configs, normalized]);
