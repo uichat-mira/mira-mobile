@@ -84,7 +84,6 @@ export type StageLocalSessionReferenceRemoval = (
 interface ActiveProviderSend {
   providerId: string;
   cancelled: boolean;
-  cancelProviderRun: (() => void) | null;
 }
 
 export interface LocalProviderRuntimeOptions {
@@ -218,7 +217,6 @@ export class LocalProviderRuntime implements ConversationRuntime {
     const send: ActiveProviderSend = {
       providerId: normalizedProviderId,
       cancelled: false,
-      cancelProviderRun: null,
     };
     this.activeProviderSends.add(send);
     return send;
@@ -231,7 +229,6 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private cancelTrackedProviderSends(): void {
     for (const send of this.activeProviderSends) {
       send.cancelled = true;
-      send.cancelProviderRun?.();
     }
   }
 
@@ -264,6 +261,21 @@ export class LocalProviderRuntime implements ConversationRuntime {
     } finally {
       release();
     }
+  }
+
+  private providerConfigsEqual(
+    left: LocalProviderConfig,
+    right: LocalProviderConfig,
+  ): boolean {
+    return (
+      left.id === right.id &&
+      left.name === right.name &&
+      left.baseUrl === right.baseUrl &&
+      left.model === right.model &&
+      left.protocol === right.protocol &&
+      left.toolGatewayId === right.toolGatewayId &&
+      left.compatibility?.reasoningTags === right.compatibility?.reasoningTags
+    );
   }
 
   async getProviderDeletionImpact(providerId: string): Promise<LocalProviderDeletionImpact> {
@@ -326,13 +338,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
           normalizedProviderId,
           sessionIds,
         );
-      stagedSessionReferences.commit();
-
-      return {
+      const result: LocalProviderDeletionResult = {
         providerId: normalizedProviderId,
         sessionCount: deletedSessionIds.length,
         deletedSessionIds,
       };
+      stagedSessionReferences.commit();
+      return result;
     } catch (error) {
       const rollback: Promise<unknown>[] = [];
       if (configRemoved && configToRestore) {
@@ -355,7 +367,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
         const restoredConfig = (await this.configStore.load())
           .find((item) => item.id === normalizedProviderId);
         rollbackComplete =
-          JSON.stringify(restoredConfig) === JSON.stringify(configToRestore);
+          restoredConfig !== undefined &&
+          this.providerConfigsEqual(restoredConfig, configToRestore);
       }
       if (rollbackComplete && credentialCleared) {
         const restoredCredential =
@@ -444,9 +457,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           runtime.clientFactory(config, apiKey),
           config,
         );
-        activeSend.cancelProviderRun = () => executor.client.cancelActiveRun();
         if (activeSend.cancelled) {
-          activeSend.cancelProviderRun();
           throw new Error('Local Provider request was cancelled');
         }
 
