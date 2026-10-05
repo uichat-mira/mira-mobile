@@ -27,6 +27,15 @@ import type {
   ToolGatewayClient,
 } from '../tools/toolGatewayClient';
 
+export interface LocalProviderDeletionImpact {
+  providerId: string;
+  sessionCount: number;
+}
+
+export interface LocalProviderDeletionResult extends LocalProviderDeletionImpact {
+  deletedSessionIds: string[];
+}
+
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
   credentialStore?: ProviderCredentialStore;
@@ -66,6 +75,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly memoryService: LocalMemoryService;
   private readonly providerExecution = new LocalProviderExecutionController();
   private readonly agentRun: LocalAgentRunController | null;
+  private readonly activeProviderOperations = new Map<string, number>();
+  private readonly deletingProviderIds = new Set<string>();
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
@@ -87,6 +98,33 @@ export class LocalProviderRuntime implements ConversationRuntime {
       ? new LocalAgentRunController(options.toolGateway)
       : null;
     this.supportsAgent = Boolean(options.toolGateway);
+  }
+
+  private acquireProviderOperation(providerId: string): () => void {
+    const normalizedProviderId = providerId.trim();
+    if (!normalizedProviderId) {
+      throw new Error('Local Provider id is required');
+    }
+    if (this.deletingProviderIds.has(normalizedProviderId)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
+
+    this.activeProviderOperations.set(
+      normalizedProviderId,
+      (this.activeProviderOperations.get(normalizedProviderId) ?? 0) + 1,
+    );
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = (this.activeProviderOperations.get(normalizedProviderId) ?? 1) - 1;
+      if (next <= 0) {
+        this.activeProviderOperations.delete(normalizedProviderId);
+      } else {
+        this.activeProviderOperations.set(normalizedProviderId, next);
+      }
+    };
   }
 
   async listSessions(): Promise<Session[]> {
@@ -111,7 +149,92 @@ export class LocalProviderRuntime implements ConversationRuntime {
       ? configs.find((item) => item.id === providerId)
       : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
-    return this.sessionRepository.create(config.id, title);
+
+    const release = this.acquireProviderOperation(config.id);
+    try {
+      return await this.sessionRepository.create(config.id, title);
+    } finally {
+      release();
+    }
+  }
+
+  async getProviderDeletionImpact(providerId: string): Promise<LocalProviderDeletionImpact> {
+    const normalizedProviderId = providerId.trim();
+    if (!normalizedProviderId) throw new Error('Local Provider id is required');
+    const sessions = await this.sessionRepository.list(normalizedProviderId);
+    return { providerId: normalizedProviderId, sessionCount: sessions.length };
+  }
+
+  async deleteProvider(
+    providerId: string,
+    expectedSessionCount?: number,
+  ): Promise<LocalProviderDeletionResult> {
+    const normalizedProviderId = providerId.trim();
+    if (!normalizedProviderId) throw new Error('Local Provider id is required');
+    if (this.deletingProviderIds.has(normalizedProviderId)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
+    if ((this.activeProviderOperations.get(normalizedProviderId) ?? 0) > 0) {
+      throw new Error('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
+    }
+
+    this.deletingProviderIds.add(normalizedProviderId);
+    let configToRestore: LocalProviderConfig | null = null;
+    let credentialToRestore: string | null = null;
+    let credentialCleared = false;
+    let configRemoved = false;
+
+    try {
+      const configs = await this.configStore.load();
+      configToRestore =
+        configs.find((item) => item.id === normalizedProviderId) ?? null;
+
+      const sessions = await this.sessionRepository.list(normalizedProviderId);
+      if (
+        expectedSessionCount !== undefined &&
+        sessions.length !== expectedSessionCount
+      ) {
+        throw new Error('关联本地对话数量已变化，请重新确认删除范围。');
+      }
+
+      credentialToRestore =
+        await this.credentialStore.load(normalizedProviderId);
+      await this.credentialStore.clear(normalizedProviderId);
+      credentialCleared = true;
+
+      if (configToRestore) {
+        await this.configStore.remove(normalizedProviderId);
+        configRemoved = true;
+      }
+
+      const deletedSessionIds =
+        await this.sessionRepository.deleteByProvider(normalizedProviderId);
+
+      return {
+        providerId: normalizedProviderId,
+        sessionCount: deletedSessionIds.length,
+        deletedSessionIds,
+      };
+    } catch (error) {
+      const rollback: Promise<unknown>[] = [];
+      if (configRemoved && configToRestore) {
+        rollback.push(this.configStore.upsert(configToRestore));
+      }
+      if (credentialCleared && credentialToRestore) {
+        rollback.push(
+          this.credentialStore.save(normalizedProviderId, credentialToRestore),
+        );
+      }
+      const rollbackResults = await Promise.allSettled(rollback);
+      if (rollbackResults.some((result) => result.status === 'rejected')) {
+        throw new Error(
+          '删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。',
+        );
+      }
+      throw error;
+    } finally {
+      this.deletingProviderIds.delete(normalizedProviderId);
+    }
   }
 
   deleteSession(sessionId: string): Promise<void> {
@@ -132,43 +255,60 @@ export class LocalProviderRuntime implements ConversationRuntime {
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const session = await this.sessionRepository.get(sessionId);
-    const configs = await this.configStore.load();
     const providerId = await this.sessionRepository.getProviderId(sessionId);
-    const config = configs.find((item) => item.id === providerId);
-    if (!config) {
-      throw new Error('Local Provider configuration was not found');
-    }
-    const apiKey = await this.credentialStore.load(config.id);
-    if (!apiKey) {
-      throw new Error('Local Provider API key is not configured');
-    }
+    const releaseProviderOperation = this.acquireProviderOperation(providerId);
 
-    const executor = createLocalProviderExecutor(
-      this.clientFactory(config, apiKey),
-      config,
-    );
+    try {
+      const configs = await this.configStore.load();
+      const config = configs.find((item) => item.id === providerId);
+      if (!config) {
+        throw new Error('Local Provider configuration was not found');
+      }
+      const apiKey = await this.credentialStore.load(config.id);
+      if (!apiKey) {
+        throw new Error('Local Provider API key is not configured');
+      }
 
-    return executeLocalConversationTurn(
-      {
-        session,
-        input,
-        messageId: options?.messageId,
-        agentEnabled: options?.agentEnabled,
-      },
-      {
-        repository: this.sessionRepository,
-        executor,
-        providerExecution: this.providerExecution,
-        agentRun: this.agentRun,
-        assembleRequest: (canonicalMessages) =>
-          assembleLocalRequestContext(canonicalMessages, {
-            loadPersonalization: this.loadPersonalization,
-            memoryService: this.memoryService,
-          }),
-        memoryService: this.memoryService,
+      const executor = createLocalProviderExecutor(
+        this.clientFactory(config, apiKey),
         config,
-      },
-    );
+      );
+
+      const stream = await executeLocalConversationTurn(
+        {
+          session,
+          input,
+          messageId: options?.messageId,
+          agentEnabled: options?.agentEnabled,
+        },
+        {
+          repository: this.sessionRepository,
+          executor,
+          providerExecution: this.providerExecution,
+          agentRun: this.agentRun,
+          assembleRequest: (canonicalMessages) =>
+            assembleLocalRequestContext(canonicalMessages, {
+              loadPersonalization: this.loadPersonalization,
+              memoryService: this.memoryService,
+            }),
+          memoryService: this.memoryService,
+          config,
+        },
+      );
+
+      return (async function* () {
+        try {
+          for await (const event of stream) {
+            yield event;
+          }
+        } finally {
+          releaseProviderOperation();
+        }
+      })();
+    } catch (error) {
+      releaseProviderOperation();
+      throw error;
+    }
   }
 
   getAgentEnabled(sessionId: string): Promise<boolean> {
