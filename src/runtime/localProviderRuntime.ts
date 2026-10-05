@@ -8,7 +8,10 @@ import {
   providerCredentialStore,
   type ProviderCredentialStore,
 } from '../security/providerCredentialStore';
-import { LocalSessionRepository } from '../local/localSessionRepository';
+import {
+  LocalProviderSessionSetChangedError,
+  LocalSessionRepository,
+} from '../local/localSessionRepository';
 import {
   loadPersonalizationSettings,
   type PersonalizationSettings,
@@ -49,6 +52,12 @@ export class LocalProviderDeletionScopeChangedError extends Error {
 export type StageLocalSessionReferenceRemoval = (
   sessionIds: readonly string[],
 ) => Promise<() => Promise<void>>;
+
+interface ActiveProviderSend {
+  providerId: string;
+  cancel: () => void;
+  release: () => void;
+}
 
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
@@ -93,6 +102,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly agentRun: LocalAgentRunController | null;
   private readonly activeProviderOperations = new Map<string, number>();
   private readonly deletingProviderIds = new Set<string>();
+  private readonly activeProviderSends = new Set<ActiveProviderSend>();
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
@@ -143,6 +153,31 @@ export class LocalProviderRuntime implements ConversationRuntime {
         this.activeProviderOperations.set(normalizedProviderId, next);
       }
     };
+  }
+
+  private trackProviderSend(
+    providerId: string,
+    cancel: () => void,
+    release: () => void,
+  ): ActiveProviderSend {
+    const send = { providerId, cancel, release };
+    this.activeProviderSends.add(send);
+    return send;
+  }
+
+  private finishProviderSend(send: ActiveProviderSend): void {
+    if (!this.activeProviderSends.delete(send)) return;
+    send.release();
+  }
+
+  private cancelTrackedProviderSends(): void {
+    for (const send of [...this.activeProviderSends]) {
+      try {
+        send.cancel();
+      } finally {
+        this.finishProviderSend(send);
+      }
+    }
   }
 
   async listSessions(): Promise<Session[]> {
@@ -231,7 +266,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
       }
 
       const deletedSessionIds =
-        await this.sessionRepository.deleteByProvider(normalizedProviderId);
+        await this.sessionRepository.deleteByProvider(
+          normalizedProviderId,
+          sessionIds,
+        );
 
       return {
         providerId: normalizedProviderId,
@@ -251,10 +289,31 @@ export class LocalProviderRuntime implements ConversationRuntime {
       if (restoreSessionReferences) {
         rollback.push(restoreSessionReferences());
       }
+
       const rollbackResults = await Promise.allSettled(rollback);
-      if (rollbackResults.some((result) => result.status === 'rejected')) {
+      let rollbackComplete =
+        !rollbackResults.some((result) => result.status === 'rejected');
+
+      if (rollbackComplete && configRemoved && configToRestore) {
+        const restoredConfig = (await this.configStore.load())
+          .find((item) => item.id === normalizedProviderId);
+        rollbackComplete =
+          JSON.stringify(restoredConfig) === JSON.stringify(configToRestore);
+      }
+      if (rollbackComplete && credentialCleared) {
+        const restoredCredential =
+          await this.credentialStore.load(normalizedProviderId);
+        rollbackComplete = restoredCredential === credentialToRestore;
+      }
+
+      if (!rollbackComplete) {
         throw new Error(
           '删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。',
+        );
+      }
+      if (error instanceof LocalProviderSessionSetChangedError) {
+        throw new LocalProviderDeletionScopeChangedError(
+          error.actualSessionIds.length,
         );
       }
       throw error;
@@ -289,6 +348,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     const session = await this.sessionRepository.get(sessionId);
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     const releaseProviderOperation = this.acquireProviderOperation(providerId);
+    let activeSend: ActiveProviderSend | null = null;
 
     try {
       const configs = await this.configStore.load();
@@ -304,6 +364,11 @@ export class LocalProviderRuntime implements ConversationRuntime {
       const executor = createLocalProviderExecutor(
         this.clientFactory(config, apiKey),
         config,
+      );
+      activeSend = this.trackProviderSend(
+        providerId,
+        () => executor.client.cancelActiveRun(),
+        releaseProviderOperation,
       );
 
       const stream = await executeLocalConversationTurn(
@@ -328,17 +393,22 @@ export class LocalProviderRuntime implements ConversationRuntime {
         },
       );
 
-      return (async function* () {
+      const trackedSend = activeSend;
+      return (async function* (runtime: LocalProviderRuntime) {
         try {
           for await (const event of stream) {
             yield event;
           }
         } finally {
-          releaseProviderOperation();
+          runtime.finishProviderSend(trackedSend);
         }
-      })();
+      })(this);
     } catch (error) {
-      releaseProviderOperation();
+      if (activeSend) {
+        this.finishProviderSend(activeSend);
+      } else {
+        releaseProviderOperation();
+      }
       throw error;
     }
   }
@@ -363,6 +433,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     // intentional Agent cancellation rather than an ordinary stream failure.
     this.agentRun?.cancelActiveRun();
     this.providerExecution.cancelActiveRun();
+    this.cancelTrackedProviderSends();
   }
 
   setExecutionSuspended(suspended: boolean): void {
@@ -371,6 +442,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.providerExecution.setExecutionSuspended(suspended);
     if (suspended) {
       this.agentRun?.interruptForSuspension();
+      this.cancelTrackedProviderSends();
     }
   }
 }
