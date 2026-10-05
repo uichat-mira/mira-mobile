@@ -52,12 +52,14 @@ describe('MOB-038 Local Provider configuration', () => {
   });
 
   it('confirms scoped cascade deletion with the current owned conversation count', () => {
+
     expect(source).toContain('runtimeRegistry.getLocalProviderDeletionImpact(config.id)');
     expect(source).toContain('impact.sessionCount');
     expect(source).toContain('runtimeRegistry.deleteLocalProvider(');
     expect(source).toContain('expectedSessionCount');
     expect(source).toContain("{ text: '取消', style: 'cancel' }");
     expect(source).toContain("style: 'destructive'");
+    expect(source).toContain('如该 Provider 正在生成内容，将先停止这些请求再删除');
     expect(source).toContain('不会影响其他 Provider、Remote Host、记忆或个性化设置');
     expect(source).not.toContain('当前 Provider 仍有本地对话，请先保留此配置');
   });
@@ -66,16 +68,6 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('selectedProviderIdRef.current !== providerId');
     expect(source).toContain('当前选中的 Provider 已变化');
     expect(source).toContain('刚才的删除确认已失效');
-  });
-
-  it('surfaces active-run deletion refusal with a clear recovery path', () => {
-    expect(source).toContain(
-      'error instanceof LocalProviderDeletionBlockedByActiveRunError',
-    );
-    expect(source).toContain("'Provider 正在执行请求'");
-    expect(source).toContain(
-      '请先返回对应的本地对话停止当前生成，再回来删除此 Provider',
-    );
   });
 
   it('reconfirms when the deletion scope changes before commit', () => {
