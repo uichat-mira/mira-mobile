@@ -106,6 +106,33 @@ describe('ProviderConfigStore', () => {
     ]);
   });
 
+  it('requires review for a migrated legacy HTTP Base URL', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
+      JSON.stringify([
+        {
+          id: 'legacy-http',
+          name: 'Legacy HTTP',
+          baseUrl: 'http://provider.example.com',
+          model: 'legacy-model',
+          protocol: 'chat-completions',
+        },
+      ]),
+    );
+
+    await expect(new ProviderConfigStore(storage).load()).resolves.toEqual([
+      {
+        id: 'legacy-http',
+        name: 'Legacy HTTP',
+        baseUrl: 'http://provider.example.com',
+        model: 'legacy-model',
+        protocol: 'openai-chat-completions',
+        requiresStandardProtocolReview: true,
+      },
+    ]);
+  });
+
   it('drops legacy reasoning-tag compatibility instead of preserving the hack', async () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
