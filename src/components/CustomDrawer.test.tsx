@@ -26,19 +26,12 @@ jest.mock('../runtime/runtimeRegistry', () => ({
   },
 }));
 
-jest.mock('../theme/ThemeContext', () => ({
-  useTheme: () => ({
-    colors: {
-      bg: { canvas: '#fff', card: '#fff', soft: '#eee' },
-      border: { soft: '#eee', default: '#ddd' },
-      text: { ink: '#111', base: '#222', soft: '#777', muted: '#777', placeholder: '#aaa' },
-      primary: '#00f',
-      primaryActive: '#009',
-      onPrimary: '#fff',
-      overlay: 'rgba(0,0,0,0.4)',
-    },
-  }),
-}));
+jest.mock('../theme/ThemeContext', () => {
+  const { createSessionSurfaceThemeMock } = jest.requireActual(
+    '../test/sessionSurfaceTestKit',
+  );
+  return createSessionSurfaceThemeMock();
+});
 
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -65,24 +58,19 @@ jest.mock('lucide-react-native', () => ({
 }));
 
 jest.mock('../store/threadPinStore', () => {
-  const hydrate = async () => undefined;
-  return {
-    useThreadPinStore: (selector: (state: unknown) => unknown) =>
-      selector({
-        pinnedAtByThreadId: { 'thread-pinned': '2026-08-28T00:00:00.000Z' },
-        hydrate,
-      }),
-  };
+  const { createSessionSurfacePinStoreMock } = jest.requireActual(
+    '../test/sessionSurfaceTestKit',
+  );
+  return createSessionSurfacePinStoreMock({
+    'thread-pinned': '2026-08-28T00:00:00.000Z',
+  });
 });
 
 jest.mock('../store/threadReadStore', () => {
-  const hydrate = async () => undefined;
-  const syncSessions = async () => undefined;
-  return {
-    selectThreadUnread: () => false,
-    useThreadReadStore: (selector: (state: unknown) => unknown) =>
-      selector({ progressByThreadId: {}, hydrate, syncSessions }),
-  };
+  const { createSessionSurfaceReadStoreMock } = jest.requireActual(
+    '../test/sessionSurfaceTestKit',
+  );
+  return createSessionSurfaceReadStoreMock();
 });
 
 jest.mock('../connectivity/remoteConnectionDiagnostics', () => ({
