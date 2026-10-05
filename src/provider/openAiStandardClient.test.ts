@@ -363,6 +363,111 @@ describe('OpenAiStandardClient Responses', () => {
     ]);
   });
 
+  it('drops a stale Responses continuation batch when canonical tool-call identity no longer matches', async () => {
+    const reasoningItem = {
+      id: 'rs-stale',
+      type: 'reasoning',
+      summary: [],
+      encrypted_content: 'stale-reasoning',
+    };
+    const staleCall = {
+      id: 'fc-stale',
+      type: 'function_call',
+      call_id: 'stale-call',
+      name: 'search',
+      arguments: '{"q":"old"}',
+      status: 'completed',
+    };
+    const firstXhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: reasoningItem,
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: staleCall,
+        },
+        {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [reasoningItem, staleCall],
+          },
+        },
+      ),
+    );
+    const secondXhr = new FakeXhr(
+      sse({
+        type: 'response.completed',
+        response: { status: 'completed', output: [] },
+      }),
+    );
+    const xhrs = [firstXhr, secondXhr];
+    let xhrIndex = 0;
+    const client = new OpenAiStandardClient({
+      baseUrl: 'https://provider.example.com',
+      apiKey: 'secret',
+      protocol: 'openai-responses',
+      xhrFactory: () => {
+        const xhr = xhrs[xhrIndex];
+        xhrIndex += 1;
+        if (!xhr) throw new Error('Unexpected extra Responses request');
+        return xhr as unknown as XMLHttpRequest;
+      },
+    });
+
+    await collect(await client.streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'old request' }],
+      tools: [{
+        type: 'function',
+        function: { name: 'search', parameters: { type: 'object' } },
+      }],
+    }));
+
+    await collect(await client.streamMessages({
+      model: 'model-1',
+      messages: [
+        { role: 'user', content: 'replacement request' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'replacement-call',
+            type: 'function',
+            function: { name: 'search', arguments: '{"q":"new"}' },
+          }],
+        },
+        {
+          role: 'tool',
+          content: '{"result":"new"}',
+          tool_call_id: 'replacement-call',
+        },
+      ],
+    }));
+
+    const secondInput = JSON.parse(secondXhr.requestBody ?? '{}').input;
+    expect(secondInput).toEqual([
+      { role: 'user', content: 'replacement request' },
+      {
+        type: 'function_call',
+        call_id: 'replacement-call',
+        name: 'search',
+        arguments: '{"q":"new"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'replacement-call',
+        output: '{"result":"new"}',
+      },
+    ]);
+    expect(JSON.stringify(secondInput)).not.toContain('stale-reasoning');
+    expect(JSON.stringify(secondInput)).not.toContain('stale-call');
+  });
+
   it('surfaces standard Responses refusal deltas as visible assistant text', async () => {
     const xhr = new FakeXhr(
       sse(
