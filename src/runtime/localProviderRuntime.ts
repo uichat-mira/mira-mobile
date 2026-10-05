@@ -29,7 +29,10 @@ import type {
   ToolApprovalDecision,
   ToolGatewayClient,
 } from '../tools/toolGatewayClient';
-import { stageLocalSessionReferenceRemoval } from '../session/localSessionReferenceCleanup';
+import {
+  stageLocalSessionReferenceRemoval,
+  type StagedLocalSessionReferenceRemoval,
+} from '../session/localSessionReferenceCleanup';
 
 export interface LocalProviderDeletionImpact {
   providerId: string;
@@ -51,7 +54,7 @@ export class LocalProviderDeletionScopeChangedError extends Error {
 
 export type StageLocalSessionReferenceRemoval = (
   sessionIds: readonly string[],
-) => Promise<() => Promise<void>>;
+) => Promise<StagedLocalSessionReferenceRemoval>;
 
 interface ActiveProviderSend {
   providerId: string;
@@ -234,7 +237,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.deletingProviderIds.add(normalizedProviderId);
     let configToRestore: LocalProviderConfig | null = null;
     let credentialToRestore: string | null = null;
-    let restoreSessionReferences: (() => Promise<void>) | null = null;
+    let stagedSessionReferences: StagedLocalSessionReferenceRemoval | null = null;
     let credentialCleared = false;
     let configRemoved = false;
 
@@ -254,7 +257,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       credentialToRestore =
         await this.credentialStore.load(normalizedProviderId);
       const sessionIds = sessions.map((session) => session.id);
-      restoreSessionReferences =
+      stagedSessionReferences =
         await this.stageSessionReferenceRemoval(sessionIds);
 
       await this.credentialStore.clear(normalizedProviderId);
@@ -270,6 +273,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           normalizedProviderId,
           sessionIds,
         );
+      stagedSessionReferences.commit();
 
       return {
         providerId: normalizedProviderId,
@@ -286,8 +290,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
           this.credentialStore.save(normalizedProviderId, credentialToRestore),
         );
       }
-      if (restoreSessionReferences) {
-        rollback.push(restoreSessionReferences());
+      if (stagedSessionReferences) {
+        rollback.push(stagedSessionReferences.rollback());
       }
 
       const rollbackResults = await Promise.allSettled(rollback);
