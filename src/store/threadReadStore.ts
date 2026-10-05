@@ -3,7 +3,12 @@ import type { ChatMessage, Session } from '../types';
 import { miraHostClient } from '../api/miraHostClient';
 import { RemoteHostError } from '../api/remoteHttp';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
-import { isThreadReferenceMutationFenced } from './threadReferenceMutationFence';
+import {
+  filterUnfencedThreadReferences,
+  isThreadReferenceMutationFenced,
+  removeThreadReferences,
+  restoreThreadReferences,
+} from './threadReferenceMutationFence';
 import {
   isThreadUnread,
   markThreadMessagesRead,
@@ -54,7 +59,12 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
       hydratePromise = repository
         .load()
         .then((progressByThreadId) => {
-          set({ progressByThreadId, hydrated: true, hydrationError: null });
+          set({
+            progressByThreadId:
+              filterUnfencedThreadReferences(progressByThreadId),
+            hydrated: true,
+            hydrationError: null,
+          });
         })
         .catch((error) => {
           set({ hydrationError: errorMessage(error) });
@@ -133,16 +143,9 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
 
   removeThreads: async (threadIds) => {
     await get().hydrate();
-    const ids = new Set(threadIds.filter((threadId) => threadId.trim().length > 0));
     const previousMap = get().progressByThreadId;
-    const removed: ThreadReadMap = {};
-    const nextMap = { ...previousMap };
-    for (const threadId of ids) {
-      const progress = previousMap[threadId];
-      if (!progress) continue;
-      removed[threadId] = progress;
-      delete nextMap[threadId];
-    }
+    const { next: nextMap, removed } =
+      removeThreadReferences(previousMap, threadIds);
     if (Object.keys(removed).length === 0) return removed;
 
     set({ progressByThreadId: nextMap });
@@ -161,7 +164,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     if (Object.keys(progress).length === 0) return;
     await get().hydrate();
     const previousMap = get().progressByThreadId;
-    const nextMap = { ...previousMap, ...progress };
+    const nextMap = restoreThreadReferences(previousMap, progress);
     set({ progressByThreadId: nextMap });
     try {
       await repository.save(nextMap);
