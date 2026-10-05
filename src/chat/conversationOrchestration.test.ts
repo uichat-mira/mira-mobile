@@ -203,6 +203,40 @@ describe('ConversationOrchestrator', () => {
     });
   });
 
+  it('reloads canonical state after a late stream failure discards transient text', async () => {
+    const canonical = [message('u1', 'user', 'hi')];
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider'),
+      canonical: async () => canonical,
+      send: async () =>
+        (async function* () {
+          yield { type: 'text-delta' as const, delta: 'partial' };
+          throw new RemoteHostError(
+            'INVALID_PROVIDER_EVENT',
+            'provider stream became invalid',
+          );
+        })(),
+    });
+
+    const outcome = await harness.orchestrator.dispatchTurn(
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
+      harness.emit,
+      () => 'generated',
+    );
+
+    expect(outcome.failed).toBe(true);
+    expect(harness.events).toContainEqual({ type: 'text', text: 'partial' });
+    expect(harness.events).toContainEqual({
+      type: 'canonical-reload',
+      messages: canonical,
+    });
+    expect(failureEvent(harness.events)).toMatchObject({
+      type: 'failure',
+      kind: 'provider-or-host',
+      messageId: 'u1',
+    });
+  });
+
   it('surfaces a provider/host failure without inventing an assistant message', async () => {
     const harness = buildHarness({
       runtime: runtimeFor('local-provider'),
