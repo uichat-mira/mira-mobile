@@ -150,7 +150,16 @@ export function LocalProviderConfigScreen() {
     try {
       await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount);
 
-      const nextConfigs = configs.filter((item) => item.id !== providerId);
+      const nextConfigs = await new ProviderConfigStore().load().catch(() => null);
+      if (!nextConfigs) {
+        Alert.alert(
+          'Provider 已删除',
+          'Provider 已删除，但当前页面无法重新读取配置。请返回后重新打开 Local Provider 设置。',
+        );
+        navigation.goBack();
+        return;
+      }
+
       setConfigs(nextConfigs);
       if (selectedProviderIdRef.current === providerId) {
         if (nextConfigs[0]) {
@@ -185,8 +194,8 @@ export function LocalProviderConfigScreen() {
     }
   }, [
     activateDraftProvider,
-    configs,
     deletingProvider,
+    navigation,
     selectProvider,
   ]);
 
