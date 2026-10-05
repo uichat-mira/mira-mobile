@@ -23,7 +23,7 @@ describe('buildLocalPersonalizationContext', () => {
   it('returns null for empty traits and blank instructions', () => {
     expect(
       buildLocalPersonalizationContext(
-        settings({ characteristics: { warmth: false, traits: ['  ', ''], conciseFirst: false } }),
+        settings({ characteristics: { traits: ['  ', ''] } }),
       ),
     ).toBeNull();
   });
@@ -46,38 +46,26 @@ describe('buildLocalPersonalizationContext', () => {
     ).toContain('concise');
   });
 
-  it('emits no tone line for the explicit default base style', () => {
+  it('compiles Traits as additive preferences that do not replace Base style', () => {
     const context = buildLocalPersonalizationContext(
       settings({
-        baseStyle: { tone: 'default' },
-        characteristics: { warmth: true, traits: [], conciseFirst: false },
+        baseStyle: { tone: 'professional' },
+        characteristics: { traits: ['多用类比', '给出反例'] },
       }),
     );
 
-    expect(context).not.toBeNull();
-    expect(context).toContain('warm and personable');
-    expect(context).not.toContain('friendly');
-  });
-
-  it('compiles characteristics independently of the base style', () => {
-    const context = buildLocalPersonalizationContext(
-      settings({
-        characteristics: { warmth: true, traits: ['讲话简短', '喜欢举一反三'], conciseFirst: true },
-      }),
-    );
-
-    expect(context).toContain('warm and personable');
-    expect(context).toContain('讲话简短');
-    expect(context).toContain('喜欢举一反三');
-    expect(context).toContain('short answers');
+    expect(context).toContain('professional');
+    expect(context).toContain('additional traits without replacing the base style');
+    expect(context).toContain('多用类比');
+    expect(context).toContain('给出反例');
   });
 
   it('compiles custom instructions as free text', () => {
     const context = buildLocalPersonalizationContext(
-      settings({ instructions: '讲话风骚幽默、引人联想' }),
+      settings({ instructions: '保持克制' }),
     );
 
-    expect(context).toContain('讲话风骚幽默、引人联想');
+    expect(context).toContain('保持克制');
     expect(context).toContain('user instructions');
   });
 
