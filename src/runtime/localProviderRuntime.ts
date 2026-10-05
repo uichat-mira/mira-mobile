@@ -9,6 +9,7 @@ import {
   type ProviderCredentialStore,
 } from '../security/providerCredentialStore';
 import {
+  LocalProviderSessionRollbackIncompleteError,
   LocalProviderSessionSetChangedError,
   LocalSessionRepository,
 } from '../local/localSessionRepository';
@@ -347,7 +348,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
         rollbackComplete = restoredCredential === credentialToRestore;
       }
 
-      if (!rollbackComplete) {
+      if (
+        !rollbackComplete ||
+        error instanceof LocalProviderSessionRollbackIncompleteError
+      ) {
         throw new LocalProviderDeletionRollbackIncompleteError(error);
       }
       if (error instanceof LocalProviderSessionSetChangedError) {
