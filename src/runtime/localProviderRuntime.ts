@@ -62,6 +62,21 @@ export class LocalProviderDeletionRollbackIncompleteError extends Error {
   }
 }
 
+export class LocalProviderSendUnavailableError extends Error {
+  readonly code = 'LOCAL_PROVIDER_SEND_UNAVAILABLE';
+
+  constructor(
+    readonly reason: 'provider-deleting' | 'provider-missing',
+  ) {
+    super(
+      reason === 'provider-deleting'
+        ? '当前 Provider 正在删除，请稍后重试。'
+        : 'Local Provider configuration was not found',
+    );
+    this.name = 'LocalProviderSendUnavailableError';
+  }
+}
+
 export type StageLocalSessionReferenceRemoval = (
   sessionIds: readonly string[],
 ) => Promise<StagedLocalSessionReferenceRemoval>;
@@ -197,7 +212,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       throw new Error('Local Provider id is required');
     }
     if (this.deletingProviderIds.has(normalizedProviderId)) {
-      throw new Error('当前 Provider 正在删除，请稍后重试。');
+      throw new LocalProviderSendUnavailableError('provider-deleting');
     }
 
     const send: ActiveProviderSend = {
@@ -390,7 +405,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     if (this.deletingProviderIds.has(providerId)) {
-      throw new Error('当前 Provider 正在删除，请稍后重试。');
+      throw new LocalProviderSendUnavailableError('provider-deleting');
     }
     const runtime = this;
 
@@ -404,7 +419,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
         }
         const config = configs.find((item) => item.id === providerId);
         if (!config) {
-          throw new Error('Local Provider configuration was not found');
+          throw new LocalProviderSendUnavailableError('provider-missing');
         }
 
         const session = await runtime.sessionRepository.get(sessionId);
