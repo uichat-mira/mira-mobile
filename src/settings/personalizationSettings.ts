@@ -1,8 +1,9 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
+import { PERSONALIZATION_STORAGE_KEYS } from './personalizationStorageKeys';
 
-const LEGACY_PERSONALIZATION_V1_KEY = 'mira.mobile.personalization.v1';
-const LEGACY_PERSONALIZATION_V2_KEY = 'mira.mobile.personalization.v2';
-const PERSONALIZATION_KEY = 'mira.mobile.personalization.v3';
+const LEGACY_PERSONALIZATION_V1_KEY = PERSONALIZATION_STORAGE_KEYS.legacyV1;
+const LEGACY_PERSONALIZATION_V2_KEY = PERSONALIZATION_STORAGE_KEYS.legacyV2;
+const PERSONALIZATION_KEY = PERSONALIZATION_STORAGE_KEYS.current;
 
 // Base style / tone. `default` is the explicit "no Base style chosen" state;
 // the other values are mutually exclusive presets.
