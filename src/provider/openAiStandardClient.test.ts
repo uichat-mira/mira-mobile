@@ -482,6 +482,19 @@ describe('OpenAiStandardClient Responses', () => {
 });
 
 describe('OpenAiStandardClient transport', () => {
+  it('rejects insecure URLs outside development builds', () => {
+    if (__DEV__) return;
+    expect(
+      () =>
+        new OpenAiStandardClient({
+          baseUrl: 'http://provider.example.com',
+          apiKey: 'secret',
+          protocol: 'openai-chat-completions',
+        }),
+    ).toThrow('HTTPS');
+  });
+
+
   it('reports explicit cancellation', async () => {
     const xhr = new HangingXhr();
     const client = createClient('openai-responses', xhr);
