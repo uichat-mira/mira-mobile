@@ -279,7 +279,6 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (this.pendingProviderSend === send) {
       this.pendingProviderSend = null;
     }
-    send.close?.();
   }
 
   private async cancelProviderSends(providerId: string): Promise<void> {
