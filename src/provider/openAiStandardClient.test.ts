@@ -106,12 +106,12 @@ const request = (
 });
 
 const completedResponse = (
-  output: Array<Record<string, unknown>> = [],
+  output?: Array<Record<string, unknown>>,
 ): Record<string, unknown> => ({
   type: 'response.completed',
   response: {
     status: 'completed',
-    ...(output.length > 0 ? { output } : {}),
+    ...(output !== undefined ? { output } : {}),
   },
 });
 
@@ -328,62 +328,25 @@ describe('OpenAiStandardClient Chat Completions', () => {
 
 describe('OpenAiStandardClient Responses', () => {
   it('replays opaque reasoning output items across a Responses tool round', async () => {
-    const reasoningItem = {
-      id: 'rs-1',
-      type: 'reasoning',
-      summary: [],
-      encrypted_content: 'opaque-reasoning',
-    };
-    const functionCallItem = {
-      id: 'fc-1',
-      type: 'function_call',
-      call_id: 'call-1',
-      name: 'search',
-      arguments: '{"q":"mira"}',
-      status: 'completed',
-    };
+    const reasoning = reasoningItem('rs-1', 'opaque-reasoning');
+    const call = functionCallItem(
+      'fc-1',
+      'call-1',
+      '{"q":"mira"}',
+    );
     const firstXhr = new FakeXhr(
       sse(
-        {
-          type: 'response.output_item.done',
-          output_index: 0,
-          item: reasoningItem,
-        },
-        {
-          type: 'response.output_item.done',
-          output_index: 1,
-          item: functionCallItem,
-        },
-        {
-          type: 'response.completed',
-          response: {
-            status: 'completed',
-            output: [reasoningItem, functionCallItem],
-          },
-        },
+        outputItemDone(0, reasoning),
+        outputItemDone(1, call),
+        completedResponse([reasoning, call]),
       ),
     );
-    const secondXhr = new FakeXhr(
-      sse({
-        type: 'response.completed',
-        response: { status: 'completed', output: [] },
-      }),
-    );
-    const xhrs = [firstXhr, secondXhr];
-    let xhrIndex = 0;
-    const client = new OpenAiStandardClient({
-      baseUrl: 'https://provider.example.com',
-      apiKey: 'secret',
-      protocol: 'openai-responses',
-      xhrFactory: () => {
-        const xhr = xhrs[xhrIndex];
-        xhrIndex += 1;
-        if (!xhr) throw new Error('Unexpected extra Responses request');
-        return xhr as unknown as XMLHttpRequest;
-      },
-    });
+    const secondXhr = new FakeXhr(sse(completedResponse([])));
+    const client = createQueuedResponsesClient([firstXhr, secondXhr]);
 
-    const firstStream = await client.streamMessages(request('find', { tools: [searchTool] }));
+    const firstStream = await client.streamMessages(
+      request('find', { tools: [searchTool] }),
+    );
     await expect(collect(firstStream)).resolves.toEqual([
       {
         type: 'tool-call',
@@ -394,41 +357,23 @@ describe('OpenAiStandardClient Responses', () => {
       { type: 'finish', reason: 'tool_calls' },
     ]);
 
-    const secondStream = await client.streamMessages({
-      model: 'model-1',
-      messages: [
-        { role: 'user', content: 'find' },
-        {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'call-1',
-            type: 'function',
-            function: { name: 'search', arguments: '{"q":"mira"}' },
-          }],
-        },
-        {
-          role: 'tool',
-          content: '{"result":"ok"}',
-          tool_call_id: 'call-1',
-        },
-      ],
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'search',
-          parameters: { type: 'object' },
-        },
-      }],
-    });
-    await collect(secondStream);
+    await collect(await client.streamMessages(
+      request('find', {
+        messages: [
+          { role: 'user', content: 'find' },
+          searchCallMessage('call-1', '{"q":"mira"}'),
+          toolResultMessage('call-1', '{"result":"ok"}'),
+        ],
+        tools: [searchTool],
+      }),
+    ));
 
     const secondRequest = JSON.parse(secondXhr.requestBody ?? '{}');
     expect(secondRequest.include).toEqual(['reasoning.encrypted_content']);
     expect(secondRequest.input).toEqual([
       { role: 'user', content: 'find' },
-      reasoningItem,
-      functionCallItem,
+      reasoning,
+      call,
       {
         type: 'function_call_output',
         call_id: 'call-1',
@@ -438,39 +383,17 @@ describe('OpenAiStandardClient Responses', () => {
   });
 
   it('clears chat continuation before a later same-client consolidation request', async () => {
-    const reasoningItem = {
-      id: 'rs-chat',
-      type: 'reasoning',
-      summary: [],
-      encrypted_content: 'chat-reasoning',
-    };
-    const functionCallItem = {
-      id: 'fc-chat',
-      type: 'function_call',
-      call_id: 'call-chat',
-      name: 'search',
-      arguments: '{"q":"mira"}',
-      status: 'completed',
-    };
+    const reasoning = reasoningItem('rs-chat', 'chat-reasoning');
+    const call = functionCallItem(
+      'fc-chat',
+      'call-chat',
+      '{"q":"mira"}',
+    );
     const firstXhr = new FakeXhr(
       sse(
-        {
-          type: 'response.output_item.done',
-          output_index: 0,
-          item: reasoningItem,
-        },
-        {
-          type: 'response.output_item.done',
-          output_index: 1,
-          item: functionCallItem,
-        },
-        {
-          type: 'response.completed',
-          response: {
-            status: 'completed',
-            output: [reasoningItem, functionCallItem],
-          },
-        },
+        outputItemDone(0, reasoning),
+        outputItemDone(1, call),
+        completedResponse([reasoning, call]),
       ),
     );
     const secondXhr = new FakeXhr(
@@ -481,73 +404,37 @@ describe('OpenAiStandardClient Responses', () => {
           content_index: 0,
           delta: 'done',
         },
-        {
-          type: 'response.completed',
-          response: { status: 'completed', output: [] },
-        },
+        completedResponse([]),
       ),
     );
-    const consolidationXhr = new FakeXhr(
-      sse({
-        type: 'response.completed',
-        response: { status: 'completed', output: [] },
+    const consolidationXhr = new FakeXhr(sse(completedResponse([])));
+    const client = createQueuedResponsesClient([
+      firstXhr,
+      secondXhr,
+      consolidationXhr,
+    ]);
+
+    await collect(await client.streamMessages(
+      request('find', { tools: [searchTool] }),
+    ));
+    await collect(await client.streamMessages(
+      request('find', {
+        messages: [
+          { role: 'user', content: 'find' },
+          searchCallMessage('call-chat', '{"q":"mira"}'),
+          toolResultMessage('call-chat', '{"result":"ok"}'),
+        ],
+        tools: [searchTool],
       }),
-    );
-    const xhrs = [firstXhr, secondXhr, consolidationXhr];
-    let xhrIndex = 0;
-    const client = new OpenAiStandardClient({
-      baseUrl: 'https://provider.example.com',
-      apiKey: 'secret',
-      protocol: 'openai-responses',
-      xhrFactory: () => {
-        const xhr = xhrs[xhrIndex];
-        xhrIndex += 1;
-        if (!xhr) throw new Error('Unexpected extra Responses request');
-        return xhr as unknown as XMLHttpRequest;
-      },
-    });
-
-    await collect(await client.streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-      tools: [{
-        type: 'function',
-        function: { name: 'search', parameters: { type: 'object' } },
-      }],
-    }));
-
-    await collect(await client.streamMessages({
-      model: 'model-1',
-      messages: [
-        { role: 'user', content: 'find' },
-        {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'call-chat',
-            type: 'function',
-            function: { name: 'search', arguments: '{"q":"mira"}' },
-          }],
-        },
-        {
-          role: 'tool',
-          content: '{"result":"ok"}',
-          tool_call_id: 'call-chat',
-        },
-      ],
-      tools: [{
-        type: 'function',
-        function: { name: 'search', parameters: { type: 'object' } },
-      }],
-    }));
-
-    await collect(await client.streamMessages({
-      model: 'model-1',
-      messages: [
-        { role: 'system', content: 'Consolidate memory.' },
-        { role: 'user', content: 'Return JSON only.' },
-      ],
-    }));
+    ));
+    await collect(await client.streamMessages(
+      request('memory', {
+        messages: [
+          { role: 'system', content: 'Consolidate memory.' },
+          { role: 'user', content: 'Return JSON only.' },
+        ],
+      }),
+    ));
 
     const consolidationInput =
       JSON.parse(consolidationXhr.requestBody ?? '{}').input;
@@ -560,83 +447,34 @@ describe('OpenAiStandardClient Responses', () => {
   });
 
   it('drops a stale Responses continuation batch when canonical tool-call identity no longer matches', async () => {
-    const reasoningItem = {
-      id: 'rs-stale',
-      type: 'reasoning',
-      summary: [],
-      encrypted_content: 'stale-reasoning',
-    };
-    const staleCall = {
-      id: 'fc-stale',
-      type: 'function_call',
-      call_id: 'stale-call',
-      name: 'search',
-      arguments: '{"q":"old"}',
-      status: 'completed',
-    };
+    const reasoning = reasoningItem('rs-stale', 'stale-reasoning');
+    const staleCall = functionCallItem(
+      'fc-stale',
+      'stale-call',
+      '{"q":"old"}',
+    );
     const firstXhr = new FakeXhr(
       sse(
-        {
-          type: 'response.output_item.done',
-          output_index: 0,
-          item: reasoningItem,
-        },
-        {
-          type: 'response.output_item.done',
-          output_index: 1,
-          item: staleCall,
-        },
-        {
-          type: 'response.completed',
-          response: {
-            status: 'completed',
-            output: [reasoningItem, staleCall],
-          },
-        },
+        outputItemDone(0, reasoning),
+        outputItemDone(1, staleCall),
+        completedResponse([reasoning, staleCall]),
       ),
     );
-    const secondXhr = new FakeXhr(
-      sse({
-        type: 'response.completed',
-        response: { status: 'completed', output: [] },
+    const secondXhr = new FakeXhr(sse(completedResponse([])));
+    const client = createQueuedResponsesClient([firstXhr, secondXhr]);
+
+    await collect(await client.streamMessages(
+      request('old request', { tools: [searchTool] }),
+    ));
+    await collect(await client.streamMessages(
+      request('replacement request', {
+        messages: [
+          { role: 'user', content: 'replacement request' },
+          searchCallMessage('replacement-call', '{"q":"new"}'),
+          toolResultMessage('replacement-call', '{"result":"new"}'),
+        ],
       }),
-    );
-    const xhrs = [firstXhr, secondXhr];
-    let xhrIndex = 0;
-    const client = new OpenAiStandardClient({
-      baseUrl: 'https://provider.example.com',
-      apiKey: 'secret',
-      protocol: 'openai-responses',
-      xhrFactory: () => {
-        const xhr = xhrs[xhrIndex];
-        xhrIndex += 1;
-        if (!xhr) throw new Error('Unexpected extra Responses request');
-        return xhr as unknown as XMLHttpRequest;
-      },
-    });
-
-    await collect(await client.streamMessages(request('old request', { tools: [searchTool] })));
-
-    await collect(await client.streamMessages({
-      model: 'model-1',
-      messages: [
-        { role: 'user', content: 'replacement request' },
-        {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'replacement-call',
-            type: 'function',
-            function: { name: 'search', arguments: '{"q":"new"}' },
-          }],
-        },
-        {
-          role: 'tool',
-          content: '{"result":"new"}',
-          tool_call_id: 'replacement-call',
-        },
-      ],
-    }));
+    ));
 
     const secondInput = JSON.parse(secondXhr.requestBody ?? '{}').input;
     expect(secondInput).toEqual([
