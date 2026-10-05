@@ -107,12 +107,12 @@ describe('LocalProviderRuntime', () => {
     const { runtime } = await createSendReadyRuntime();
     const session = await runtime.createSession(undefined, config.id);
 
-    await runtime.sendMessage(session.id, '   ');
+    await drain(await runtime.sendMessage(session.id, '   '));
     await expect(runtime.getSession(session.id)).resolves.toMatchObject({
       title: 'New local conversation',
     });
 
-    await runtime.sendMessage(session.id, '  帮我写一个\n快速排序算法，并解释复杂度  ');
+    await drain(await runtime.sendMessage(session.id, '  帮我写一个\n快速排序算法，并解释复杂度  '));
 
     await expect(runtime.getSession(session.id)).resolves.toMatchObject({
       title: '帮我写一个 快速排序算法，并解释复杂度',
@@ -123,7 +123,7 @@ describe('LocalProviderRuntime', () => {
     const { runtime } = await createSendReadyRuntime();
     const session = await runtime.createSession(undefined, config.id);
 
-    await runtime.sendMessage(session.id, `${'a'.repeat(40)}\n${'b'.repeat(20)}`);
+    await drain(await runtime.sendMessage(session.id, `${'a'.repeat(40)}\n${'b'.repeat(20)}`));
 
     await expect(runtime.getSession(session.id)).resolves.toMatchObject({
       title: `${'a'.repeat(30)}…`,
@@ -134,7 +134,7 @@ describe('LocalProviderRuntime', () => {
     const { runtime } = await createSendReadyRuntime();
     const session = await runtime.createSession('Custom title', config.id);
 
-    await runtime.sendMessage(session.id, 'hello');
+    await drain(await runtime.sendMessage(session.id, 'hello'));
 
     await expect(runtime.getSession(session.id)).resolves.toMatchObject({
       title: 'Custom title',
@@ -322,12 +322,26 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).resolves.toBeDefined();
   });
 
-  it('releases an abandoned send lease when the runtime is cancelled', async () => {
+  it('does not acquire a Provider lease for an unconsumed send stream', async () => {
     const { runtime, repository } = await createDeletionRuntime();
-    const session = await runtime.createSession('Running', config.id);
+    const session = await runtime.createSession('Never started', config.id);
 
     await runtime.sendMessage(session.id, 'hello');
 
+    await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+    await expect(repository.get(session.id)).rejects.toThrow('not found');
+  });
+
+  it('releases a started send lease when the runtime is cancelled', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Running', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+    const iterator = stream[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
     await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
       '正在执行本地请求',
     );
@@ -396,6 +410,8 @@ describe('LocalProviderRuntime Provider deletion', () => {
       await createDeletionRuntime();
     const session = await runtime.createSession('Running', config.id);
     const stream = await runtime.sendMessage(session.id, 'hello');
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
 
     await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
       '正在执行本地请求',
@@ -505,7 +521,7 @@ describe('LocalProviderRuntime personalization context', () => {
     const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
-    await runtime.sendMessage(session.id, '你好');
+    await drain(await runtime.sendMessage(session.id, '你好'));
 
     const messages = firstRequestMessages(streamChat);
     expect(messages[0].role).toBe('system');
@@ -541,7 +557,7 @@ describe('LocalProviderRuntime personalization context', () => {
     const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
-    await runtime.sendMessage(session.id, '请用非常简短的一句话回答');
+    await drain(await runtime.sendMessage(session.id, '请用非常简短的一句话回答'));
 
     const messages = firstRequestMessages(streamChat);
     expect(messages[0].content).toContain('follow the current user message');
@@ -551,7 +567,7 @@ describe('LocalProviderRuntime personalization context', () => {
     const { runtime } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
-    await runtime.sendMessage(session.id, '你好');
+    await drain(await runtime.sendMessage(session.id, '你好'));
 
     const stored = await runtime.getMessages(session.id);
     expect(stored.some((message) => message.role === 'system')).toBe(false);
@@ -563,7 +579,9 @@ describe('LocalProviderRuntime personalization context', () => {
     });
     const session = await runtime.createSession('Chat', config.id);
 
-    await expect(runtime.sendMessage(session.id, '你好')).resolves.toBeDefined();
+    await expect(
+      drain(await runtime.sendMessage(session.id, '你好')),
+    ).resolves.toBeUndefined();
 
     const messages = firstRequestMessages(streamChat);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
