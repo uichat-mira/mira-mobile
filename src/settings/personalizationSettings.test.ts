@@ -147,6 +147,49 @@ describe('personalizationSettings', () => {
     expect(loaded.instructions).toContain('优先简洁直接，先给结论。');
   });
 
+  it('is idempotent after a v2 migration and does not append migration instructions twice', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    await store.set(
+      V2_KEY,
+      JSON.stringify({
+        baseStyle: { tone: 'professional' },
+        characteristics: {
+          warmth: true,
+          traits: [],
+          conciseFirst: false,
+        },
+        instructions: '保持克制',
+      }),
+    );
+
+    const first = await loadPersonalizationSettings(store);
+    const second = await loadPersonalizationSettings(store);
+
+    expect(second).toEqual(first);
+    expect(second.instructions.match(/保持亲和友善的表达。/g)).toHaveLength(1);
+  });
+
+  it('treats v3 as authoritative when a prior migration wrote v3 but v2 cleanup did not finish', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    const current = {
+      baseStyle: { tone: 'professional' },
+      characteristics: { traits: ['给出反例'] },
+      instructions: '保持克制\n保持亲和友善的表达。',
+    };
+    await store.set(V3_KEY, JSON.stringify(current));
+    await store.set(
+      V2_KEY,
+      JSON.stringify({
+        baseStyle: { tone: 'professional' },
+        characteristics: { warmth: true, traits: [], conciseFirst: false },
+        instructions: '保持克制',
+      }),
+    );
+
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual(current);
+    await expect(store.get(V2_KEY)).resolves.not.toBeNull();
+  });
+
   it('promotes an old Base-style-like free-text trait instead of keeping a duplicate Trait', async () => {
     const store = new MemoryLocalKeyValueStore();
     await store.set(
