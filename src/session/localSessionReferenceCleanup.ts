@@ -22,6 +22,7 @@ export interface StagedLocalSessionReferenceRemoval {
 }
 
 export interface LocalSessionReferenceCleanupDependencies {
+  hydrateReferences(): Promise<void>;
   removePins(threadIds: readonly string[]): Promise<ThreadPinMap>;
   restorePins(pins: ThreadPinMap): Promise<void>;
   readPins(): Promise<ThreadPinMap>;
@@ -34,6 +35,12 @@ export interface LocalSessionReferenceCleanupDependencies {
 }
 
 const defaultDependencies: LocalSessionReferenceCleanupDependencies = {
+  hydrateReferences: async () => {
+    await Promise.all([
+      useThreadPinStore.getState().hydrate(),
+      useThreadReadStore.getState().hydrate(),
+    ]);
+  },
   removePins: (threadIds) => useThreadPinStore.getState().removeThreads(threadIds),
   restorePins: (pins) => useThreadPinStore.getState().restoreThreads(pins),
   readPins: async () => {
@@ -116,6 +123,7 @@ export async function stageLocalSessionReferenceRemoval(
     };
   }
 
+  await dependencies.hydrateReferences();
   const releaseFence = beginThreadReferenceMutationFence(normalizedIds);
   const snapshot: LocalSessionReferenceSnapshot = {
     pins: {},
