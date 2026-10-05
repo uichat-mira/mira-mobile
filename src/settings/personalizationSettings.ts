@@ -1,30 +1,24 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
 
-// Both keys are read during load so the v1 -> v2 migration can run once.
-// v1 is only read for migration; new writes always target v2.
-const LEGACY_PERSONALIZATION_KEY = 'mira.mobile.personalization.v1';
-const PERSONALIZATION_KEY = 'mira.mobile.personalization.v2';
+const LEGACY_PERSONALIZATION_V1_KEY = 'mira.mobile.personalization.v1';
+const LEGACY_PERSONALIZATION_V2_KEY = 'mira.mobile.personalization.v2';
+const PERSONALIZATION_KEY = 'mira.mobile.personalization.v3';
 
 // Base style / tone. `default` is the explicit "no Base style chosen" state;
-// `friendly` / `professional` / `concise` are all real user choices.
+// the other values are mutually exclusive presets.
 export type BaseStyleTone = 'default' | 'friendly' | 'professional' | 'concise';
 
-// Characteristics: stable micro-adjustments layered on top of the base style.
+// Traits are additive preferences layered on top of the selected Base style.
+// Built-in Base-style synonyms are rejected so Traits cannot become a second
+// tone selector.
 export interface PersonalizationCharacteristics {
-  /** Warmer, more personable phrasing. */
-  warmth: boolean;
-  /** Free-text traits the user explicitly asked Mira to keep. */
   traits: string[];
-  /** Prefer concise answers by default. */
-  conciseFirst: boolean;
 }
 
 export interface PersonalizationSettings {
-  /** Base style / tone. */
   baseStyle: {
     tone: BaseStyleTone;
   };
-  /** Characteristics. */
   characteristics: PersonalizationCharacteristics;
   /** Custom Instructions: free-text user-authored directives. */
   instructions: string;
@@ -33,9 +27,7 @@ export interface PersonalizationSettings {
 export const DEFAULT_PERSONALIZATION_SETTINGS: PersonalizationSettings = {
   baseStyle: { tone: 'default' },
   characteristics: {
-    warmth: false,
     traits: [],
-    conciseFirst: false,
   },
   instructions: '',
 };
@@ -51,7 +43,55 @@ const isTone = (value: unknown): value is BaseStyleTone =>
 
 export const normalizeTrait = (value: string): string => value.trim().slice(0, MAX_TRAIT_LENGTH);
 
-const sanitizeTraits = (value: unknown): string[] => {
+const BASE_STYLE_LABELS: Record<Exclude<BaseStyleTone, 'default'>, string> = {
+  friendly: '亲和友善',
+  professional: '专业严谨',
+  concise: '简洁直接',
+};
+
+const BASE_STYLE_DUPLICATE_TRAITS: Readonly<Record<string, Exclude<BaseStyleTone, 'default'>>> = {
+  friendly: 'friendly',
+  '亲和': 'friendly',
+  '亲和友善': 'friendly',
+  '友善': 'friendly',
+  '友好': 'friendly',
+  '更友好': 'friendly',
+  '更亲和': 'friendly',
+  '提高亲和度': 'friendly',
+  professional: 'professional',
+  '专业': 'professional',
+  '专业严谨': 'professional',
+  '严谨': 'professional',
+  '更专业': 'professional',
+  concise: 'concise',
+  '简洁': 'concise',
+  '简洁直接': 'concise',
+  '简短': 'concise',
+  '讲话简短': 'concise',
+  '更简洁': 'concise',
+  '快速回答': 'concise',
+};
+
+const MIGRATION_STYLE_INSTRUCTIONS: Record<Exclude<BaseStyleTone, 'default'>, string> = {
+  friendly: '保持亲和友善的表达。',
+  professional: '保持专业严谨的表达。',
+  concise: '优先简洁直接，先给结论。',
+};
+
+const traitKey = (value: string): string => normalizeTrait(value).toLocaleLowerCase();
+
+const baseStyleToneForTrait = (
+  value: string,
+): Exclude<BaseStyleTone, 'default'> | null =>
+  BASE_STYLE_DUPLICATE_TRAITS[traitKey(value)] ?? null;
+
+export function getTraitSemanticError(rawTrait: string): string | null {
+  const tone = baseStyleToneForTrait(rawTrait);
+  if (!tone) return null;
+  return `“${BASE_STYLE_LABELS[tone]}”属于基础风格，请在“基本风格和语调”中选择。`;
+}
+
+const sanitizeTraits = (value: unknown, dropBaseStyleDuplicates = false): string[] => {
   if (!Array.isArray(value)) return [];
 
   const traits: string[] = [];
@@ -59,6 +99,7 @@ const sanitizeTraits = (value: unknown): string[] => {
     if (typeof item !== 'string') continue;
     const trait = normalizeTrait(item);
     if (!trait || traits.includes(trait)) continue;
+    if (dropBaseStyleDuplicates && baseStyleToneForTrait(trait)) continue;
     traits.push(trait);
     if (traits.length >= MAX_TRAITS) break;
   }
@@ -67,7 +108,12 @@ const sanitizeTraits = (value: unknown): string[] => {
 
 export function addTrait(traits: readonly string[], rawTrait: string): string[] {
   const trait = normalizeTrait(rawTrait);
-  if (!trait || traits.includes(trait) || traits.length >= MAX_TRAITS) {
+  if (
+    !trait ||
+    getTraitSemanticError(trait) ||
+    traits.includes(trait) ||
+    traits.length >= MAX_TRAITS
+  ) {
     return [...traits];
   }
   return [...traits, trait];
@@ -82,11 +128,6 @@ const normalizeInstructions = (value: unknown): string =>
 
 export const PERSONALIZATION_LOAD_FAILED = 'PERSONALIZATION_LOAD_FAILED';
 
-/**
- * Raised when a persisted v2 payload exists but cannot be parsed into the
- * current contract. Load must surface this instead of returning defaults so a
- * later save can never silently overwrite the user's original data.
- */
 export class PersonalizationLoadError extends Error {
   readonly code = PERSONALIZATION_LOAD_FAILED;
 
@@ -96,7 +137,7 @@ export class PersonalizationLoadError extends Error {
   }
 }
 
-const parseSettings = (value: unknown): PersonalizationSettings => {
+const parseCurrentSettings = (value: unknown): PersonalizationSettings => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new PersonalizationLoadError('Stored personalization settings are not an object');
   }
@@ -113,17 +154,10 @@ const parseSettings = (value: unknown): PersonalizationSettings => {
   if (!baseStyleRecord || !isTone(baseStyleRecord.tone)) {
     throw new PersonalizationLoadError('Stored personalization base style is invalid');
   }
-  if (!characteristicsRecord || typeof characteristicsRecord.warmth !== 'boolean') {
-    throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
-  }
-  if (typeof characteristicsRecord.conciseFirst !== 'boolean') {
-    throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
-  }
-  const traitsValue = characteristicsRecord.traits;
-  if (!Array.isArray(traitsValue)) {
+  if (!characteristicsRecord || !Array.isArray(characteristicsRecord.traits)) {
     throw new PersonalizationLoadError('Stored personalization traits are invalid');
   }
-  for (const item of traitsValue) {
+  for (const item of characteristicsRecord.traits) {
     if (typeof item !== 'string') {
       throw new PersonalizationLoadError('Stored personalization traits are invalid');
     }
@@ -135,82 +169,170 @@ const parseSettings = (value: unknown): PersonalizationSettings => {
   return {
     baseStyle: { tone: baseStyleRecord.tone },
     characteristics: {
-      warmth: characteristicsRecord.warmth,
-      // Shape is already validated above; only trim / dedupe / cap the valid strings.
-      traits: sanitizeTraits(traitsValue),
-      conciseFirst: characteristicsRecord.conciseFirst,
+      traits: sanitizeTraits(characteristicsRecord.traits, true),
     },
     instructions: candidate.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH),
   };
 };
 
+const appendMigrationInstructions = (
+  instructions: string,
+  additions: readonly string[],
+): string => {
+  const existing = normalizeInstructions(instructions);
+  const uniqueAdditions = additions.filter(
+    (addition, index) =>
+      additions.indexOf(addition) === index && !existing.includes(addition),
+  );
+  return [existing, ...uniqueAdditions]
+    .filter((part) => part.length > 0)
+    .join('\n')
+    .slice(0, MAX_INSTRUCTIONS_LENGTH);
+};
+
 /**
- * One-time migration from the v1 flat shape (`tone` / `warmthEnabled` /
- * `traits` / `quickReplies` / `instructions`) to the v2 layered shape.
- * Returns null when the payload is not a usable v1 object.
+ * v2 carried two built-in characteristic toggles that overlapped Base style:
+ * warmth ~= friendly and conciseFirst ~= concise. v3 removes those controls.
+ *
+ * Migration keeps one compatible signal as the Base style when no Base style
+ * was explicitly selected. Any additional/conflicting legacy style signal is
+ * moved into visible Custom Instructions instead of becoming a hidden runtime
+ * preference. Base-style-like free-text traits are handled the same way.
  */
-const migrateLegacySettings = (value: unknown): PersonalizationSettings | null => {
+const migrateV2Settings = (value: unknown): PersonalizationSettings => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new PersonalizationLoadError('Stored personalization settings are not an object');
+  }
+  const candidate = value as Record<string, unknown>;
+  const baseStyleRecord =
+    typeof candidate.baseStyle === 'object' && candidate.baseStyle !== null
+      ? (candidate.baseStyle as Record<string, unknown>)
+      : null;
+  const characteristicsRecord =
+    typeof candidate.characteristics === 'object' && candidate.characteristics !== null
+      ? (candidate.characteristics as Record<string, unknown>)
+      : null;
+
+  if (!baseStyleRecord || !isTone(baseStyleRecord.tone)) {
+    throw new PersonalizationLoadError('Stored personalization base style is invalid');
+  }
+  if (
+    !characteristicsRecord ||
+    typeof characteristicsRecord.warmth !== 'boolean' ||
+    typeof characteristicsRecord.conciseFirst !== 'boolean' ||
+    !Array.isArray(characteristicsRecord.traits)
+  ) {
+    throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
+  }
+  for (const item of characteristicsRecord.traits) {
+    if (typeof item !== 'string') {
+      throw new PersonalizationLoadError('Stored personalization traits are invalid');
+    }
+  }
+  if (typeof candidate.instructions !== 'string') {
+    throw new PersonalizationLoadError('Stored personalization instructions are invalid');
+  }
+
+  let tone: BaseStyleTone = baseStyleRecord.tone;
+  const migratedInstructions: string[] = [];
+  const absorbStyleSignal = (target: Exclude<BaseStyleTone, 'default'>) => {
+    if (tone === 'default') {
+      tone = target;
+      return;
+    }
+    if (tone !== target) {
+      migratedInstructions.push(MIGRATION_STYLE_INSTRUCTIONS[target]);
+    }
+  };
+
+  if (characteristicsRecord.warmth) absorbStyleSignal('friendly');
+  if (characteristicsRecord.conciseFirst) absorbStyleSignal('concise');
+
+  const traits: string[] = [];
+  for (const trait of sanitizeTraits(characteristicsRecord.traits)) {
+    const duplicateTone = baseStyleToneForTrait(trait);
+    if (duplicateTone) {
+      absorbStyleSignal(duplicateTone);
+      continue;
+    }
+    traits.push(trait);
+  }
+
+  return {
+    baseStyle: { tone },
+    characteristics: { traits },
+    instructions: appendMigrationInstructions(
+      candidate.instructions,
+      migratedInstructions,
+    ),
+  };
+};
+
+/**
+ * v1 had a flat shape. Its default tone was friendly, so a stored friendly
+ * value cannot prove an explicit user choice and still migrates to default.
+ * From there it passes through the same v2 -> v3 semantic migration.
+ */
+const migrateV1Settings = (value: unknown): PersonalizationSettings | null => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  // v1's default tone was `friendly`, so a v1 `friendly` cannot prove the user
-  // actively chose it. Migrate it to the explicit v2 `default` instead of
-  // fabricating a user choice; professional/concise are preserved as choices.
   const migratedTone: BaseStyleTone =
     candidate.tone === 'professional' || candidate.tone === 'concise'
       ? candidate.tone
       : DEFAULT_PERSONALIZATION_SETTINGS.baseStyle.tone;
-  return {
+
+  return migrateV2Settings({
     baseStyle: { tone: migratedTone },
     characteristics: {
-      warmth:
-        typeof candidate.warmthEnabled === 'boolean'
-          ? candidate.warmthEnabled
-          : DEFAULT_PERSONALIZATION_SETTINGS.characteristics.warmth,
+      warmth: typeof candidate.warmthEnabled === 'boolean' ? candidate.warmthEnabled : false,
       traits: sanitizeTraits(candidate.traits),
-      // v1 `quickReplies` (prefer shorter answers) maps onto the concise characteristic.
-      conciseFirst:
-        typeof candidate.quickReplies === 'boolean'
-          ? candidate.quickReplies
-          : DEFAULT_PERSONALIZATION_SETTINGS.characteristics.conciseFirst,
+      conciseFirst: typeof candidate.quickReplies === 'boolean' ? candidate.quickReplies : false,
     },
     instructions: normalizeInstructions(candidate.instructions),
-  };
+  });
 };
 
 export async function loadPersonalizationSettings(
   store: LocalKeyValueStore = localKeyValueStore,
 ): Promise<PersonalizationSettings> {
-  const raw = await store.get(PERSONALIZATION_KEY);
-  if (raw !== null) {
-    // v2 exists but is unreadable: surface a load failure. Returning defaults
-    // here would make the UI believe loading succeeded and a later save could
-    // overwrite the user's original payload.
+  const currentRaw = await store.get(PERSONALIZATION_KEY);
+  if (currentRaw !== null) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw) as unknown;
+      parsed = JSON.parse(currentRaw) as unknown;
     } catch {
       throw new PersonalizationLoadError('Stored personalization settings are not valid JSON');
     }
-    return parseSettings(parsed);
+    return parseCurrentSettings(parsed);
   }
 
-  // No v2 payload yet: attempt a single explicit migration from v1. A failed
-  // migration must not clobber the legacy value, so the write only happens
-  // after the legacy payload parsed into a real settings object. Unreadable v1
-  // data is not a load failure: it yields defaults and stays untouched.
-  const legacyRaw = await store.get(LEGACY_PERSONALIZATION_KEY);
-  if (legacyRaw === null) return DEFAULT_PERSONALIZATION_SETTINGS;
+  const v2Raw = await store.get(LEGACY_PERSONALIZATION_V2_KEY);
+  if (v2Raw !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(v2Raw) as unknown;
+    } catch {
+      throw new PersonalizationLoadError('Stored personalization settings are not valid JSON');
+    }
+    const migrated = migrateV2Settings(parsed);
+    await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
+    await store.remove(LEGACY_PERSONALIZATION_V2_KEY);
+    return migrated;
+  }
+
+  const v1Raw = await store.get(LEGACY_PERSONALIZATION_V1_KEY);
+  if (v1Raw === null) return DEFAULT_PERSONALIZATION_SETTINGS;
 
   let migrated: PersonalizationSettings | null = null;
   try {
-    migrated = migrateLegacySettings(JSON.parse(legacyRaw) as unknown);
+    migrated = migrateV1Settings(JSON.parse(v1Raw) as unknown);
   } catch {
     migrated = null;
   }
   if (!migrated) return DEFAULT_PERSONALIZATION_SETTINGS;
 
   await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
-  await store.remove(LEGACY_PERSONALIZATION_KEY);
+  await store.remove(LEGACY_PERSONALIZATION_V1_KEY);
   return migrated;
 }
 
