@@ -356,7 +356,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
       left.model === right.model &&
       left.protocol === right.protocol &&
       left.toolGatewayId === right.toolGatewayId &&
-      left.compatibility?.reasoningTags === right.compatibility?.reasoningTags
+      left.requiresStandardProtocolReview ===
+        right.requiresStandardProtocolReview
     );
   }
 
