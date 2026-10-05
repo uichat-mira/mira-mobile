@@ -403,6 +403,106 @@ describe('useShiyanTaskDetailOrchestration polling', () => {
     expect(mock(deps.getTaskContent).mock.calls.length).toBe(contentCalls + 1);
   });
 
+  it('does not let a silent poll invalidate an in-flight foreground refresh', async () => {
+    jest.useFakeTimers();
+
+    const activeTask = makeTask({
+      lifecycle: 'active',
+      currentStage: 'transcribe',
+      stages: [stage({ stage: 'transcribe', status: 'running' })],
+    });
+    const deps = makeDeps({
+      getCaptureTask: jest.fn(async () => ({ task: activeTask })),
+    });
+    await renderProbe(deps);
+    await ReactTestRenderer.act(async () => {
+      await handle?.refreshAll();
+    });
+
+    let resolveForeground: (value: { task: ShiyanCaptureTaskView }) => void = () => undefined;
+    const foreground = new Promise<{ task: ShiyanCaptureTaskView }>((resolve) => {
+      resolveForeground = resolve;
+    });
+    mock(deps.getCaptureTask)
+      .mockImplementationOnce(() => foreground)
+      .mockImplementationOnce(async () => ({
+        task: makeTask({
+          ...activeTask,
+          title: 'poll snapshot',
+        }),
+      }));
+
+    await ReactTestRenderer.act(async () => {
+      void handle?.refreshAll();
+      await flush();
+      jest.advanceTimersByTime(5000);
+      await flush();
+    });
+    expect(handle?.task?.title).toBe('poll snapshot');
+
+    await ReactTestRenderer.act(async () => {
+      resolveForeground({
+        task: makeTask({
+          ...activeTask,
+          title: 'foreground refresh',
+        }),
+      });
+      await flush();
+    });
+
+    expect(handle?.task?.title).toBe('foreground refresh');
+    expect(handle?.loading).toBe(false);
+  });
+
+  it('does not let an older silent poll overwrite a later foreground refresh', async () => {
+    jest.useFakeTimers();
+
+    const activeTask = makeTask({
+      lifecycle: 'active',
+      currentStage: 'transcribe',
+      stages: [stage({ stage: 'transcribe', status: 'running' })],
+    });
+    const deps = makeDeps({
+      getCaptureTask: jest.fn(async () => ({ task: activeTask })),
+    });
+    await renderProbe(deps);
+    await ReactTestRenderer.act(async () => {
+      await handle?.refreshAll();
+    });
+
+    let resolvePoll: (value: { task: ShiyanCaptureTaskView }) => void = () => undefined;
+    const poll = new Promise<{ task: ShiyanCaptureTaskView }>((resolve) => {
+      resolvePoll = resolve;
+    });
+    mock(deps.getCaptureTask)
+      .mockImplementationOnce(() => poll)
+      .mockImplementationOnce(async () => ({
+        task: makeTask({
+          ...activeTask,
+          title: 'foreground refresh',
+        }),
+      }));
+
+    await ReactTestRenderer.act(async () => {
+      jest.advanceTimersByTime(5000);
+      await flush();
+      await handle?.refreshAll();
+    });
+    expect(handle?.task?.title).toBe('foreground refresh');
+
+    await ReactTestRenderer.act(async () => {
+      resolvePoll({
+        task: makeTask({
+          ...activeTask,
+          title: 'stale poll',
+        }),
+      });
+      await flush();
+    });
+
+    expect(handle?.task?.title).toBe('foreground refresh');
+  });
+
   it('stops polling once the current stage has failed', async () => {
     jest.useFakeTimers();
     const deps = makeDeps();
