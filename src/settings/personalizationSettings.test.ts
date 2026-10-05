@@ -209,6 +209,26 @@ describe('personalizationSettings', () => {
     });
   });
 
+  it('treats a missing legacy v2 traits field as an empty additive-traits list', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    await store.set(
+      V2_KEY,
+      JSON.stringify({
+        baseStyle: { tone: 'default' },
+        characteristics: { warmth: true, conciseFirst: false },
+        instructions: '保持克制',
+      }),
+    );
+
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual({
+      baseStyle: { tone: 'friendly' },
+      characteristics: { traits: [] },
+      instructions: '保持克制',
+    });
+    await expect(store.get(V3_KEY)).resolves.not.toBeNull();
+    await expect(store.get(V2_KEY)).resolves.not.toBeNull();
+  });
+
   it('keeps v2 recoverable when writing the migrated v3 value fails', async () => {
     class FailingCurrentWriteStore extends MemoryLocalKeyValueStore {
       override async set(key: string, value: string) {
@@ -225,11 +245,11 @@ describe('personalizationSettings', () => {
     await expect(store.get(V3_KEY)).resolves.toBeNull();
   });
 
-  it('preserves a corrupted v2 payload instead of writing defaults over it', async () => {
+  it('preserves a genuinely malformed v2 traits payload instead of writing defaults over it', async () => {
     const store = new MemoryLocalKeyValueStore();
     const corrupted = {
       baseStyle: { tone: 'professional' },
-      characteristics: { warmth: true, conciseFirst: false },
+      characteristics: { warmth: true, traits: 'not-an-array', conciseFirst: false },
       instructions: '保持克制',
     };
     await store.set(V2_KEY, JSON.stringify(corrupted));
