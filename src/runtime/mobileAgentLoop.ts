@@ -1,4 +1,4 @@
-import type { OpenAiCompatibleMessage, OpenAiCompatibleTool } from '../provider/openAiCompatibleClient';
+import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import type { RuntimeEvent } from './conversationRuntime';
 import {
   ToolApprovalRequiredError,
@@ -22,14 +22,14 @@ export interface MobileAgentLoopOptions {
 }
 
 export type AgentModelCall = (
-  messages: readonly OpenAiCompatibleMessage[],
-  tools: readonly OpenAiCompatibleTool[],
+  messages: readonly OpenAiMessage[],
+  tools: readonly OpenAiTool[],
 ) => Promise<AsyncIterable<RuntimeEvent>>;
 
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
 
-const toOpenAiTool = (manifest: ToolManifest): OpenAiCompatibleTool => ({
+const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
   function: {
     name: manifest.name,
@@ -42,7 +42,7 @@ export class MobileAgentLoop {
   constructor(private readonly gateway: ToolGatewayClient) {}
 
   async run(
-    initialMessages: readonly OpenAiCompatibleMessage[],
+    initialMessages: readonly OpenAiMessage[],
     modelCall: AgentModelCall,
     options: MobileAgentLoopOptions = {},
   ): Promise<AsyncIterable<RuntimeEvent>> {
