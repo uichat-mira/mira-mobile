@@ -189,7 +189,7 @@ export function PersonalizationScreen() {
           <ChevronDown size={20} color={colors.text.muted} />
         </Pressable>
         <Text style={[styles.help, { color: colors.text.muted }]}>
-          先选择一个基础 preset；下面的额外特征只在其上增量调整。
+          先选择一个基础风格；下面的额外特征只在其上增量调整。
         </Text>
 
         <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>额外特征</Text>
