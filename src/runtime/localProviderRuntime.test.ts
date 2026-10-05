@@ -153,6 +153,165 @@ describe('LocalProviderRuntime', () => {
   });
 });
 
+
+describe('LocalProviderRuntime Provider deletion', () => {
+  const otherConfig: LocalProviderConfig = {
+    ...config,
+    id: 'provider-b',
+    name: 'Provider B',
+    model: 'model-b',
+  };
+
+  const createDeletionRuntime = async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([config, otherConfig]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'key-a');
+    await credentialStore.save(otherConfig.id, 'key-b');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamChat: jest.fn(async () => (async function* () {
+          yield { type: 'finish', reason: 'stop' as const };
+        })()),
+      } as unknown as OpenAiCompatibleClient),
+    });
+    return { runtime, configStore, credentialStore, repository };
+  };
+
+  it('deletes only the selected Provider, its credential, and its owned sessions', async () => {
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime();
+    const first = await runtime.createSession('A1', config.id);
+    const second = await runtime.createSession('A2', config.id);
+    const other = await runtime.createSession('B1', otherConfig.id);
+
+    await expect(runtime.getProviderDeletionImpact(config.id)).resolves.toEqual({
+      providerId: config.id,
+      sessionCount: 2,
+    });
+
+    await expect(runtime.deleteProvider(config.id, 2)).resolves.toEqual({
+      providerId: config.id,
+      sessionCount: 2,
+      deletedSessionIds: [second.id, first.id],
+    });
+
+    await expect(configStore.load()).resolves.toEqual([otherConfig]);
+    await expect(credentialStore.load(config.id)).resolves.toBeNull();
+    await expect(credentialStore.load(otherConfig.id)).resolves.toBe('key-b');
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+    await expect(repository.list(otherConfig.id)).resolves.toMatchObject([
+      { id: other.id, title: 'B1' },
+    ]);
+    await expect(runtime.listSessions()).resolves.toMatchObject([
+      {
+        id: other.id,
+        providerName: 'Provider B',
+        providerModel: 'model-b',
+      },
+    ]);
+  });
+
+  it('deletes a Provider with zero conversations without touching another Provider', async () => {
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime();
+    const other = await runtime.createSession('B1', otherConfig.id);
+
+    await expect(runtime.deleteProvider(config.id, 0)).resolves.toEqual({
+      providerId: config.id,
+      sessionCount: 0,
+      deletedSessionIds: [],
+    });
+
+    await expect(configStore.load()).resolves.toEqual([otherConfig]);
+    await expect(credentialStore.load(config.id)).resolves.toBeNull();
+    await expect(credentialStore.load(otherConfig.id)).resolves.toBe('key-b');
+    await expect(repository.list()).resolves.toMatchObject([
+      { id: other.id, title: 'B1' },
+    ]);
+  });
+
+  it('requires reconfirmation when the owned conversation count changed', async () => {
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime();
+    await runtime.createSession('A1', config.id);
+    const impact = await runtime.getProviderDeletionImpact(config.id);
+    await runtime.createSession('A2', config.id);
+
+    await expect(
+      runtime.deleteProvider(config.id, impact.sessionCount),
+    ).rejects.toThrow('数量已变化');
+
+    await expect(configStore.load()).resolves.toEqual([config, otherConfig]);
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+    await expect(repository.list(config.id)).resolves.toHaveLength(2);
+  });
+
+  it('refuses deletion while the selected Provider still owns an active run', async () => {
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime();
+    const session = await runtime.createSession('Running', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      '正在执行本地请求',
+    );
+    await expect(configStore.load()).resolves.toEqual([config, otherConfig]);
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+    await expect(repository.get(session.id)).resolves.toBeDefined();
+
+    await drain(stream);
+    await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+    await expect(repository.get(session.id)).rejects.toThrow('not found');
+  });
+
+  it('blocks new sessions and sends while deletion is in progress', async () => {
+    const { runtime, credentialStore, repository } =
+      await createDeletionRuntime();
+    const session = await runtime.createSession('Delete me', config.id);
+
+    let releaseClear!: () => void;
+    let signalClearStarted!: () => void;
+    const clearGate = new Promise<void>((resolve) => {
+      releaseClear = resolve;
+    });
+    const clearStarted = new Promise<void>((resolve) => {
+      signalClearStarted = resolve;
+    });
+    const clearCredential = credentialStore.clear.bind(credentialStore);
+    jest.spyOn(credentialStore, 'clear').mockImplementation(async (providerId) => {
+      signalClearStarted();
+      await clearGate;
+      await clearCredential(providerId);
+    });
+
+    const deletion = runtime.deleteProvider(config.id, 1);
+    await clearStarted;
+
+    await expect(runtime.createSession('Too late', config.id)).rejects.toThrow(
+      '正在删除',
+    );
+    await expect(runtime.sendMessage(session.id, 'Too late')).rejects.toThrow(
+      '正在删除',
+    );
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+
+    releaseClear();
+    await expect(deletion).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+  });
+});
+
 const createPersonalizationRuntime = async (
   personalization: PersonalizationSettings,
   loadPersonalization: () => Promise<PersonalizationSettings> = async () => personalization,
