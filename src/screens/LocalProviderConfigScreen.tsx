@@ -346,7 +346,12 @@ export function LocalProviderConfigScreen() {
         </Text>
         {config.requiresStandardProtocolReview ? (
           <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
-            此配置由旧版本迁移而来，需要确认标准协议设置。旧版 reasoning-tag 兼容已移除；请检查 Base URL、协议和模型后重新保存。
+            此配置由旧版本迁移而来，Base URL 不是可确认的标准 OpenAI 根地址。请检查 Base URL、协议和模型后重新保存。
+          </Text>
+        ) : null}
+        {config.legacyReasoningBehaviorChanged ? (
+          <Text style={[styles.reviewWarning, { color: colors.text.soft }]}>
+            旧版 reasoning-tag 过滤兼容已移除；此标准协议配置仍可继续使用。请确认模型输出符合标准协议，重新保存后不再提示。
           </Text>
         ) : null}
         <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey && !deletingProvider} />
