@@ -184,7 +184,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
   };
 
   const createDeletionRuntime = async (
-    stageSessionReferenceRemoval = jest.fn(async () => jest.fn(async () => undefined)),
+    stageSessionReferenceRemoval = jest.fn(async () => ({
+      commit: jest.fn(),
+      rollback: jest.fn(async () => undefined),
+    })),
   ) => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
     await configStore.save([config, otherConfig]);
@@ -315,8 +318,12 @@ describe('LocalProviderRuntime Provider deletion', () => {
   });
 
   it('restores staged references when the canonical session cascade fails', async () => {
-    const restoreReferences = jest.fn(async () => undefined);
-    const stageSessionReferenceRemoval = jest.fn(async () => restoreReferences);
+    const rollbackReferences = jest.fn(async () => undefined);
+    const commitReferences = jest.fn();
+    const stageSessionReferenceRemoval = jest.fn(async () => ({
+      commit: commitReferences,
+      rollback: rollbackReferences,
+    }));
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime(stageSessionReferenceRemoval);
     const session = await runtime.createSession('Keep me', config.id);
@@ -329,7 +336,8 @@ describe('LocalProviderRuntime Provider deletion', () => {
     );
 
     expect(stageSessionReferenceRemoval).toHaveBeenCalledWith([session.id]);
-    expect(restoreReferences).toHaveBeenCalledTimes(1);
+    expect(rollbackReferences).toHaveBeenCalledTimes(1);
+    expect(commitReferences).not.toHaveBeenCalled();
     await expect(configStore.load()).resolves.toEqual([
       storedConfig(otherConfig),
       storedConfig(config),
@@ -372,9 +380,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
   });
 
   it('rejects the cascade when the frozen session id set changes at the same count', async () => {
-    const stageSessionReferenceRemoval = jest.fn(
-      async () => jest.fn(async () => undefined),
-    );
+    const stageSessionReferenceRemoval = jest.fn(async () => ({
+      commit: jest.fn(),
+      rollback: jest.fn(async () => undefined),
+    }));
     const {
       runtime,
       configStore,
@@ -387,7 +396,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
     stageSessionReferenceRemoval.mockImplementationOnce(async () => {
       await repository.delete(first.id);
       await repository.create('provider-a', 'A3');
-      return jest.fn(async () => undefined);
+      return {
+        commit: jest.fn(),
+        rollback: jest.fn(async () => undefined),
+      };
     });
 
     await expect(runtime.deleteProvider(config.id, 2)).rejects.toMatchObject({
