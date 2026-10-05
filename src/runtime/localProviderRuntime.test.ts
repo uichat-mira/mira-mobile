@@ -513,6 +513,52 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(credentialStore.load(config.id)).resolves.toBeNull();
   });
 
+  it('cancels every pending lazy send when no local run has started yet', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const first = await runtime.createSession('Pending first', config.id);
+    const second = await runtime.createSession('Pending second', config.id);
+    const firstStream = await runtime.sendMessage(first.id, 'first');
+    const secondStream = await runtime.sendMessage(second.id, 'second');
+
+    runtime.cancelActiveRun();
+
+    await expect(
+      firstStream[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('Local Provider request was cancelled');
+    await expect(
+      secondStream[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('Local Provider request was cancelled');
+    await expect(repository.getMessages(first.id)).resolves.toEqual([]);
+    await expect(repository.getMessages(second.id)).resolves.toEqual([]);
+  });
+
+  it('does not clear credential storage when the Provider had no stored key', async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([config]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    const clear = jest.spyOn(credentialStore, 'clear');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      stageSessionReferenceRemoval: async () => ({
+        commit: jest.fn(),
+        rollback: jest.fn(async () => undefined),
+      }),
+    });
+    await runtime.createSession('No key', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new Error('session persistence failed'),
+    );
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      'session persistence failed',
+    );
+    expect(clear).not.toHaveBeenCalled();
+    await expect(credentialStore.load(config.id)).resolves.toBeNull();
+  });
+
   it('cancels every unconsumed send for the Provider before cascade deletion', async () => {
     const { runtime, repository } = await createDeletionRuntime();
     const first = await runtime.createSession('Pending first', config.id);
