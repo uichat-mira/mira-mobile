@@ -345,72 +345,70 @@ export class LocalProviderRuntime implements ConversationRuntime {
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    const session = await this.sessionRepository.get(sessionId);
-    const providerId = await this.sessionRepository.getProviderId(sessionId);
-    const releaseProviderOperation = this.acquireProviderOperation(providerId);
-    let activeSend: ActiveProviderSend | null = null;
+    const runtime = this;
 
-    try {
-      const configs = await this.configStore.load();
-      const config = configs.find((item) => item.id === providerId);
-      if (!config) {
-        throw new Error('Local Provider configuration was not found');
-      }
-      const apiKey = await this.credentialStore.load(config.id);
-      if (!apiKey) {
-        throw new Error('Local Provider API key is not configured');
-      }
+    return (async function* () {
+      const session = await runtime.sessionRepository.get(sessionId);
+      const providerId =
+        await runtime.sessionRepository.getProviderId(sessionId);
+      const releaseProviderOperation =
+        runtime.acquireProviderOperation(providerId);
+      let activeSend: ActiveProviderSend | null = null;
 
-      const executor = createLocalProviderExecutor(
-        this.clientFactory(config, apiKey),
-        config,
-      );
-      activeSend = this.trackProviderSend(
-        providerId,
-        () => executor.client.cancelActiveRun(),
-        releaseProviderOperation,
-      );
-
-      const stream = await executeLocalConversationTurn(
-        {
-          session,
-          input,
-          messageId: options?.messageId,
-          agentEnabled: options?.agentEnabled,
-        },
-        {
-          repository: this.sessionRepository,
-          executor,
-          providerExecution: this.providerExecution,
-          agentRun: this.agentRun,
-          assembleRequest: (canonicalMessages) =>
-            assembleLocalRequestContext(canonicalMessages, {
-              loadPersonalization: this.loadPersonalization,
-              memoryService: this.memoryService,
-            }),
-          memoryService: this.memoryService,
-          config,
-        },
-      );
-
-      const trackedSend = activeSend;
-      return (async function* (runtime: LocalProviderRuntime) {
-        try {
-          for await (const event of stream) {
-            yield event;
-          }
-        } finally {
-          runtime.finishProviderSend(trackedSend);
+      try {
+        const configs = await runtime.configStore.load();
+        const config = configs.find((item) => item.id === providerId);
+        if (!config) {
+          throw new Error('Local Provider configuration was not found');
         }
-      })(this);
-    } catch (error) {
-      if (activeSend) {
-        this.finishProviderSend(activeSend);
-      } else {
-        releaseProviderOperation();
+        const apiKey = await runtime.credentialStore.load(config.id);
+        if (!apiKey) {
+          throw new Error('Local Provider API key is not configured');
+        }
+
+        const executor = createLocalProviderExecutor(
+          runtime.clientFactory(config, apiKey),
+          config,
+        );
+        activeSend = runtime.trackProviderSend(
+          providerId,
+          () => executor.client.cancelActiveRun(),
+          releaseProviderOperation,
+        );
+
+        const stream = await executeLocalConversationTurn(
+          {
+            session,
+            input,
+            messageId: options?.messageId,
+            agentEnabled: options?.agentEnabled,
+          },
+          {
+            repository: runtime.sessionRepository,
+            executor,
+            providerExecution: runtime.providerExecution,
+            agentRun: runtime.agentRun,
+            assembleRequest: (canonicalMessages) =>
+              assembleLocalRequestContext(canonicalMessages, {
+                loadPersonalization: runtime.loadPersonalization,
+                memoryService: runtime.memoryService,
+              }),
+            memoryService: runtime.memoryService,
+            config,
+          },
+        );
+
+        for await (const event of stream) {
+          yield event;
+        }
+      } finally {
+        if (activeSend) {
+          runtime.finishProviderSend(activeSend);
+        } else {
+          releaseProviderOperation();
+        }
       }
-      throw error;
-    }
+    })();
   }
 
   getAgentEnabled(sessionId: string): Promise<boolean> {
