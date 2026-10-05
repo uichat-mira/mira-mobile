@@ -92,7 +92,7 @@ interface ActiveProviderSend {
   providerId: string;
   cancelled: boolean;
   cancelProviderRun: (() => void) | null;
-  close: (() => void) | null;
+  close: (() => Promise<void>) | null;
 }
 
 export interface LocalProviderRuntimeOptions {
