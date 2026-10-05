@@ -345,12 +345,19 @@ export class LocalProviderRuntime implements ConversationRuntime {
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    if (this.deletingProviderIds.has(providerId)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
     const runtime = this;
 
     return (async function* () {
       const session = await runtime.sessionRepository.get(sessionId);
-      const providerId =
+      const currentProviderId =
         await runtime.sessionRepository.getProviderId(sessionId);
+      if (currentProviderId !== providerId) {
+        throw new Error('Local Provider session ownership changed');
+      }
       const releaseProviderOperation =
         runtime.acquireProviderOperation(providerId);
       let activeSend: ActiveProviderSend | null = null;
