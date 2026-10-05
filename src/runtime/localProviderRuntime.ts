@@ -448,14 +448,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
         rollbackComplete = restoredCredential === credentialToRestore;
       }
 
+      if (!rollbackComplete) {
+        throw new LocalProviderDeletionRollbackIncompleteError(error);
+      }
       if (error instanceof LocalProviderSessionRollbackIncompleteError) {
         throw new LocalProviderDeletionRollbackIncompleteError(
           error,
           'canonical-sessions',
         );
-      }
-      if (!rollbackComplete) {
-        throw new LocalProviderDeletionRollbackIncompleteError(error);
       }
       if (error instanceof LocalProviderSessionSetChangedError) {
         throw new LocalProviderDeletionScopeChangedError(
