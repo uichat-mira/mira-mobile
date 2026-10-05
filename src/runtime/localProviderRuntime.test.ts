@@ -711,8 +711,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
         baseUrl: value.baseUrl,
         name: value.name,
         id: value.id,
-        compatibility: value.compatibility,
         ...(value.toolGatewayId ? { toolGatewayId: value.toolGatewayId } : {}),
+        ...(value.requiresStandardProtocolReview
+          ? { requiresStandardProtocolReview: true }
+          : {}),
       };
       await originalUpsert(reordered);
     });
