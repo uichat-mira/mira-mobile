@@ -60,6 +60,7 @@ describe('ProviderConfigStore', () => {
         baseUrl,
         model: 'legacy-model',
         protocol: 'openai-chat-completions',
+        requiresStandardProtocolReview: true,
       },
     ]);
 
@@ -68,6 +69,7 @@ describe('ProviderConfigStore', () => {
       expect.objectContaining({
         id: 'legacy',
         protocol: 'openai-chat-completions',
+        requiresStandardProtocolReview: true,
       }),
     ]);
     await expect(
@@ -151,6 +153,7 @@ describe('ProviderConfigStore', () => {
 
     const loaded = await new ProviderConfigStore(storage).load();
     expect(loaded[0]).not.toHaveProperty('compatibility');
+    expect(loaded[0]).not.toHaveProperty('requiresStandardProtocolReview');
   });
 
   it('clears a stale migration review flag when a corrected HTTPS Base URL is upserted', async () => {
