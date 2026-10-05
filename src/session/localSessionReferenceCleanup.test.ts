@@ -5,7 +5,7 @@ import {
   stageLocalSessionReferenceRemoval,
   type LocalSessionReferenceCleanupDependencies,
 } from './localSessionReferenceCleanup';
-import { assertThreadReferenceMutationAllowed } from '../store/threadReferenceMutationFence';
+import { isThreadReferenceMutationFenced } from '../store/threadReferenceMutationFence';
 
 const lastOpened: LastOpenedSession = {
   sessionId: 'local-a',
@@ -111,7 +111,7 @@ describe('localSessionReferenceCleanup', () => {
     );
 
     await expect(transaction.rollback()).rejects.toThrow('回滚未完整完成');
-    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
+    expect(isThreadReferenceMutationFenced('local-a')).toBe(false);
   });
 
   it('ignores unrelated pin and read changes when verifying rollback', async () => {
@@ -154,7 +154,7 @@ describe('localSessionReferenceCleanup', () => {
     );
 
     await expect(transaction.rollback()).resolves.toBeUndefined();
-    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
+    expect(isThreadReferenceMutationFenced('local-a')).toBe(false);
   });
 
   it('fences only staged session ids until the transaction settles', async () => {
@@ -165,14 +165,12 @@ describe('localSessionReferenceCleanup', () => {
       dependencies,
     );
 
-    expect(() => assertThreadReferenceMutationAllowed('local-a')).toThrow(
-      'locked',
-    );
-    expect(() => assertThreadReferenceMutationAllowed('local-b')).not.toThrow();
+    expect(isThreadReferenceMutationFenced('local-a')).toBe(true);
+    expect(isThreadReferenceMutationFenced('local-b')).toBe(false);
 
     transaction.commit();
 
-    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
+    expect(isThreadReferenceMutationFenced('local-a')).toBe(false);
   });
 
   it('does not touch reference stores for a zero-session cascade', async () => {
