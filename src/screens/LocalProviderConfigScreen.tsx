@@ -470,7 +470,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   protocolLabel: { fontSize: fontSize.button, fontWeight: '600' },
-  protocolEndpoint: { fontSize: fontSize.bodySm },
+  protocolEndpoint: { fontSize: fontSize.button },
   label: { fontSize: fontSize.button, fontWeight: '600' },
   input: { minHeight: sizing.touchTarget, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: spacing.md, fontSize: fontSize.button },
   credentialHelp: { marginTop: -spacing.xs, fontSize: fontSize.button, lineHeight: 20 },
