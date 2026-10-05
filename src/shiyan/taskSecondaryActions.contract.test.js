@@ -3,7 +3,7 @@ const { resolve } = require('node:path');
 
 const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
 
-const home = readSource('src/shiyan/ShiyanRecordingScreens.tsx');
+const home = readSource('src/shiyan/ShiyanHomeScreen.tsx');
 const detail = readSource('src/shiyan/ShiyanTaskDetailScreen.tsx');
 const wrapper = readSource('src/shiyan/ShiyanTaskDetailWithDeliveryScreen.tsx');
 const sheet = readSource('src/shiyan/ShiyanActionSheet.tsx');

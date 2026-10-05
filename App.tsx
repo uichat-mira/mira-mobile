@@ -28,12 +28,10 @@ import {
   PluginsScreen,
   ShiyanSceneConfigScreen,
 } from './src/shiyan/ShiyanScreens';
-import {
-  ShiyanHomeScreen,
-  ShiyanLocalDraftsScreen,
-  ShiyanRecordScreen,
-  ShiyanSceneSelectScreen,
-} from './src/shiyan/ShiyanRecordingScreens';
+import { ShiyanHomeScreen } from './src/shiyan/ShiyanHomeScreen';
+import { ShiyanSceneSelectScreen } from './src/shiyan/ShiyanSceneSelectScreen';
+import { ShiyanRecordScreen } from './src/shiyan/ShiyanRecordScreen';
+import { ShiyanLocalDraftsScreen } from './src/shiyan/ShiyanLocalDraftsScreen';
 import { ShiyanCaptureSubmitScreen } from './src/shiyan/ShiyanCaptureSubmitScreen';
 import { ShiyanCloudConfigScreen } from './src/shiyan/ShiyanCloudConfigScreen';
 import { ShiyanHistoryScreen } from './src/shiyan/ShiyanHistoryScreen';

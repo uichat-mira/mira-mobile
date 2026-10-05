@@ -188,11 +188,17 @@ jest.mock('../src/shiyan/ShiyanScreens', () => ({
   PluginsScreen: 'PluginsScreen',
   ShiyanSceneConfigScreen: 'ShiyanSceneConfigScreen',
 }));
-jest.mock('../src/shiyan/ShiyanRecordingScreens', () => ({
+jest.mock('../src/shiyan/ShiyanHomeScreen', () => ({
   ShiyanHomeScreen: 'ShiyanHomeScreen',
-  ShiyanLocalDraftsScreen: 'ShiyanLocalDraftsScreen',
-  ShiyanRecordScreen: 'ShiyanRecordScreen',
+}));
+jest.mock('../src/shiyan/ShiyanSceneSelectScreen', () => ({
   ShiyanSceneSelectScreen: 'ShiyanSceneSelectScreen',
+}));
+jest.mock('../src/shiyan/ShiyanRecordScreen', () => ({
+  ShiyanRecordScreen: 'ShiyanRecordScreen',
+}));
+jest.mock('../src/shiyan/ShiyanLocalDraftsScreen', () => ({
+  ShiyanLocalDraftsScreen: 'ShiyanLocalDraftsScreen',
 }));
 jest.mock('../src/shiyan/ShiyanCaptureSubmitScreen', () => ({
   ShiyanCaptureSubmitScreen: 'ShiyanCaptureSubmitScreen',
