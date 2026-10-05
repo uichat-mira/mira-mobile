@@ -84,6 +84,13 @@ describe('MOB-038 Local Provider configuration', () => {
     );
   });
 
+  it('keeps deleted-session references cleaned when canonical session recovery is incomplete', () => {
+    expect(source).toContain("error.reason === 'canonical-sessions'");
+    expect(source).toContain("'本地对话恢复不完整'");
+    expect(source).toContain('为避免幽灵引用');
+    expect(source).toContain('置顶、未读和启动恢复引用保持清理状态');
+  });
+
   it('surfaces incomplete rollback as a distinct recovery state', () => {
     expect(source).toContain(
       'error instanceof LocalProviderDeletionRollbackIncompleteError',
