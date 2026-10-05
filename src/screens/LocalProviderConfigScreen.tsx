@@ -9,7 +9,6 @@ import { ProviderConfigStore, type LocalProviderConfig } from '../provider/provi
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import {
-  LocalProviderDeletionBlockedByActiveRunError,
   LocalProviderDeletionRollbackIncompleteError,
   LocalProviderDeletionScopeChangedError,
 } from '../runtime/localProviderRuntime';
@@ -177,13 +176,6 @@ export function LocalProviderConfigScreen() {
         }
       }
     } catch (error) {
-      if (error instanceof LocalProviderDeletionBlockedByActiveRunError) {
-        Alert.alert(
-          'Provider 正在执行请求',
-          '请先返回对应的本地对话停止当前生成，再回来删除此 Provider。',
-        );
-        return;
-      }
             if (error instanceof LocalProviderDeletionScopeChangedError) {
         Alert.alert(
           '删除范围已变化',
@@ -232,7 +224,7 @@ export function LocalProviderConfigScreen() {
 
       Alert.alert(
         '删除 Local Provider？',
-        `删除“${config.name || config.id}”的配置和 API Key。\n\n${conversationText}\n\n不会影响其他 Provider、Remote Host、记忆或个性化设置。`,
+        `删除“${config.name || config.id}”的配置和 API Key。\n\n${conversationText}\n\n如该 Provider 正在生成内容，将先停止这些请求再删除。\n\n不会影响其他 Provider、Remote Host、记忆或个性化设置。`,
         [
           { text: '取消', style: 'cancel' },
           {
