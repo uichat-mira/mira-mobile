@@ -237,8 +237,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
   }
 
-  deleteSession(sessionId: string): Promise<void> {
-    return this.sessionRepository.delete(sessionId);
+  async deleteSession(sessionId: string): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderOperation(providerId);
+    try {
+      await this.sessionRepository.delete(sessionId);
+    } finally {
+      release();
+    }
   }
 
   getSession(sessionId: string): Promise<Session> {
