@@ -3,7 +3,7 @@ import { Text } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
-// MOB-049 blocker: a corrupted v2 payload must put the screen into a
+// A corrupted current payload must put the screen into a
 // load-failed / locked state instead of silently showing defaults, so the user
 // cannot overwrite the original persisted data with a single save.
 
