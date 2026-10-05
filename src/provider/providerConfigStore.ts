@@ -66,6 +66,9 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
   }
 
   const baseUrl = record.baseUrl as string;
+  const isHttpsLegacyBase =
+    /^https:\/\//iu.test(baseUrl.trim()) &&
+    isOpenAiStandardBaseUrl(baseUrl);
   return {
     id: record.id as string,
     name: record.name as string,
@@ -75,7 +78,7 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
     ...(typeof record.toolGatewayId === 'string'
       ? { toolGatewayId: record.toolGatewayId }
       : {}),
-    ...(!isOpenAiStandardBaseUrl(baseUrl)
+    ...(!isHttpsLegacyBase
       ? { requiresStandardProtocolReview: true }
       : {}),
   };
