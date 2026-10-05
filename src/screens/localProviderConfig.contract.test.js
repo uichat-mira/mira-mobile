@@ -54,6 +54,12 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).not.toContain('minimax');
   });
 
+  it('labels HTTP Provider URLs as explicit development-only plaintext connections', () => {
+    expect(source).toContain("__DEV__ && /^http:");
+    expect(source).toContain('开发模式 · HTTP 明文连接');
+    expect(source).toContain('仅用于受信任的局域网调试');
+  });
+
   it('blocks only non-standard migrated configs and keeps reasoning migration notice non-blocking', () => {
     expect(source).toContain('config.requiresStandardProtocolReview');
     expect(source).toContain('Base URL 不是可确认的标准 OpenAI 根地址');
