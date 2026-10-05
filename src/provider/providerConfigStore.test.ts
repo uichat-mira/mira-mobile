@@ -60,7 +60,7 @@ describe('ProviderConfigStore', () => {
         baseUrl,
         model: 'legacy-model',
         protocol: 'openai-chat-completions',
-        requiresStandardProtocolReview: true,
+        legacyReasoningBehaviorChanged: true,
       },
     ]);
 
@@ -69,7 +69,7 @@ describe('ProviderConfigStore', () => {
       expect.objectContaining({
         id: 'legacy',
         protocol: 'openai-chat-completions',
-        requiresStandardProtocolReview: true,
+        legacyReasoningBehaviorChanged: true,
       }),
     ]);
     await expect(
@@ -104,6 +104,7 @@ describe('ProviderConfigStore', () => {
         model: 'legacy-model',
         protocol: 'openai-chat-completions',
         requiresStandardProtocolReview: true,
+        legacyReasoningBehaviorChanged: true,
       },
     ]);
   });
@@ -131,6 +132,7 @@ describe('ProviderConfigStore', () => {
         model: 'legacy-model',
         protocol: 'openai-chat-completions',
         requiresStandardProtocolReview: true,
+        legacyReasoningBehaviorChanged: true,
       },
     ]);
   });
@@ -154,6 +156,7 @@ describe('ProviderConfigStore', () => {
     const loaded = await new ProviderConfigStore(storage).load();
     expect(loaded[0]).not.toHaveProperty('compatibility');
     expect(loaded[0]).not.toHaveProperty('requiresStandardProtocolReview');
+    expect(loaded[0]).not.toHaveProperty('legacyReasoningBehaviorChanged');
   });
 
   it('clears a stale migration review flag when a corrected HTTPS Base URL is upserted', async () => {
@@ -186,6 +189,24 @@ describe('ProviderConfigStore', () => {
         model: 'legacy-model',
         protocol: 'openai-chat-completions',
       },
+    ]);
+  });
+
+  it('keeps another provider migration notice when one provider is upserted', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    const store = new ProviderConfigStore(storage);
+    const other: LocalProviderConfig = {
+      ...chatConfig,
+      id: 'other',
+      legacyReasoningBehaviorChanged: true,
+    };
+    await store.save([other, chatConfig]);
+
+    await store.upsert({ ...chatConfig, name: 'Renamed' });
+
+    await expect(store.load()).resolves.toEqual([
+      other,
+      { ...chatConfig, name: 'Renamed' },
     ]);
   });
 
