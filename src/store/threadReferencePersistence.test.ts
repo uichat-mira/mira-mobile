@@ -4,7 +4,7 @@ describe('persistOptimisticThreadReferenceMap', () => {
   it('keeps the optimistic value when persistence succeeds', async () => {
     const previous = { a: 1 };
     const next = { a: 2 };
-    let current = previous;
+    let current: Record<string, number> = previous;
 
     await persistOptimisticThreadReferenceMap(
       previous,
@@ -22,7 +22,7 @@ describe('persistOptimisticThreadReferenceMap', () => {
   it('rolls back when persistence fails and no newer state replaced it', async () => {
     const previous = { a: 1 };
     const next = { a: 2 };
-    let current = previous;
+    let current: Record<string, number> = previous;
 
     await expect(
       persistOptimisticThreadReferenceMap(
@@ -45,7 +45,7 @@ describe('persistOptimisticThreadReferenceMap', () => {
     const previous = { a: 1 };
     const next = { a: 2 };
     const newer = { a: 3 };
-    let current = previous;
+    let current: Record<string, number> = previous;
 
     await expect(
       persistOptimisticThreadReferenceMap(
