@@ -27,6 +27,7 @@ const makeDependencies = () => {
   let lastOpenedState: LastOpenedSession | null = lastOpened;
 
   const dependencies: LocalSessionReferenceCleanupDependencies = {
+    hydrateReferences: jest.fn(async () => undefined),
     removePins: jest.fn(async () => {
       pinsState = {};
       return removedPins;
@@ -57,6 +58,27 @@ const makeDependencies = () => {
 };
 
 describe('localSessionReferenceCleanup', () => {
+  it('hydrates persisted references before activating the deletion fence', async () => {
+    const { dependencies } = makeDependencies();
+    (dependencies.hydrateReferences as jest.Mock).mockImplementationOnce(
+      async () => {
+        expect(isThreadReferenceMutationFenced('local-a')).toBe(false);
+      },
+    );
+    (dependencies.removePins as jest.Mock).mockImplementationOnce(async () => {
+      expect(isThreadReferenceMutationFenced('local-a')).toBe(true);
+      return { 'local-a': '2026-10-05T00:00:00.000Z' };
+    });
+
+    const transaction = await stageLocalSessionReferenceRemoval(
+      ['local-a'],
+      dependencies,
+    );
+
+    expect(dependencies.hydrateReferences).toHaveBeenCalledTimes(1);
+    transaction.commit();
+  });
+
   it('stages exact session references and exposes a rollback callback', async () => {
     const { dependencies, removedPins, removedReadProgress } = makeDependencies();
 
@@ -179,6 +201,7 @@ describe('localSessionReferenceCleanup', () => {
     const transaction = await stageLocalSessionReferenceRemoval([], dependencies);
     transaction.commit();
 
+    expect(dependencies.hydrateReferences).not.toHaveBeenCalled();
     expect(dependencies.removePins).not.toHaveBeenCalled();
     expect(dependencies.removeReadProgress).not.toHaveBeenCalled();
     expect(dependencies.removeLastOpened).not.toHaveBeenCalled();
