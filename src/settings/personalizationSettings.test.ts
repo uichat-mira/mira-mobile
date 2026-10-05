@@ -18,11 +18,28 @@ const validV3 = {
   instructions: '保持克制',
 };
 
-const validV2 = {
-  baseStyle: { tone: 'professional' },
-  characteristics: { warmth: false, traits: ['多用类比'], conciseFirst: false },
-  instructions: '保持克制',
-};
+interface V2Overrides {
+  tone?: 'default' | 'friendly' | 'professional' | 'concise';
+  warmth?: boolean;
+  traits?: string[];
+  conciseFirst?: boolean;
+  instructions?: string;
+}
+
+const v2Payload = ({
+  tone = 'professional',
+  warmth = false,
+  traits = ['多用类比'],
+  conciseFirst = false,
+  instructions = '保持克制',
+}: V2Overrides = {}) => ({
+  baseStyle: { tone },
+  characteristics: { warmth, traits, conciseFirst },
+  instructions,
+});
+
+const persistV2 = (store: MemoryLocalKeyValueStore, overrides?: V2Overrides) =>
+  store.set(V2_KEY, JSON.stringify(v2Payload(overrides)));
 
 describe('personalizationSettings', () => {
   it('uses safe defaults when nothing has been persisted', async () => {
@@ -105,14 +122,7 @@ describe('personalizationSettings', () => {
 
   it('migrates a sole v2 warmth toggle into the friendly Base style', async () => {
     const store = new MemoryLocalKeyValueStore();
-    await store.set(
-      V2_KEY,
-      JSON.stringify({
-        ...validV2,
-        baseStyle: { tone: 'default' },
-        characteristics: { warmth: true, traits: ['多用类比'], conciseFirst: false },
-      }),
-    );
+    await persistV2(store, { tone: 'default', warmth: true });
 
     await expect(loadPersonalizationSettings(store)).resolves.toEqual({
       baseStyle: { tone: 'friendly' },
@@ -125,18 +135,11 @@ describe('personalizationSettings', () => {
 
   it('migrates conflicting v2 style signals into visible Custom Instructions', async () => {
     const store = new MemoryLocalKeyValueStore();
-    await store.set(
-      V2_KEY,
-      JSON.stringify({
-        baseStyle: { tone: 'professional' },
-        characteristics: {
-          warmth: true,
-          traits: ['讲话简短', '给出反例'],
-          conciseFirst: true,
-        },
-        instructions: '保持克制',
-      }),
-    );
+    await persistV2(store, {
+      warmth: true,
+      traits: ['讲话简短', '给出反例'],
+      conciseFirst: true,
+    });
 
     const loaded = await loadPersonalizationSettings(store);
 
@@ -149,18 +152,7 @@ describe('personalizationSettings', () => {
 
   it('is idempotent after a v2 migration and does not append migration instructions twice', async () => {
     const store = new MemoryLocalKeyValueStore();
-    await store.set(
-      V2_KEY,
-      JSON.stringify({
-        baseStyle: { tone: 'professional' },
-        characteristics: {
-          warmth: true,
-          traits: [],
-          conciseFirst: false,
-        },
-        instructions: '保持克制',
-      }),
-    );
+    await persistV2(store, { warmth: true, traits: [] });
 
     const first = await loadPersonalizationSettings(store);
     const second = await loadPersonalizationSettings(store);
@@ -177,14 +169,7 @@ describe('personalizationSettings', () => {
       instructions: '保持克制\n保持亲和友善的表达。',
     };
     await store.set(V3_KEY, JSON.stringify(current));
-    await store.set(
-      V2_KEY,
-      JSON.stringify({
-        baseStyle: { tone: 'professional' },
-        characteristics: { warmth: true, traits: [], conciseFirst: false },
-        instructions: '保持克制',
-      }),
-    );
+    await persistV2(store, { warmth: true, traits: [] });
 
     await expect(loadPersonalizationSettings(store)).resolves.toEqual(current);
     await expect(store.get(V2_KEY)).resolves.not.toBeNull();
@@ -192,14 +177,10 @@ describe('personalizationSettings', () => {
 
   it('promotes an old Base-style-like free-text trait instead of keeping a duplicate Trait', async () => {
     const store = new MemoryLocalKeyValueStore();
-    await store.set(
-      V2_KEY,
-      JSON.stringify({
-        ...validV2,
-        baseStyle: { tone: 'default' },
-        characteristics: { warmth: false, traits: ['讲话简短', '给出反例'], conciseFirst: false },
-      }),
-    );
+    await persistV2(store, {
+      tone: 'default',
+      traits: ['讲话简短', '给出反例'],
+    });
 
     await expect(loadPersonalizationSettings(store)).resolves.toMatchObject({
       baseStyle: { tone: 'concise' },
