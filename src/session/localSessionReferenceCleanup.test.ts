@@ -110,7 +110,7 @@ describe('localSessionReferenceCleanup', () => {
       dependencies,
     );
 
-    await expect(rollback()).rejects.toThrow('回滚未完整完成');
+    await expect(transaction.rollback()).rejects.toThrow('回滚未完整完成');
   });
 
   it('fences only staged session ids until the transaction settles', async () => {
