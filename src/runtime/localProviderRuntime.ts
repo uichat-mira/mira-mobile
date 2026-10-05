@@ -53,15 +53,6 @@ export class LocalProviderDeletionScopeChangedError extends Error {
   }
 }
 
-export class LocalProviderDeletionBlockedByActiveRunError extends Error {
-  readonly code = 'LOCAL_PROVIDER_DELETION_ACTIVE_RUN';
-
-  constructor() {
-    super('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
-    this.name = 'LocalProviderDeletionBlockedByActiveRunError';
-  }
-}
-
 export class LocalProviderDeletionRollbackIncompleteError extends Error {
   readonly code = 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE';
 
@@ -100,6 +91,7 @@ export type StageLocalSessionReferenceRemoval = (
 interface ActiveProviderSend {
   providerId: string;
   cancelled: boolean;
+  cancelProviderRun: (() => void) | null;
   close: (() => void) | null;
 }
 
@@ -223,12 +215,6 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
-  private hasUncancelledProviderSend(providerId: string): boolean {
-    return [...this.activeProviderSends].some(
-      (send) => send.providerId === providerId && !send.cancelled,
-    );
-  }
-
   private hasProviderSend(providerId: string): boolean {
     return [...this.activeProviderSends].some(
       (send) => send.providerId === providerId,
@@ -251,6 +237,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     const send: ActiveProviderSend = {
       providerId: this.requireProviderId(providerId),
       cancelled: false,
+      cancelProviderRun: null,
       close: null,
     };
     this.pendingProviderSend = send;
@@ -293,6 +280,27 @@ export class LocalProviderRuntime implements ConversationRuntime {
       this.pendingProviderSend = null;
     }
     send.close?.();
+  }
+
+  private async cancelProviderSends(providerId: string): Promise<void> {
+    const providerKey = this.requireProviderId(providerId);
+    const closes: Promise<void>[] = [];
+
+    if (this.pendingProviderSend?.providerId === providerKey) {
+      this.pendingProviderSend.cancelled = true;
+      this.pendingProviderSend = null;
+    }
+
+    for (const send of [...this.activeProviderSends]) {
+      if (send.providerId !== providerKey) continue;
+      send.cancelled = true;
+      send.cancelProviderRun?.();
+      if (send.close) {
+        closes.push(send.close());
+      }
+    }
+
+    await Promise.allSettled(closes);
   }
 
   async listSessions(): Promise<Session[]> {
@@ -355,10 +363,6 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (this.deletingProviderIds.has(providerKey)) {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
-    if (this.hasUncancelledProviderSend(providerKey)) {
-      throw new LocalProviderDeletionBlockedByActiveRunError();
-    }
-
     this.deletingProviderIds.add(providerKey);
     let configToRestore: LocalProviderConfig | null = null;
     let credentialToRestore: string | null = null;
@@ -367,6 +371,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     let configRemoved = false;
 
     try {
+      await this.cancelProviderSends(providerKey);
       await this.waitForProviderSends(providerKey);
       await this.waitForProviderMutations(providerKey);
       const configs = await this.configStore.load();
@@ -521,10 +526,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
       runtime.activateProviderSend(preparedSend);
       const activeSend = preparedSend;
       let closeRequested = false;
-      activeSend.close = () => {
+      activeSend.close = async () => {
         if (closeRequested) return;
         closeRequested = true;
-        void generator.return(undefined).catch(() => undefined);
+        await generator.return(undefined).then(
+          () => undefined,
+          () => undefined,
+        );
       };
 
       try {
@@ -559,7 +567,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
           runtime.clientFactory(config, apiKey),
           config,
         );
+        activeSend.cancelProviderRun = () => executor.client.cancelActiveRun();
         if (activeSend.cancelled) {
+          activeSend.cancelProviderRun();
           throw new Error('Local Provider request was cancelled');
         }
 
@@ -589,6 +599,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           yield event;
         }
       } finally {
+        activeSend.cancelProviderRun = null;
         activeSend.close = null;
         runtime.finishProviderSend(activeSend);
       }
