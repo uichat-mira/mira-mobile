@@ -5,6 +5,13 @@ import {
   ThreadPinRepository,
   type ThreadPinMap,
 } from './threadPinning';
+import {
+  filterUnfencedThreadReferences,
+  isThreadReferenceMutationFenced,
+  removeThreadReferences,
+  restoreThreadReferences,
+} from './threadReferenceMutationFence';
+import { persistOptimisticThreadReferenceMap } from './threadReferencePersistence';
 
 const repository = new ThreadPinRepository(localKeyValueStore);
 let hydratePromise: Promise<void> | null = null;
@@ -15,6 +22,8 @@ interface ThreadPinStore {
   hydrate: () => Promise<void>;
   pinThread: (threadId: string) => Promise<void>;
   unpinThread: (threadId: string) => Promise<void>;
+  removeThreads: (threadIds: readonly string[]) => Promise<ThreadPinMap>;
+  restoreThreads: (pins: ThreadPinMap) => Promise<void>;
 }
 
 export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
@@ -27,7 +36,11 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
       hydratePromise = repository
         .load()
         .then((pinnedAtByThreadId) => {
-          set({ pinnedAtByThreadId, hydrated: true });
+          set({
+            pinnedAtByThreadId:
+              filterUnfencedThreadReferences(pinnedAtByThreadId),
+            hydrated: true,
+          });
         })
         .finally(() => {
           hydratePromise = null;
@@ -38,7 +51,9 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
 
   pinThread: async (threadId) => {
     if (!threadId.trim()) return;
+    if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previous = get().pinnedAtByThreadId;
     if (isThreadPinned(previous, threadId)) return;
 
@@ -46,32 +61,60 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
       ...previous,
       [threadId]: new Date().toISOString(),
     };
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   unpinThread: async (threadId) => {
+    if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previous = get().pinnedAtByThreadId;
     if (!isThreadPinned(previous, threadId)) return;
 
     const next = { ...previous };
     delete next[threadId];
-    set({ pinnedAtByThreadId: next });
-    try {
-      await repository.save(next);
-    } catch (error) {
-      if (get().pinnedAtByThreadId === next) {
-        set({ pinnedAtByThreadId: previous });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
+  },
+
+  removeThreads: async (threadIds) => {
+    await get().hydrate();
+    const previous = get().pinnedAtByThreadId;
+    const { next, removed } = removeThreadReferences(previous, threadIds);
+    if (Object.keys(removed).length === 0) return removed;
+
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
+    return removed;
+  },
+
+  restoreThreads: async (pins) => {
+    if (Object.keys(pins).length === 0) return;
+    await get().hydrate();
+    const previous = get().pinnedAtByThreadId;
+    const next = restoreThreadReferences(previous, pins);
+    await persistOptimisticThreadReferenceMap(
+      previous,
+      next,
+      (value) => set({ pinnedAtByThreadId: value }),
+      () => get().pinnedAtByThreadId,
+      (value) => repository.save(value),
+    );
   },
 }));

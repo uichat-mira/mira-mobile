@@ -21,6 +21,20 @@ let localSessionIdSequence = 0;
 
 export const DEFAULT_LOCAL_SESSION_TITLE = 'New local conversation';
 
+export class LocalProviderSessionSetChangedError extends Error {
+  constructor(readonly actualSessionIds: string[]) {
+    super('Local Provider session set changed during deletion');
+    this.name = 'LocalProviderSessionSetChangedError';
+  }
+}
+
+export class LocalProviderSessionRollbackIncompleteError extends Error {
+  constructor(readonly originalError: unknown) {
+    super('Local Provider sessions could not be restored after deletion failure');
+    this.name = 'LocalProviderSessionRollbackIncompleteError';
+  }
+}
+
 const createLocalSessionId = (): string => {
   localSessionIdSequence += 1;
   return `local-${Date.now()}-${localSessionIdSequence.toString(36)}`;
@@ -216,6 +230,52 @@ export class LocalSessionRepository {
         ...values.slice(0, index),
         ...values.slice(index + 1),
       ]);
+    });
+  }
+
+  deleteByProvider(
+    providerId: string,
+    expectedSessionIds?: readonly string[],
+  ): Promise<string[]> {
+    return this.enqueueWrite(async () => {
+      const values = await this.loadStored();
+      const deletedSessionIds = values
+        .filter((item) => item.providerId === providerId)
+        .map((item) => item.id);
+
+      if (expectedSessionIds) {
+        const expected = new Set(expectedSessionIds);
+        if (
+          expected.size !== deletedSessionIds.length ||
+          deletedSessionIds.some((sessionId) => !expected.has(sessionId))
+        ) {
+          throw new LocalProviderSessionSetChangedError(deletedSessionIds);
+        }
+      }
+
+      if (deletedSessionIds.length === 0) return [];
+      const nextValues = values.filter((item) => item.providerId !== providerId);
+
+      try {
+        await this.saveStored(nextValues);
+        const persisted = await this.loadStored();
+        if (JSON.stringify(persisted) !== JSON.stringify(nextValues)) {
+          throw new Error('Local Provider session cascade did not persist');
+        }
+      } catch (error) {
+        try {
+          await this.saveStored(values);
+          const restored = await this.loadStored();
+          if (JSON.stringify(restored) !== JSON.stringify(values)) {
+            throw new Error('Local Provider session snapshot restore did not persist');
+          }
+        } catch {
+          throw new LocalProviderSessionRollbackIncompleteError(error);
+        }
+        throw error;
+      }
+
+      return deletedSessionIds;
     });
   }
 

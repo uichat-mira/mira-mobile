@@ -2,6 +2,7 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   loadLastOpenedSession,
   removeLastOpenedSession,
+  removeLastOpenedSessions,
   saveLastOpenedSession,
 } from './lastOpenedSession';
 
@@ -59,6 +60,31 @@ describe('lastOpenedSession', () => {
     const store = makeStore();
     await store.set('mira.mobile.last-opened-session.v1', '[1,2,3]');
     await expect(loadLastOpenedSession(store)).resolves.toBeNull();
+  });
+
+  it('removes and returns a matching record from a scoped session set', async () => {
+    const store = makeStore();
+    await saveLastOpenedSession(
+      { sessionId: 'local-a', title: 'A', source: 'local-provider' },
+      store,
+    );
+
+    await expect(
+      removeLastOpenedSessions(['local-b', 'local-a'], store),
+    ).resolves.toMatchObject({ sessionId: 'local-a', title: 'A' });
+    await expect(loadLastOpenedSession(store)).resolves.toBeNull();
+  });
+
+  it('leaves a non-matching record intact for a scoped session set', async () => {
+    const store = makeStore();
+    await saveLastOpenedSession({ sessionId: 'thread-1', title: 'Remote' }, store);
+
+    await expect(
+      removeLastOpenedSessions(['local-a'], store),
+    ).resolves.toBeNull();
+    await expect(loadLastOpenedSession(store)).resolves.toMatchObject({
+      sessionId: 'thread-1',
+    });
   });
 
   it('only removes the record for the matching session', async () => {
