@@ -2,6 +2,8 @@ import type { RuntimeEvent } from '../runtime/conversationRuntime';
 import {
   OpenAiStandardClient,
   type OpenAiMessage,
+  type OpenAiModelRequest,
+  type OpenAiTool,
 } from './openAiStandardClient';
 import type { OpenAiStandardProtocol } from './openAiStandardProtocol';
 
@@ -80,6 +82,108 @@ const createClient = (
     xhrFactory: () => xhr as unknown as XMLHttpRequest,
   });
 
+const MODEL = 'model-1';
+
+const searchTool: OpenAiTool = {
+  type: 'function',
+  function: {
+    name: 'search',
+    description: 'Search',
+    parameters: { type: 'object' },
+  },
+};
+
+const request = (
+  content: string,
+  options: {
+    messages?: OpenAiMessage[];
+    tools?: OpenAiTool[];
+  } = {},
+): OpenAiModelRequest => ({
+  model: MODEL,
+  messages: options.messages ?? [{ role: 'user', content }],
+  ...(options.tools ? { tools: options.tools } : {}),
+});
+
+const completedResponse = (
+  output: Array<Record<string, unknown>> = [],
+): Record<string, unknown> => ({
+  type: 'response.completed',
+  response: {
+    status: 'completed',
+    ...(output.length > 0 ? { output } : {}),
+  },
+});
+
+const outputItemDone = (
+  outputIndex: number,
+  item: Record<string, unknown>,
+): Record<string, unknown> => ({
+  type: 'response.output_item.done',
+  output_index: outputIndex,
+  item,
+});
+
+const reasoningItem = (
+  id: string,
+  encryptedContent: string,
+): Record<string, unknown> => ({
+  id,
+  type: 'reasoning',
+  summary: [],
+  encrypted_content: encryptedContent,
+});
+
+const functionCallItem = (
+  id: string,
+  callId: string,
+  argumentsJson: string,
+): Record<string, unknown> => ({
+  id,
+  type: 'function_call',
+  call_id: callId,
+  name: 'search',
+  arguments: argumentsJson,
+  status: 'completed',
+});
+
+const searchCallMessage = (
+  callId: string,
+  argumentsJson: string,
+): OpenAiMessage => ({
+  role: 'assistant',
+  content: null,
+  tool_calls: [{
+    id: callId,
+    type: 'function',
+    function: { name: 'search', arguments: argumentsJson },
+  }],
+});
+
+const toolResultMessage = (
+  callId: string,
+  content: string,
+): OpenAiMessage => ({
+  role: 'tool',
+  content,
+  tool_call_id: callId,
+});
+
+const createQueuedResponsesClient = (xhrs: readonly FakeXhr[]) => {
+  let xhrIndex = 0;
+  return new OpenAiStandardClient({
+    baseUrl: 'https://provider.example.com',
+    apiKey: 'secret',
+    protocol: 'openai-responses',
+    xhrFactory: () => {
+      const xhr = xhrs[xhrIndex];
+      xhrIndex += 1;
+      if (!xhr) throw new Error('Unexpected extra Responses request');
+      return xhr as unknown as XMLHttpRequest;
+    },
+  });
+};
+
 describe('OpenAiStandardClient Chat Completions', () => {
   it.each([
     ['https://provider.example.com', 'https://provider.example.com/v1/chat/completions'],
@@ -97,10 +201,7 @@ describe('OpenAiStandardClient Chat Completions', () => {
       'openai-chat-completions',
       xhr,
       baseUrl,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await collect(stream);
     expect(xhr.requestUrl).toBe(expectedUrl);
@@ -149,18 +250,7 @@ describe('OpenAiStandardClient Chat Completions', () => {
     const stream = await createClient(
       'openai-chat-completions',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'search',
-          description: 'Search',
-          parameters: { type: 'object' },
-        },
-      }],
-    });
+    ).streamMessages(request('find', { tools: [searchTool] }));
 
     await expect(collect(stream)).resolves.toEqual([
       { type: 'text-delta', delta: 'hello' },
@@ -202,10 +292,7 @@ describe('OpenAiStandardClient Chat Completions', () => {
     const stream = await createClient(
       'openai-chat-completions',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-    });
+    ).streamMessages(request('find'));
 
     await expect(collect(stream)).rejects.toMatchObject({
       code: 'INVALID_PROVIDER_EVENT',
@@ -231,10 +318,7 @@ describe('OpenAiStandardClient Chat Completions', () => {
     const stream = await createClient(
       'openai-chat-completions',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-    });
+    ).streamMessages(request('find'));
 
     await expect(collect(stream)).rejects.toMatchObject({
       code: 'INVALID_PROVIDER_EVENT',
@@ -299,17 +383,7 @@ describe('OpenAiStandardClient Responses', () => {
       },
     });
 
-    const firstStream = await client.streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'search',
-          parameters: { type: 'object' },
-        },
-      }],
-    });
+    const firstStream = await client.streamMessages(request('find', { tools: [searchTool] }));
     await expect(collect(firstStream)).resolves.toEqual([
       {
         type: 'tool-call',
@@ -541,14 +615,7 @@ describe('OpenAiStandardClient Responses', () => {
       },
     });
 
-    await collect(await client.streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'old request' }],
-      tools: [{
-        type: 'function',
-        function: { name: 'search', parameters: { type: 'object' } },
-      }],
-    }));
+    await collect(await client.streamMessages(request('old request', { tools: [searchTool] })));
 
     await collect(await client.streamMessages({
       model: 'model-1',
@@ -610,10 +677,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'request' }],
-    });
+    ).streamMessages(request('request'));
 
     await expect(collect(stream)).resolves.toEqual([
       { type: 'text-delta', delta: 'I cannot help with that.' },
@@ -637,10 +701,7 @@ describe('OpenAiStandardClient Responses', () => {
       'openai-responses',
       xhr,
       baseUrl,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await expect(collect(stream)).resolves.toEqual([
       { type: 'finish', reason: 'stop' },
@@ -662,10 +723,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await expect(collect(stream)).resolves.toEqual([
       { type: 'finish', reason: 'stop' },
@@ -678,10 +736,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await expect(collect(stream)).rejects.toMatchObject({
       code: 'INVALID_PROVIDER_EVENT',
@@ -900,18 +955,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'find' }],
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'search',
-          description: 'Search',
-          parameters: { type: 'object' },
-        },
-      }],
-    });
+    ).streamMessages(request('find', { tools: [searchTool] }));
 
     await expect(collect(stream)).resolves.toEqual([
       {
@@ -947,10 +991,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'long answer' }],
-    });
+    ).streamMessages(request('long answer'));
 
     await expect(collect(stream)).resolves.toEqual([
       { type: 'finish', reason: 'length' },
@@ -971,10 +1012,7 @@ describe('OpenAiStandardClient Responses', () => {
     const stream = await createClient(
       'openai-responses',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await expect(collect(stream)).rejects.toMatchObject({
       code: 'PROVIDER_REQUEST_FAILED',
@@ -1048,10 +1086,7 @@ describe('OpenAiStandardClient transport', () => {
     const xhr = new HangingXhr();
     const client = createClient('openai-responses', xhr);
 
-    const stream = await client.streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    const stream = await client.streamMessages(request('hello'));
     const pending = collect(stream);
     await Promise.resolve();
 
@@ -1095,10 +1130,7 @@ describe('OpenAiStandardClient transport', () => {
     const stream = await createClient(
       'openai-chat-completions',
       xhr,
-    ).streamMessages({
-      model: 'model-1',
-      messages: [{ role: 'user', content: 'hello' }],
-    });
+    ).streamMessages(request('hello'));
 
     await expect(collect(stream)).rejects.toMatchObject({
       code: 'PROVIDER_REQUEST_FAILED',
