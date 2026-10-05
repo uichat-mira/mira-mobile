@@ -663,13 +663,12 @@ describe('LocalProviderRuntime Provider deletion', () => {
     const loadStarted = new Promise<void>((resolve) => {
       signalLoadStarted = resolve;
     });
+    const stream = await runtime.sendMessage(session.id, 'hello');
     jest.spyOn(configStore, 'load').mockImplementationOnce(async () => {
       signalLoadStarted();
       await loadGate;
       return originalLoad();
     });
-
-    const stream = await runtime.sendMessage(session.id, 'hello');
     const iterator = stream[Symbol.asyncIterator]();
     const firstEvent = iterator.next();
     await loadStarted;
