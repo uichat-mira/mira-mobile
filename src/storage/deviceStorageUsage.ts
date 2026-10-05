@@ -4,6 +4,7 @@
 // 真实设备字节数通过 Native 模块拿，不在本模块伪造。
 
 import type { LocalKeyValueStore } from './localKeyValueStore';
+import { ALL_PERSONALIZATION_STORAGE_KEYS } from '../settings/personalizationStorageKeys';
 import {
   localCaptureRepository,
   type LocalCaptureMetadata,
@@ -65,8 +66,8 @@ const KEY_VALUE_CATEGORIES: readonly KeyValueCategorySpec[] = [
   {
     id: 'personalization',
     label: '个性化',
-    description: '风格、亲和度、自定义指令、特征等设备本地偏好',
-    keys: ['mira.mobile.personalization.v1'],
+    description: '基础风格、自定义指令、额外特征等设备本地偏好',
+    keys: ALL_PERSONALIZATION_STORAGE_KEYS,
   },
   {
     id: 'thread-state',
@@ -100,6 +101,17 @@ const OTHER_CATEGORY: KeyValueCategorySpec = {
   description: '未在上方分类中列出的客户端存储键',
   keys: [],
 };
+
+/**
+ * “清空本地 UI 状态”的精确键边界。与上面的占用分类共享同一套
+ * Personalization key contract，避免版本迁移后出现“统计/清理漏掉新 key”。
+ */
+export const UI_STATE_STORAGE_KEY_GROUPS_TO_RESET: readonly (readonly string[])[] = [
+  ['mira.mobile.theme.mode', 'mira.mobile.theme.accent'],
+  ALL_PERSONALIZATION_STORAGE_KEYS,
+  ['thread-pins-v1', 'thread-read-progress-v1'],
+  ['mira.shiyan.api-base-url.v1'],
+];
 
 /**
  * 自实现的 UTF-8 字节数计算，刻意不依赖全局 `TextEncoder` / `Buffer`，
