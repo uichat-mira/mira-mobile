@@ -7,6 +7,14 @@ import {
   sse,
 } from './openAiStandardClientTestSupport';
 
+const collectChatFrame = async (frame: Record<string, unknown>) =>
+  collect(
+    await createClient(
+      'openai-chat-completions',
+      new FakeXhr(sse(frame)),
+    ).streamMessages(request('find')),
+  );
+
 describe('OpenAiStandardClient Chat Completions', () => {
   it.each([
     ['https://provider.example.com', 'https://provider.example.com/v1/chat/completions'],
@@ -99,8 +107,8 @@ describe('OpenAiStandardClient Chat Completions', () => {
   });
 
   it('rejects a non-standard tool call delta without index', async () => {
-    const xhr = new FakeXhr(
-      sse({
+    await expect(
+      collectChatFrame({
         choices: [{
           delta: {
             tool_calls: [{
@@ -110,21 +118,12 @@ describe('OpenAiStandardClient Chat Completions', () => {
           },
         }],
       }),
-    );
-
-    const stream = await createClient(
-      'openai-chat-completions',
-      xhr,
-    ).streamMessages(request('find'));
-
-    await expect(collect(stream)).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_EVENT',
-    });
+    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_EVENT' });
   });
 
   it('rejects a Chat Completions stream truncated during a tool call', async () => {
-    const xhr = new FakeXhr(
-      sse({
+    await expect(
+      collectChatFrame({
         choices: [{
           delta: {
             tool_calls: [{
@@ -135,16 +134,10 @@ describe('OpenAiStandardClient Chat Completions', () => {
           },
         }],
       }),
-    );
-
-    const stream = await createClient(
-      'openai-chat-completions',
-      xhr,
-    ).streamMessages(request('find'));
-
-    await expect(collect(stream)).rejects.toMatchObject({
+    ).rejects.toMatchObject({
       code: 'INVALID_PROVIDER_EVENT',
       message: 'Chat Completions stream ended during a tool call',
     });
   });
+
 });
