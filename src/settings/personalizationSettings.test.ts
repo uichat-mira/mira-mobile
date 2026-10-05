@@ -229,7 +229,7 @@ describe('personalizationSettings', () => {
     await expect(store.get(V2_KEY)).resolves.not.toBeNull();
   });
 
-  it('keeps v2 recoverable when writing the migrated v3 value fails', async () => {
+  it('uses migrated v2 settings in memory when writing v3 fails', async () => {
     class FailingCurrentWriteStore extends MemoryLocalKeyValueStore {
       override async set(key: string, value: string) {
         if (key === V3_KEY) throw new Error('v3 write failed');
@@ -240,12 +240,16 @@ describe('personalizationSettings', () => {
     const store = new FailingCurrentWriteStore();
     await persistV2(store, { tone: 'default', warmth: true });
 
-    await expect(loadPersonalizationSettings(store)).rejects.toThrow('v3 write failed');
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual({
+      baseStyle: { tone: 'friendly' },
+      characteristics: { traits: ['多用类比'] },
+      instructions: '保持克制',
+    });
     await expect(store.get(V2_KEY)).resolves.not.toBeNull();
     await expect(store.get(V3_KEY)).resolves.toBeNull();
   });
 
-  it('preserves a genuinely malformed v2 traits payload instead of writing defaults over it', async () => {
+  it('preserves malformed legacy v2 bytes but falls back without locking the UI', async () => {
     const store = new MemoryLocalKeyValueStore();
     const corrupted = {
       baseStyle: { tone: 'professional' },
@@ -254,10 +258,21 @@ describe('personalizationSettings', () => {
     };
     await store.set(V2_KEY, JSON.stringify(corrupted));
 
-    await expect(loadPersonalizationSettings(store)).rejects.toMatchObject({
-      code: PERSONALIZATION_LOAD_FAILED,
-    });
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual(
+      DEFAULT_PERSONALIZATION_SETTINGS,
+    );
     await expect(store.get(V2_KEY)).resolves.toBe(JSON.stringify(corrupted));
+    await expect(store.get(V3_KEY)).resolves.toBeNull();
+  });
+
+  it('preserves invalid-json legacy v2 bytes but falls back without locking the UI', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    await store.set(V2_KEY, '{not-json');
+
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual(
+      DEFAULT_PERSONALIZATION_SETTINGS,
+    );
+    await expect(store.get(V2_KEY)).resolves.toBe('{not-json');
     await expect(store.get(V3_KEY)).resolves.toBeNull();
   });
 
