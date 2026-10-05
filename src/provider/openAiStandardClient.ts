@@ -269,8 +269,15 @@ interface PendingResponseToolCall {
 
 interface ResponsesStreamState {
   pendingToolCalls: Map<number, PendingResponseToolCall>;
+  outputItems: Map<number, Record<string, unknown>>;
   sawToolCall: boolean;
   terminalSeen: boolean;
+  completed: boolean;
+}
+
+interface ResponsesContinuationBatch {
+  callIds: string[];
+  outputItems: Array<Record<string, unknown>>;
 }
 
 const responseToolCallFromItem = (
@@ -307,6 +314,14 @@ const flushResponseToolCall = (
       'Responses API returned an incomplete function call',
     );
   }
+  if (!state.outputItems.has(outputIndex)) {
+    state.outputItems.set(outputIndex, {
+      type: 'function_call',
+      call_id: call.callId,
+      name: call.name,
+      arguments: call.arguments,
+    });
+  }
   call.emitted = true;
   state.sawToolCall = true;
   return [{
@@ -334,6 +349,34 @@ const responseOutputIndex = (
   return value.output_index;
 };
 
+const rememberResponsesOutputItem = (
+  state: ResponsesStreamState,
+  outputIndex: number,
+  item: Record<string, unknown>,
+): void => {
+  if (
+    item.type === 'reasoning' ||
+    item.type === 'message' ||
+    item.type === 'function_call'
+  ) {
+    state.outputItems.set(outputIndex, item);
+  }
+};
+
+const responsesContinuationBatchFromState = (
+  state: ResponsesStreamState,
+): ResponsesContinuationBatch | null => {
+  const outputItems = Array.from(state.outputItems.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, item]) => item);
+  const callIds = outputItems.flatMap((item) =>
+    item.type === 'function_call' && typeof item.call_id === 'string'
+      ? [item.call_id]
+      : [],
+  );
+  return callIds.length > 0 ? { callIds, outputItems } : null;
+};
+
 const parseResponsesFrame = (
   data: string,
   state: ResponsesStreamState,
@@ -357,6 +400,21 @@ const parseResponsesFrame = (
       throw new RemoteHostError(
         'INVALID_PROVIDER_EVENT',
         'Responses API text delta is invalid',
+      );
+    }
+    return {
+      events: value.delta
+        ? [{ type: 'text-delta', delta: value.delta }]
+        : [],
+      done: false,
+    };
+  }
+
+  if (type === 'response.refusal.delta') {
+    if (typeof value.delta !== 'string') {
+      throw new RemoteHostError(
+        'INVALID_PROVIDER_EVENT',
+        'Responses API refusal delta is invalid',
       );
     }
     return {
@@ -415,9 +473,9 @@ const parseResponsesFrame = (
     const index = responseOutputIndex(value, type);
     const item = value.item;
     if (item && typeof item === 'object' && !Array.isArray(item)) {
-      const finalCall = responseToolCallFromItem(
-        item as Record<string, unknown>,
-      );
+      const itemRecord = item as Record<string, unknown>;
+      rememberResponsesOutputItem(state, index, itemRecord);
+      const finalCall = responseToolCallFromItem(itemRecord);
       if (finalCall) {
         state.pendingToolCalls.set(index, finalCall);
         return {
@@ -431,6 +489,22 @@ const parseResponsesFrame = (
 
   if (type === 'response.completed') {
     state.terminalSeen = true;
+    state.completed = true;
+    const response = value.response;
+    if (response && typeof response === 'object' && !Array.isArray(response)) {
+      const output = (response as Record<string, unknown>).output;
+      if (Array.isArray(output)) {
+        output.forEach((item, index) => {
+          if (item && typeof item === 'object' && !Array.isArray(item)) {
+            rememberResponsesOutputItem(
+              state,
+              index,
+              item as Record<string, unknown>,
+            );
+          }
+        });
+      }
+    }
     const events: RuntimeEvent[] = [];
     for (const index of state.pendingToolCalls.keys()) {
       events.push(...flushResponseToolCall(state, index));
@@ -443,6 +517,8 @@ const parseResponsesFrame = (
   }
 
   if (type === 'response.incomplete') {
+    state.terminalSeen = true;
+    state.completed = false;
     const response = value.response;
     let reason: string | null = null;
     if (response && typeof response === 'object' && !Array.isArray(response)) {
@@ -482,11 +558,20 @@ const parseResponsesFrame = (
   return { events: [], done: false };
 };
 
+const sameStringList = (
+  left: readonly string[],
+  right: readonly string[],
+): boolean =>
+  left.length === right.length &&
+  left.every((value, index) => value === right[index]);
+
 const toResponsesInput = (
   messages: readonly OpenAiMessage[],
+  continuationBatches: readonly ResponsesContinuationBatch[] = [],
 ): Array<Record<string, unknown>> => {
   const input: Array<Record<string, unknown>> = [];
   const pendingToolCallIds = new Set<string>();
+  let continuationIndex = 0;
 
   for (const message of messages) {
     if (pendingToolCallIds.size > 0 && message.role !== 'tool') {
@@ -511,6 +596,43 @@ const toResponsesInput = (
       });
       pendingToolCallIds.delete(message.tool_call_id);
       continue;
+    }
+
+    if (
+      message.role === 'assistant' &&
+      message.tool_calls &&
+      message.tool_calls.length > 0
+    ) {
+      const callIds = message.tool_calls.map((call) => call.id);
+      const continuation = continuationBatches[continuationIndex];
+      if (continuation) {
+        if (!sameStringList(continuation.callIds, callIds)) {
+          throw new Error(
+            'Responses continuation no longer matches the canonical tool transcript',
+          );
+        }
+        const hasMessageItem = continuation.outputItems.some(
+          (item) => item.type === 'message',
+        );
+        if (
+          !hasMessageItem &&
+          message.content !== null &&
+          message.content.length > 0
+        ) {
+          input.push({ role: 'assistant', content: message.content });
+        }
+        input.push(...continuation.outputItems);
+        for (const callId of callIds) {
+          if (pendingToolCallIds.has(callId)) {
+            throw new Error(
+              'Responses transcript has a duplicate function call id',
+            );
+          }
+          pendingToolCallIds.add(callId);
+        }
+        continuationIndex += 1;
+        continue;
+      }
     }
 
     if (message.content !== null && message.content.length > 0) {
@@ -543,6 +665,12 @@ const toResponsesInput = (
     }
   }
 
+  if (continuationIndex !== continuationBatches.length) {
+    throw new Error(
+      'Responses continuation has no matching canonical tool transcript',
+    );
+  }
+
   if (pendingToolCallIds.size > 0) {
     throw new Error(
       'Responses transcript ended before all function call outputs arrived',
@@ -567,11 +695,12 @@ const toResponsesTools = (
 const buildWireRequest = (
   protocol: OpenAiStandardProtocol,
   request: OpenAiModelRequest,
+  continuationBatches: readonly ResponsesContinuationBatch[] = [],
 ): Record<string, unknown> => {
   if (protocol === 'openai-responses') {
     return {
       model: request.model,
-      input: toResponsesInput(request.messages),
+      input: toResponsesInput(request.messages, continuationBatches),
       stream: true,
       store: false,
       ...(request.tools && request.tools.length > 0
@@ -597,6 +726,7 @@ export class OpenAiStandardClient {
   private readonly xhrFactory: () => XMLHttpRequest;
   private readonly requestTimeoutMs: number;
   private activeAbort: AbortController | null = null;
+  private responsesContinuationBatches: ResponsesContinuationBatch[] = [];
 
   constructor(private readonly options: OpenAiStandardClientOptions) {
     this.endpointUrl = resolveOpenAiStandardEndpoint(
@@ -617,7 +747,11 @@ export class OpenAiStandardClient {
   async streamMessages(
     request: OpenAiModelRequest,
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    const wireRequest = buildWireRequest(this.options.protocol, request);
+    const wireRequest = buildWireRequest(
+      this.options.protocol,
+      request,
+      this.responsesContinuationBatches,
+    );
     this.cancelActiveRun();
     const controller = new AbortController();
     this.activeAbort = controller;
@@ -633,6 +767,9 @@ export class OpenAiStandardClient {
     };
 
     controller.signal.addEventListener('abort', () => {
+      if (this.options.protocol === 'openai-responses') {
+        this.responsesContinuationBatches = [];
+      }
       queue.fail(
         timedOut
           ? new RemoteHostError('PROVIDER_TIMEOUT', 'Provider request timed out')
@@ -677,13 +814,34 @@ export class OpenAiStandardClient {
     };
     const responsesState: ResponsesStreamState = {
       pendingToolCalls: new Map(),
+      outputItems: new Map(),
       sawToolCall: false,
       terminalSeen: false,
+      completed: false,
+    };
+
+    const finalizeResponsesContinuation = () => {
+      if (this.options.protocol !== 'openai-responses') return;
+      if (!responsesState.completed || !responsesState.sawToolCall) {
+        this.responsesContinuationBatches = [];
+        return;
+      }
+      const batch = responsesContinuationBatchFromState(responsesState);
+      if (!batch) {
+        throw new RemoteHostError(
+          'INVALID_PROVIDER_EVENT',
+          'Responses API tool response is missing reusable output items',
+        );
+      }
+      this.responsesContinuationBatches.push(batch);
     };
 
     const fail = (error: unknown) => {
       if (settled) return;
       settled = true;
+      if (this.options.protocol === 'openai-responses') {
+        this.responsesContinuationBatches = [];
+      }
       queue.fail(error);
       cleanup();
     };
@@ -708,6 +866,7 @@ export class OpenAiStandardClient {
         const result = processFrame(frame);
         result.events.forEach((event) => queue.push(event));
         if (result.done) {
+          finalizeResponsesContinuation();
           settled = true;
           xhr.abort();
           queue.close();
@@ -727,6 +886,7 @@ export class OpenAiStandardClient {
           const result = processFrame(frame);
           result.events.forEach((event) => queue.push(event));
           if (result.done) {
+            finalizeResponsesContinuation();
             settled = true;
             queue.close();
             cleanup();
@@ -737,6 +897,7 @@ export class OpenAiStandardClient {
           const result = processFrame(buffer);
           result.events.forEach((event) => queue.push(event));
           if (result.done) {
+            finalizeResponsesContinuation();
             settled = true;
             queue.close();
             cleanup();
