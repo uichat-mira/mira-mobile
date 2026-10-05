@@ -106,7 +106,7 @@ describe('PersonalizationScreen corrupted-payload handling', () => {
       (node) => node.props.accessibilityLabel === '基本风格和语调',
     );
     const addTraitButton = tree.root.find(
-      (node) => node.props.accessibilityLabel === '添加特征',
+      (node) => node.props.accessibilityLabel === '添加额外特征',
     );
 
     expect(toneButton.props.accessibilityState).toMatchObject({ disabled: true });
@@ -121,5 +121,9 @@ describe('PersonalizationScreen corrupted-payload handling', () => {
 
     expect(strings.some((value) => value.includes('个性化设置读取失败'))).toBe(false);
     expect(strings).toContain('基本风格和语调');
+    expect(strings).toContain('额外特征');
+    expect(strings.some((value) => value.includes('只在其上增量调整'))).toBe(true);
+    expect(strings).not.toContain('提高亲和度');
+    expect(strings).not.toContain('快速回答');
   });
 });
