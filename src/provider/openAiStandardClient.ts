@@ -765,7 +765,10 @@ export class OpenAiStandardClient {
           );
         }
 
-        if (!chatState.receivedFinishReason) {
+        if (
+          this.options.protocol === 'openai-chat-completions' &&
+          !chatState.receivedFinishReason
+        ) {
           queue.push({ type: 'finish', reason: null });
         }
         settled = true;
