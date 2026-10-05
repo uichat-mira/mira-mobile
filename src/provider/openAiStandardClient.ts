@@ -270,6 +270,7 @@ interface PendingResponseToolCall {
 interface ResponsesStreamState {
   pendingToolCalls: Map<number, PendingResponseToolCall>;
   sawToolCall: boolean;
+  terminalSeen: boolean;
 }
 
 const responseToolCallFromItem = (
@@ -339,10 +340,7 @@ const parseResponsesFrame = (
 ): ProtocolFrameResult => {
   if (!data) return { events: [], done: false };
   if (data === '[DONE]') {
-    throw new RemoteHostError(
-      'INVALID_PROVIDER_EVENT',
-      'Responses API must terminate with a typed response event',
-    );
+    return { events: [], done: state.terminalSeen };
   }
 
   const value = parseJsonObject(data, 'Responses API');
@@ -432,6 +430,7 @@ const parseResponsesFrame = (
   }
 
   if (type === 'response.completed') {
+    state.terminalSeen = true;
     const events: RuntimeEvent[] = [];
     for (const index of state.pendingToolCalls.keys()) {
       events.push(...flushResponseToolCall(state, index));
@@ -462,6 +461,7 @@ const parseResponsesFrame = (
   }
 
   if (type === 'response.failed' || type === 'error') {
+    state.terminalSeen = true;
     const response = value.response;
     const responseError =
       response && typeof response === 'object' && !Array.isArray(response)
@@ -654,6 +654,7 @@ export class OpenAiStandardClient {
     const responsesState: ResponsesStreamState = {
       pendingToolCalls: new Map(),
       sawToolCall: false,
+      terminalSeen: false,
     };
 
     const fail = (error: unknown) => {
@@ -719,7 +720,10 @@ export class OpenAiStandardClient {
           }
         }
 
-        if (this.options.protocol === 'openai-responses') {
+        if (
+          this.options.protocol === 'openai-responses' &&
+          !responsesState.terminalSeen
+        ) {
           throw new RemoteHostError(
             'INVALID_PROVIDER_EVENT',
             'Responses API stream ended without a terminal response event',
