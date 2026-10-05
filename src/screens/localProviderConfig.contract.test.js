@@ -36,8 +36,10 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('setHasStoredKey(false)');
   });
 
-  it('locks Provider fields while credential mutations are in flight', () => {
-    expect(source.match(/editable=\{!saving && !clearingKey\}/g)?.length).toBeGreaterThanOrEqual(4);
+  it('locks Provider fields while credential or destructive mutations are in flight', () => {
+    expect(
+      source.match(/editable=\{!saving && !clearingKey && !deletingProvider\}/g)?.length,
+    ).toBeGreaterThanOrEqual(4);
     expect(source).toContain('editable={editable}');
     expect(source).toContain('!editable && styles.disabledButton');
   });
@@ -49,8 +51,21 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('providerModel: config.model');
   });
 
-  it('does not delete a Provider that still owns local conversations', () => {
-    expect(source).toContain('new LocalSessionRepository().list(config.id)');
-    expect(source).toContain('当前 Provider 仍有本地对话');
+  it('confirms scoped cascade deletion with the current owned conversation count', () => {
+    expect(source).toContain('runtimeRegistry.getLocalProviderDeletionImpact(config.id)');
+    expect(source).toContain('impact.sessionCount');
+    expect(source).toContain('runtimeRegistry.deleteLocalProvider(');
+    expect(source).toContain('expectedSessionCount');
+    expect(source).toContain("{ text: '取消', style: 'cancel' }");
+    expect(source).toContain("style: 'destructive'");
+    expect(source).toContain('不会影响其他 Provider、Remote Host、记忆或个性化设置');
+    expect(source).not.toContain('当前 Provider 仍有本地对话，请先保留此配置');
+  });
+
+  it('cleans device-local references for cascaded conversations', () => {
+    expect(source).toContain('result.deletedSessionIds.flatMap((sessionId) =>');
+    expect(source).toContain('useThreadPinStore.getState().unpinThread(sessionId)');
+    expect(source).toContain('useThreadReadStore.getState().clearThread(sessionId)');
+    expect(source).toContain('removeLastOpenedSession(sessionId)');
   });
 });
