@@ -30,7 +30,7 @@ import {
 import {
   getSessionLoadErrorMessage,
   resolveSessionCollectionState,
-} from './sessionCollectionState';
+} from '../session/sessionCollection';
 import { getWorkspaceDetailContractError } from './workspaceDetailState';
 
 const PAGE_LIMIT = 50;
