@@ -2,9 +2,11 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   computeDeviceStorageUsage,
   formatBytes,
+  UI_STATE_STORAGE_KEY_GROUPS_TO_RESET,
   utf8ByteLength,
 } from './deviceStorageUsage';
 import type { LocalCaptureMetadata } from '../shiyan/recording/localCaptureRepository';
+import { ALL_PERSONALIZATION_STORAGE_KEYS } from '../settings/personalizationStorageKeys';
 
 const baseCaptures = (
   overrides: Partial<LocalCaptureMetadata> = {},
@@ -54,6 +56,31 @@ describe('computeDeviceStorageUsage', () => {
     expect(appearance).toBeDefined();
     expect(appearance!.keyValueBytes).toBeGreaterThan(0);
     expect(usage.totalBytes).toBe(appearance!.keyValueBytes);
+  });
+
+  it('accounts current and legacy personalization keys in the personalization category', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    for (const key of ALL_PERSONALIZATION_STORAGE_KEYS) {
+      await store.set(key, '{"value":"saved"}');
+    }
+
+    const usage = await computeDeviceStorageUsage({
+      store,
+      knownKeys: ALL_PERSONALIZATION_STORAGE_KEYS,
+      includeAudioFiles: false,
+    });
+
+    const personalization = usage.categories.find((category) => category.id === 'personalization');
+    const other = usage.categories.find((category) => category.id === 'other');
+    expect(personalization?.keyValueBytes).toBeGreaterThan(0);
+    expect(other?.keyValueBytes).toBe(0);
+    expect(usage.totalBytes).toBe(personalization?.keyValueBytes);
+  });
+
+  it('includes every personalization storage version in the local UI reset boundary', () => {
+    const resetKeys = UI_STATE_STORAGE_KEY_GROUPS_TO_RESET.flat();
+
+    expect(resetKeys).toEqual(expect.arrayContaining([...ALL_PERSONALIZATION_STORAGE_KEYS]));
   });
 
   it('counts submitted capture audio bytes and separates non-submitted captures', async () => {
