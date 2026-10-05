@@ -3,6 +3,7 @@ const { resolve } = require('node:path');
 
 const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
 const source = readSource('src/shiyan/ShiyanTaskDetailScreen.tsx');
+const orchestrationSource = readSource('src/shiyan/useShiyanTaskDetailOrchestration.ts');
 
 describe('MOB-032 Shiyan result-first review layout contract', () => {
   it('exposes the organized-result tab and processing summary as separate surfaces', () => {
@@ -24,22 +25,24 @@ describe('MOB-032 Shiyan result-first review layout contract', () => {
     expect(source).toContain('{processingOpen ? (');
   });
 
-  it('uses the review-result selector instead of flattening draft semantics in the screen', () => {
+  it('uses the review-result selector instead of flattening draft semantics', () => {
     expect(source).toContain('selectShiyanReviewResult(content, candidate)');
-    expect(source).toContain('selectShiyanFinalEditorSeed(content, candidate, preferCandidate)');
+    expect(orchestrationSource).toContain(
+      'selectShiyanFinalEditorSeed(content, candidate, preferCandidate)',
+    );
     expect(source).toContain('用候选继续编辑');
   });
 
   it('uses the opened editor seed as the dirty baseline and prevents reseeding re-entry', () => {
-    expect(source).toContain(
+    expect(orchestrationSource).toContain(
       "const [editorBaselineMarkdown, setEditorBaselineMarkdown] = useState('');",
     );
-    expect(source).toContain(
+    expect(orchestrationSource).toContain(
       'finalMarkdown.trim() !== editorBaselineMarkdown.trim()',
     );
-    expect(source).toContain('if (finalEditorOpen) return;');
-    expect(source).toContain('setEditorBaselineMarkdown(seed.markdown);');
-    expect(source).toContain('setEditorBaselineMarkdown(saved);');
+    expect(orchestrationSource).toContain('if (finalEditorOpen) return;');
+    expect(orchestrationSource).toContain('setEditorBaselineMarkdown(seed.markdown);');
+    expect(orchestrationSource).toContain('setEditorBaselineMarkdown(saved);');
     expect(source).toContain('reviewResult && !finalEditorOpen ? (');
   });
 
@@ -50,9 +53,9 @@ describe('MOB-032 Shiyan result-first review layout contract', () => {
   });
 
   it('refreshes partial result artifacts while an active task is polling', () => {
-    const pollStart = source.indexOf('const timer = setInterval(() => {');
-    const pollEnd = source.indexOf('}, 5000);', pollStart);
-    const pollingSource = source.slice(pollStart, pollEnd);
+    const pollStart = orchestrationSource.indexOf('const timer = setInterval(() => {');
+    const pollEnd = orchestrationSource.indexOf('}, 5000);', pollStart);
+    const pollingSource = orchestrationSource.slice(pollStart, pollEnd);
 
     expect(pollStart).toBeGreaterThan(-1);
     expect(pollingSource).toContain('void loadTask(true);');
@@ -61,13 +64,13 @@ describe('MOB-032 Shiyan result-first review layout contract', () => {
   });
 
   it('rejects stale content responses across overlapping refresh and Final Draft save', () => {
-    expect(source).toContain('const contentGeneration = useRef(0);');
-    expect(source).toContain('const finalSaveInFlight = useRef(false);');
-    expect(source).toContain('const generation = ++contentGeneration.current;');
-    expect(source).toContain(
+    expect(orchestrationSource).toContain('const contentGeneration = useRef(0);');
+    expect(orchestrationSource).toContain('const finalSaveInFlight = useRef(false);');
+    expect(orchestrationSource).toContain('const generation = ++contentGeneration.current;');
+    expect(orchestrationSource).toContain(
       'if (generation !== contentGeneration.current || finalSaveInFlight.current) return;',
     );
-    expect(source).toContain('contentGeneration.current += 1;');
+    expect(orchestrationSource).toContain('contentGeneration.current += 1;');
   });
 
   it('keeps transcript as a read-only evidence layer', () => {
