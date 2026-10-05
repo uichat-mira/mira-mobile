@@ -539,9 +539,9 @@ describe('LocalProviderRuntime Provider deletion', () => {
     const iterator = stream[Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toMatchObject({ done: false });
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
-      '正在执行本地请求',
-    );
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_ACTIVE_RUN',
+    });
 
     runtime.cancelActiveRun();
 
