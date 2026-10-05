@@ -579,7 +579,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
   });
 
   it('reserves Provider deletion synchronously before the first await', async () => {
-    const { runtime, repository } = await createDeletionRuntime();
+    const { runtime } = await createDeletionRuntime();
     const session = await runtime.createSession('Delete now', config.id);
 
     const deletion = runtime.deleteProvider(config.id, 1);
