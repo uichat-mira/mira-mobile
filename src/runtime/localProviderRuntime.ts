@@ -141,8 +141,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly providerSendWaiters = new Map<string, Set<() => void>>();
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
+  private readonly pendingProviderSends = new Set<ActiveProviderSend>();
   private currentProviderSend: ActiveProviderSend | null = null;
-  private pendingProviderSend: ActiveProviderSend | null = null;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
@@ -240,14 +240,12 @@ export class LocalProviderRuntime implements ConversationRuntime {
       cancelProviderRun: null,
       close: null,
     };
-    this.pendingProviderSend = send;
+    this.pendingProviderSends.add(send);
     return send;
   }
 
   private activateProviderSend(send: ActiveProviderSend): void {
-    if (this.pendingProviderSend === send) {
-      this.pendingProviderSend = null;
-    }
+    this.pendingProviderSends.delete(send);
     if (send.cancelled) {
       throw new Error('Local Provider request was cancelled');
     }
@@ -272,22 +270,26 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private cancelCurrentProviderSend(): void {
-    const send = this.currentProviderSend ?? this.pendingProviderSend;
+    let latestPending: ActiveProviderSend | null = null;
+    for (const send of this.pendingProviderSends) {
+      latestPending = send;
+    }
+
+    const send = this.currentProviderSend ?? latestPending;
     if (!send) return;
 
     send.cancelled = true;
-    if (this.pendingProviderSend === send) {
-      this.pendingProviderSend = null;
-    }
+    this.pendingProviderSends.delete(send);
   }
 
   private async cancelProviderSends(providerId: string): Promise<void> {
     const providerKey = this.requireProviderId(providerId);
     const closes: Promise<void>[] = [];
 
-    if (this.pendingProviderSend?.providerId === providerKey) {
-      this.pendingProviderSend.cancelled = true;
-      this.pendingProviderSend = null;
+    for (const send of [...this.pendingProviderSends]) {
+      if (send.providerId !== providerKey) continue;
+      send.cancelled = true;
+      this.pendingProviderSends.delete(send);
     }
 
     for (const send of [...this.activeProviderSends]) {
