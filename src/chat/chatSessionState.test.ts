@@ -97,6 +97,17 @@ describe('chatSessionState', () => {
     ).toBe('工具参数无效，本轮已停止');
   });
 
+  it('maps provider migration review to a settings action', () => {
+    expect(
+      getChatSendErrorMessage(
+        Object.assign(new Error('review required'), {
+          code: 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED',
+        }),
+        'local-provider',
+      ),
+    ).toContain('Local Provider 设置');
+  });
+
   it('maps local Provider send failures to actionable messages', () => {
     expect(
       getChatSendErrorMessage(
