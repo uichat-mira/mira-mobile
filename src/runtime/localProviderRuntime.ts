@@ -52,6 +52,15 @@ export class LocalProviderDeletionScopeChangedError extends Error {
   }
 }
 
+export class LocalProviderDeletionRollbackIncompleteError extends Error {
+  readonly code = 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE';
+
+  constructor(readonly originalError: unknown) {
+    super('删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。');
+    this.name = 'LocalProviderDeletionRollbackIncompleteError';
+  }
+}
+
 export type StageLocalSessionReferenceRemoval = (
   sessionIds: readonly string[],
 ) => Promise<StagedLocalSessionReferenceRemoval>;
@@ -311,9 +320,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       }
 
       if (!rollbackComplete) {
-        throw new Error(
-          '删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。',
-        );
+        throw new LocalProviderDeletionRollbackIncompleteError(error);
       }
       if (error instanceof LocalProviderSessionSetChangedError) {
         throw new LocalProviderDeletionScopeChangedError(
