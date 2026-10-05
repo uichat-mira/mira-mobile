@@ -62,10 +62,19 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).not.toContain('当前 Provider 仍有本地对话，请先保留此配置');
   });
 
-  it('cleans device-local references for cascaded conversations', () => {
-    expect(source).toContain('result.deletedSessionIds.flatMap((sessionId) =>');
-    expect(source).toContain('useThreadPinStore.getState().unpinThread(sessionId)');
-    expect(source).toContain('useThreadReadStore.getState().clearThread(sessionId)');
-    expect(source).toContain('removeLastOpenedSession(sessionId)');
+  it('reconfirms when the deletion scope changes before commit', () => {
+    expect(source).toContain('error instanceof LocalProviderDeletionScopeChangedError');
+    expect(source).toContain('const updatedCount = error.actualSessionCount');
+    expect(source).toContain("'删除范围已变化'");
+    expect(source).toContain('void finishProviderRemoval(providerId, updatedCount)');
+  });
+
+  it('delegates destructive cleanup to the Local Provider runtime transaction', () => {
+    expect(source).toContain(
+      'await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount)',
+    );
+    expect(source).not.toContain('useThreadPinStore');
+    expect(source).not.toContain('useThreadReadStore');
+    expect(source).not.toContain('removeLastOpenedSession');
   });
 });
