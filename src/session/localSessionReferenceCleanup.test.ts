@@ -111,6 +111,7 @@ describe('localSessionReferenceCleanup', () => {
     );
 
     await expect(transaction.rollback()).rejects.toThrow('回滚未完整完成');
+    expect(() => assertThreadReferenceMutationAllowed('local-a')).not.toThrow();
   });
 
   it('fences only staged session ids until the transaction settles', async () => {
