@@ -565,6 +565,33 @@ const sameStringList = (
   left.length === right.length &&
   left.every((value, index) => value === right[index]);
 
+const selectResponsesContinuationBatches = (
+  messages: readonly OpenAiMessage[],
+  batches: readonly ResponsesContinuationBatch[],
+): ResponsesContinuationBatch[] => {
+  const remaining = [...batches];
+  const selected: ResponsesContinuationBatch[] = [];
+
+  for (const message of messages) {
+    if (
+      message.role !== 'assistant' ||
+      !message.tool_calls ||
+      message.tool_calls.length === 0
+    ) {
+      continue;
+    }
+    const callIds = message.tool_calls.map((call) => call.id);
+    const matchIndex = remaining.findIndex((batch) =>
+      sameStringList(batch.callIds, callIds),
+    );
+    if (matchIndex < 0) continue;
+    selected.push(remaining[matchIndex]);
+    remaining.splice(matchIndex, 1);
+  }
+
+  return selected;
+};
+
 const toResponsesInput = (
   messages: readonly OpenAiMessage[],
   continuationBatches: readonly ResponsesContinuationBatch[] = [],
@@ -748,6 +775,12 @@ export class OpenAiStandardClient {
   async streamMessages(
     request: OpenAiModelRequest,
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    if (this.options.protocol === 'openai-responses') {
+      this.responsesContinuationBatches = selectResponsesContinuationBatches(
+        request.messages,
+        this.responsesContinuationBatches,
+      );
+    }
     const wireRequest = buildWireRequest(
       this.options.protocol,
       request,
