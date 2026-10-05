@@ -1,4 +1,5 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
+import { assertThreadReferenceMutationAllowed } from '../store/threadReferenceMutationFence';
 import type { SessionSource } from '../types';
 
 export interface LastOpenedSession {
@@ -18,6 +19,17 @@ export interface LastOpenedSessionInput {
 }
 
 const LAST_OPENED_SESSION_KEY = 'mira.mobile.last-opened-session.v1';
+const writeQueues = new WeakMap<LocalKeyValueStore, Promise<void>>();
+
+const enqueueWrite = <T>(
+  store: LocalKeyValueStore,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  const previous = writeQueues.get(store) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  writeQueues.set(store, result.then(() => undefined, () => undefined));
+  return result;
+};
 
 export async function saveLastOpenedSession(
   input: LastOpenedSessionInput,
@@ -25,6 +37,7 @@ export async function saveLastOpenedSession(
 ): Promise<void> {
   const sessionId = input.sessionId.trim();
   if (!sessionId) return;
+  assertThreadReferenceMutationAllowed(sessionId);
 
   const source: SessionSource =
     input.source ?? (sessionId.startsWith('local-') ? 'local-provider' : 'remote-host');
@@ -35,7 +48,9 @@ export async function saveLastOpenedSession(
     providerName: input.providerName ?? null,
     providerModel: input.providerModel ?? null,
   };
-  await store.set(LAST_OPENED_SESSION_KEY, JSON.stringify(record));
+  await enqueueWrite(store, () =>
+    store.set(LAST_OPENED_SESSION_KEY, JSON.stringify(record)),
+  );
 }
 
 export async function loadLastOpenedSession(
@@ -71,11 +86,24 @@ export async function removeLastOpenedSessions(
   const ids = new Set(sessionIds.filter((sessionId) => sessionId.trim().length > 0));
   if (ids.size === 0) return null;
 
-  const record = await loadLastOpenedSession(store);
-  if (!record || !ids.has(record.sessionId)) return null;
+  return enqueueWrite(store, async () => {
+    const record = await loadLastOpenedSession(store);
+    if (!record || !ids.has(record.sessionId)) return null;
 
-  await store.remove(LAST_OPENED_SESSION_KEY);
-  return record;
+    await store.remove(LAST_OPENED_SESSION_KEY);
+    return record;
+  });
+}
+
+export async function restoreLastOpenedSessionIfMissing(
+  record: LastOpenedSession,
+  store: LocalKeyValueStore = localKeyValueStore,
+): Promise<void> {
+  await enqueueWrite(store, async () => {
+    const current = await loadLastOpenedSession(store);
+    if (current) return;
+    await store.set(LAST_OPENED_SESSION_KEY, JSON.stringify(record));
+  });
 }
 
 export async function removeLastOpenedSession(
