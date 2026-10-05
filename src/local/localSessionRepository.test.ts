@@ -6,6 +6,30 @@ class DelayedLocalKeyValueStore extends MemoryLocalKeyValueStore {
     await super.set(key, value);
   }
 }
+
+class FailAfterPersistLocalKeyValueStore extends MemoryLocalKeyValueStore {
+  failNextSetAfterPersist = false;
+
+  async set(key: string, value: string) {
+    await super.set(key, value);
+    if (this.failNextSetAfterPersist) {
+      this.failNextSetAfterPersist = false;
+      throw new Error('simulated write acknowledgement failure');
+    }
+  }
+}
+
+class FailCascadeAndRestoreLocalKeyValueStore extends MemoryLocalKeyValueStore {
+  failuresRemaining = 0;
+
+  async set(key: string, value: string) {
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      throw new Error('simulated persistent storage failure');
+    }
+    await super.set(key, value);
+  }
+}
 import { LocalSessionRepository } from './localSessionRepository';
 
 describe('LocalSessionRepository', () => {
@@ -80,6 +104,39 @@ describe('LocalSessionRepository', () => {
     });
 
     await expect(repository.list('provider-a')).resolves.toHaveLength(2);
+  });
+
+  it('restores the full canonical session snapshot when cascade persistence fails after writing', async () => {
+    const storage = new FailAfterPersistLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const first = await repository.create('provider-a', 'A1');
+    const second = await repository.create('provider-b', 'B1');
+
+    storage.failNextSetAfterPersist = true;
+
+    await expect(
+      repository.deleteByProvider('provider-a', [first.id]),
+    ).rejects.toThrow('simulated write acknowledgement failure');
+
+    await expect(repository.list()).resolves.toMatchObject([
+      { id: second.id, title: 'B1' },
+      { id: first.id, title: 'A1' },
+    ]);
+  });
+
+  it('surfaces incomplete canonical-session rollback when the snapshot cannot be restored', async () => {
+    const storage = new FailCascadeAndRestoreLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const first = await repository.create('provider-a', 'A1');
+
+    storage.failuresRemaining = 2;
+
+    await expect(
+      repository.deleteByProvider('provider-a', [first.id]),
+    ).rejects.toMatchObject({
+      name: 'LocalProviderSessionRollbackIncompleteError',
+      originalError: expect.any(Error),
+    });
   });
 
   it('treats provider cascade deletion with no owned sessions as a no-op', async () => {
