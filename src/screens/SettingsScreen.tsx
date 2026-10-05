@@ -141,6 +141,9 @@ export function SettingsScreen() {
       case 'personalization':
         navigation.navigate('Personalization');
         break;
+      case 'memory':
+        navigation.navigate('Memory');
+        break;
       case 'appearance':
         setAppearanceOpen(true);
         break;
@@ -251,7 +254,13 @@ export function SettingsScreen() {
         <SectionHeader>我的 Mira</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row icon={Smile} title="个性化" actionId="personalization" isFirst isLast={false} />
-          <Row icon={BookOpen} title="记忆" isLast={false} />
+          <Row
+            icon={BookOpen}
+            title="记忆"
+            subtitle="本机长期记忆"
+            actionId="memory"
+            isLast={false}
+          />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
         </RowGroup>
 

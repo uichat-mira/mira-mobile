@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AppState, StatusBar, type AppStateStatus } from 'react-native';
 import {
   NavigationContainer,
@@ -156,6 +156,7 @@ function AppInner() {
   const bootstrapChecked = bootstrap !== null;
   const hasDeviceCredential = bootstrap?.hasDeviceCredential ?? false;
   const restoreTarget = bootstrap?.restoreTarget ?? null;
+  const startupRestoreHandled = useRef(false);
 
   useEffect(() => {
     let previousState: AppStateStatus = AppState.currentState;
@@ -272,11 +273,10 @@ function AppInner() {
     };
   }, []);
 
-  // The restore target lives in the committed bootstrap state and is only read
-  // once, by the navigator's initial route. It is intentionally not cleared
-  // afterwards: the navigator never re-reads initialRouteName, and clearing it
-  // here previously won the race against the navigator's first mount, which is
-  // exactly why "launch into last session" fell back to the session list.
+  // SessionList remains the stack root for an authenticated launch. A valid
+  // restore target is consumed exactly once from SessionList's first focus and
+  // pushed with the same Chat navigation contract as a normal list selection.
+  // This preserves #206's restore intent without making Chat an unreturnable root.
 
   if (!bootstrapChecked) return null;
 
@@ -284,18 +284,22 @@ function AppInner() {
     <>
       <TailscaleConnectivityLifecycle />
       <Stack.Navigator
-        initialRouteName={
-          hasDeviceCredential ? (restoreTarget ? 'Chat' : 'SessionList') : 'Bootstrap'
-        }
+        initialRouteName={hasDeviceCredential ? 'SessionList' : 'Bootstrap'}
         screenOptions={{ headerShown: false }}
       >
         <Stack.Screen name="Bootstrap" component={BootstrapScreen} />
-        <Stack.Screen name="SessionList" component={SessionListScreen} />
         <Stack.Screen
-          name="Chat"
-          component={AgentChatScreen}
-          initialParams={restoreTarget ?? undefined}
+          name="SessionList"
+          component={SessionListScreen}
+          listeners={({ navigation }) => ({
+            focus: () => {
+              if (!restoreTarget || startupRestoreHandled.current) return;
+              startupRestoreHandled.current = true;
+              navigation.navigate('Chat', restoreTarget);
+            },
+          })}
         />
+        <Stack.Screen name="Chat" component={AgentChatScreen} />
         <Stack.Screen name="WorkspaceList" component={WorkspaceListScreen} />
         <Stack.Screen name="WorkspaceDetail" component={WorkspaceDetailScreen} />
         <Stack.Screen name="HostConfig" component={HostConfigScreen} />

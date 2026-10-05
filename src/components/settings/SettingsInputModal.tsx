@@ -24,6 +24,8 @@ interface SettingsInputModalProps {
   multiline?: boolean;
   /** Returns a user-facing rejection reason, or null when the value is acceptable. */
   validate?: (value: string) => string | null;
+  /** Optional extra row rendered between the input and the actions. */
+  footer?: React.ReactNode;
   onSubmit: (value: string) => void;
   onClose: () => void;
 }
@@ -37,6 +39,7 @@ export function SettingsInputModal({
   initialValue,
   multiline = false,
   validate,
+  footer,
   onSubmit,
   onClose,
 }: SettingsInputModalProps) {
@@ -106,6 +109,7 @@ export function SettingsInputModal({
             {error ? (
               <Text style={[styles.error, { color: colors.status.error }]}>{error}</Text>
             ) : null}
+            {footer}
             <View style={styles.actions}>
               <Pressable
                 style={({ pressed }) => [

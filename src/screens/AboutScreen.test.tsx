@@ -93,11 +93,11 @@ describe('AboutScreen MOB-056D', () => {
   it('still surfaces a patch release through the manual check', async () => {
     const { parseSemver } = jest.requireActual('../update/semver');
     mockFetchLatestRelease.mockResolvedValue({
-      version: parseSemver('0.3.11'),
-      displayVersion: '0.3.11-dev',
+      version: parseSemver('0.3.12'),
+      displayVersion: '0.3.12-dev',
       notes: null,
       apkUrl:
-        'https://assets.tomz.io/mira/mobile/dev/releases/0.3.11/uichat-mira-mobile-release.apk',
+        'https://assets.tomz.io/mira/mobile/dev/releases/0.3.12/uichat-mira-mobile-release.apk',
       sha256: 'a'.repeat(64),
     });
 
@@ -111,7 +111,7 @@ describe('AboutScreen MOB-056D', () => {
     const subtitles = tree.root
       .findAll((node) => typeof node.props.children === 'string')
       .map((node) => node.props.children as string);
-    expect(subtitles.some((value) => value.includes('0.3.11-dev'))).toBe(true);
+    expect(subtitles.some((value) => value.includes('0.3.12-dev'))).toBe(true);
   });
 
   it('shows no new-version state when the release is equal or older', async () => {

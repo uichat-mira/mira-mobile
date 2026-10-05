@@ -8,13 +8,24 @@ import ReactTestRenderer from 'react-test-renderer';
 import { saveGeneralSettings } from '../src/screens/generalSettings';
 import { saveLastOpenedSession } from '../src/screens/lastOpenedSession';
 
-// Captured from the stack navigator's first mount. The regression this guards is
-// that a valid restore target was cleared before the navigator read its initial
-// route, so the app cold-started into the session list instead of the last
-// session. We observe the navigator's actual route/params instead of asserting
-// on App.tsx source text.
+type MockRoute = { name: string; params?: Record<string, unknown> };
+type MockNavigation = {
+  navigate: (name: string, params?: Record<string, unknown>) => void;
+  goBack: () => void;
+  canGoBack: () => boolean;
+};
+type MockScreenListenerFactory = (args: {
+  navigation: MockNavigation;
+}) => { focus?: () => void };
+
+// The navigator mock below keeps an observable route stack. This lets the
+// regression distinguish the broken [Chat] root from the required
+// [SessionList, Chat] startup topology and exercise the same pop semantics used
+// by Chat's back action / Android system back.
 const mockInitialRouteNames: string[] = [];
-const mockChatInitialParams: Array<Record<string, unknown> | undefined> = [];
+const mockNavigationStacks: MockRoute[][] = [];
+const mockNavigations: MockNavigation[] = [];
+const mockScreenListeners: Record<string, MockScreenListenerFactory | undefined> = {};
 
 jest.mock('@react-navigation/native', () => ({
   NavigationContainer: ({ children }: { children: React.ReactNode }) => children ?? null,
@@ -27,26 +38,52 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaFrame: () => ({ x: 0, y: 0, width: 390, height: 844 }),
 }));
 
-jest.mock('@react-navigation/native-stack', () => ({
-  createNativeStackNavigator: () => ({
-    Navigator: ({
-      initialRouteName,
-      children,
-    }: {
-      initialRouteName?: string;
-      children?: React.ReactNode;
-    }) => {
-      mockInitialRouteNames.push(initialRouteName as string);
-      return children ?? null;
-    },
-    Screen: ({ name, initialParams }: { name: string; initialParams?: unknown }) => {
-      if (name === 'Chat') {
-        mockChatInitialParams.push(initialParams as Record<string, unknown> | undefined);
-      }
-      return null;
-    },
-  }),
-}));
+jest.mock('@react-navigation/native-stack', () => {
+  const ReactActual = jest.requireActual('react') as typeof import('react');
+
+  return {
+    createNativeStackNavigator: () => ({
+      Navigator: ({
+        initialRouteName,
+        children,
+      }: {
+        initialRouteName?: string;
+        children?: React.ReactNode;
+      }) => {
+        ReactActual.useEffect(() => {
+          const stack: MockRoute[] = [{ name: initialRouteName as string }];
+          const navigation: MockNavigation = {
+            navigate: (name, params) => {
+              stack.push({ name, params });
+            },
+            goBack: () => {
+              if (stack.length > 1) stack.pop();
+            },
+            canGoBack: () => stack.length > 1,
+          };
+
+          mockNavigationStacks.push(stack);
+          mockNavigations.push(navigation);
+          const initialListeners = mockScreenListeners[initialRouteName as string]?.({ navigation });
+          initialListeners?.focus?.();
+        }, [initialRouteName]);
+
+        mockInitialRouteNames.push(initialRouteName as string);
+        return children ?? null;
+      },
+      Screen: ({
+        name,
+        listeners,
+      }: {
+        name: string;
+        listeners?: MockScreenListenerFactory;
+      }) => {
+        mockScreenListeners[name] = listeners;
+        return null;
+      },
+    }),
+  };
+});
 
 // Back the app's key-value store with an in-memory implementation so the test
 // can seed the exact instance the app reads. The store must be created inside
@@ -173,6 +210,7 @@ jest.mock('../src/shiyan/ShiyanTaskDetailWithDeliveryScreen', () => ({
   ShiyanTaskDetailWithDeliveryScreen: 'ShiyanTaskDetailWithDeliveryScreen',
 }));
 
+import { runtimeRegistry } from '../src/runtime/runtimeRegistry';
 import { useHostStore } from '../src/store/hostStore';
 import { localKeyValueStore } from '../src/storage/localKeyValueStore';
 import App from '../App';
@@ -198,7 +236,9 @@ const renderApp = async (): Promise<ReactTestRenderer.ReactTestRenderer> => {
 describe('startup session restore', () => {
   beforeEach(() => {
     mockInitialRouteNames.length = 0;
-    mockChatInitialParams.length = 0;
+    mockNavigationStacks.length = 0;
+    mockNavigations.length = 0;
+    for (const key of Object.keys(mockScreenListeners)) delete mockScreenListeners[key];
     useHostStore.getState().setConnectionStatus('connected');
     const remote = jest.requireMock('../src/api/remoteMiraHost').remoteMiraHostClient;
     remote.restoreConnection.mockResolvedValue({ hostUrl: 'https://host.example' });
@@ -213,6 +253,7 @@ describe('startup session restore', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     useHostStore.getState().setConnectionStatus('disconnected');
     await localKeyValueStore.remove('mira.mobile.last-opened-session.v1');
     await localKeyValueStore.remove('mira.mobile.general.v1');
@@ -264,7 +305,7 @@ describe('startup session restore', () => {
     };
   };
 
-  it('cold-starts into the last session when launchBehavior is last-session', async () => {
+  it('restores a remote last session above SessionList and can return to the list', async () => {
     await enableLastSessionLaunch();
     await saveLastOpenedSession(
       { sessionId: 'thread-42', title: '需求评审', source: 'remote-host' },
@@ -273,9 +314,53 @@ describe('startup session restore', () => {
 
     await renderApp();
 
-    expect(mockInitialRouteNames).toHaveLength(1);
-    expect(mockInitialRouteNames[0]).toBe('Chat');
-    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([
+      { name: 'SessionList' },
+      {
+        name: 'Chat',
+        params: expect.objectContaining({ sessionId: 'thread-42', source: 'remote-host' }),
+      },
+    ]);
+    expect(mockNavigations[0].canGoBack()).toBe(true);
+
+    mockNavigations[0].goBack();
+
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
+    expect(mockNavigations[0].canGoBack()).toBe(false);
+
+    // Returning to SessionList fires focus again in the real navigator. The
+    // startup restore must already be consumed, otherwise the old Chat would be
+    // pushed again and the user would be trapped in the same loop.
+    mockScreenListeners.SessionList?.({ navigation: mockNavigations[0] }).focus?.();
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
+  });
+
+  it('restores a local-provider last session above SessionList', async () => {
+    jest.spyOn(runtimeRegistry.local, 'listSessions').mockResolvedValue([
+      {
+        id: 'local-42',
+        title: '本地会话',
+        updatedAt: new Date('2026-10-01T00:00:00Z'),
+        source: 'local-provider',
+      },
+    ]);
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession(
+      { sessionId: 'local-42', title: '本地会话', source: 'local-provider' },
+      localKeyValueStore,
+    );
+
+    await renderApp();
+
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([
+      { name: 'SessionList' },
+      {
+        name: 'Chat',
+        params: expect.objectContaining({ sessionId: 'local-42', source: 'local-provider' }),
+      },
+    ]);
   });
 
   it('falls back to the session list when a connected Host authoritatively lists it as absent', async () => {
@@ -290,9 +375,8 @@ describe('startup session restore', () => {
 
     await renderApp();
 
-    expect(mockInitialRouteNames).toHaveLength(1);
-    expect(mockInitialRouteNames[0]).toBe('SessionList');
-    expect(mockChatInitialParams.every((params) => params === undefined)).toBe(true);
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
   });
 
   it('restores the remote session into Chat while the Host is unavailable', async () => {
@@ -310,9 +394,11 @@ describe('startup session restore', () => {
     await renderApp();
 
     expect(useHostStore.getState().connectionStatus).toBe('reconnecting');
-    expect(mockInitialRouteNames).toHaveLength(1);
-    expect(mockInitialRouteNames[0]).toBe('Chat');
-    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([
+      { name: 'SessionList' },
+      { name: 'Chat', params: expect.objectContaining({ sessionId: 'thread-42' }) },
+    ]);
   });
 
   it('restores the remote session into Chat when session listing fails', async () => {
@@ -329,9 +415,11 @@ describe('startup session restore', () => {
 
     await renderApp();
 
-    expect(mockInitialRouteNames).toHaveLength(1);
-    expect(mockInitialRouteNames[0]).toBe('Chat');
-    expect(mockChatInitialParams[0]).toMatchObject({ sessionId: 'thread-42' });
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([
+      { name: 'SessionList' },
+      { name: 'Chat', params: expect.objectContaining({ sessionId: 'thread-42' }) },
+    ]);
   });
 
   it('starts on the session list by default', async () => {
@@ -342,8 +430,8 @@ describe('startup session restore', () => {
 
     await renderApp();
 
-    expect(mockInitialRouteNames).toHaveLength(1);
-    expect(mockInitialRouteNames[0]).toBe('SessionList');
+    expect(mockInitialRouteNames).toEqual(['SessionList']);
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
   });
 
   it('does not auto-prompt for a patch-only update', async () => {
