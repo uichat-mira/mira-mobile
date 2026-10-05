@@ -322,6 +322,75 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(session.id)).resolves.toBeDefined();
   });
 
+  it('releases an abandoned send lease when the runtime is cancelled', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Running', config.id);
+
+    await runtime.sendMessage(session.id, 'hello');
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      '正在执行本地请求',
+    );
+
+    runtime.cancelActiveRun();
+
+    await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+    await expect(repository.get(session.id)).rejects.toThrow('not found');
+  });
+
+  it('rejects the cascade when the frozen session id set changes at the same count', async () => {
+    const stageSessionReferenceRemoval = jest.fn(
+      async () => jest.fn(async () => undefined),
+    );
+    const {
+      runtime,
+      configStore,
+      credentialStore,
+      repository,
+    } = await createDeletionRuntime(stageSessionReferenceRemoval);
+    const first = await runtime.createSession('A1', config.id);
+    const second = await runtime.createSession('A2', config.id);
+
+    stageSessionReferenceRemoval.mockImplementationOnce(async () => {
+      await repository.delete(first.id);
+      await repository.create('provider-a', 'A3');
+      return jest.fn(async () => undefined);
+    });
+
+    await expect(runtime.deleteProvider(config.id, 2)).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_SCOPE_CHANGED',
+      actualSessionCount: 2,
+    });
+
+    await expect(configStore.load()).resolves.toEqual([
+      storedConfig(config),
+      storedConfig(otherConfig),
+    ]);
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+    await expect(repository.list(config.id)).resolves.toHaveLength(2);
+    await expect(repository.get(second.id)).resolves.toBeDefined();
+  });
+
+  it('detects a config rollback that resolves without restoring persisted state', async () => {
+    const { runtime, configStore, repository } = await createDeletionRuntime();
+    await runtime.createSession('Keep me', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new Error('session persistence failed'),
+    );
+    jest.spyOn(configStore, 'upsert').mockResolvedValueOnce(undefined);
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      '本地回滚未完整完成',
+    );
+
+    await expect(
+      configStore.load(),
+    ).resolves.toEqual([storedConfig(otherConfig)]);
+  });
+
   it('refuses deletion while the selected Provider still owns an active run', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
