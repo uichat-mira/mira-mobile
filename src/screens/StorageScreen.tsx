@@ -28,6 +28,7 @@ import {
 import {
   computeDeviceStorageUsage,
   formatBytes,
+  UI_STATE_UI_STATE_STORAGE_KEY_GROUPS_TO_RESET,
   type DeviceStorageUsage,
 } from '../storage/deviceStorageUsage';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
@@ -36,13 +37,6 @@ import { localCaptureRepository } from '../shiyan/recording/localCaptureReposito
 interface CategoryIconMap {
   [key: string]: React.ComponentType<{ size?: number; color?: string }>;
 }
-
-const STORAGE_KEY_GROUPS_TO_RESET: readonly string[][] = [
-  ['mira.mobile.theme.mode', 'mira.mobile.theme.accent'],
-  ['mira.mobile.personalization.v1'],
-  ['thread-pins-v1', 'thread-read-progress-v1'],
-  ['mira.shiyan.api-base-url.v1'],
-];
 
 interface AudioSupportProbe {
   /** 探测返回的录音模块；null 表示不可用。 */
@@ -245,7 +239,7 @@ export function StorageScreen() {
     const removed: string[] = [];
     const failed: string[] = [];
     try {
-      for (const group of STORAGE_KEY_GROUPS_TO_RESET) {
+      for (const group of UI_STATE_STORAGE_KEY_GROUPS_TO_RESET) {
         const result = await removeKeys(group);
         removed.push(...result.removed);
         failed.push(...result.failed);
