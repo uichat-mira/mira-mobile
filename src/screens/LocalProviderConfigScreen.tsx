@@ -184,10 +184,17 @@ export function LocalProviderConfigScreen() {
         return;
       }
       if (error instanceof LocalProviderDeletionRollbackIncompleteError) {
-        Alert.alert(
-          '删除未完整回滚',
-          '部分本地状态可能已经变化。请重新打开 Local Provider 设置检查配置、API Key 和关联对话后，再决定是否继续操作。',
-        );
+        if (error.reason === 'canonical-sessions') {
+          Alert.alert(
+            '本地对话恢复不完整',
+            '本地对话存储未能完整恢复。为避免幽灵引用，相关置顶、未读和启动恢复引用保持清理状态；Provider 配置和 API Key 已尝试恢复。请返回对话列表检查当前状态。',
+          );
+        } else {
+          Alert.alert(
+            '删除未完整回滚',
+            '部分本地状态可能已经变化。请重新打开 Local Provider 设置检查配置、API Key 和关联对话后，再决定是否继续操作。',
+          );
+        }
         return;
       }
       Alert.alert(
