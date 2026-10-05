@@ -70,6 +70,13 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('刚才的删除确认已失效');
   });
 
+  it('uses a synchronous ref guard for destructive Provider deletion re-entry', () => {
+    expect(source).toContain('const deletingProviderRef = useRef(false)');
+    expect(source).toContain('if (deletingProviderRef.current) return');
+    expect(source).toContain('deletingProviderRef.current = true');
+    expect(source).toContain('deletingProviderRef.current = false');
+  });
+
   it('reconfirms when the deletion scope changes before commit', () => {
     expect(source).toContain('error instanceof LocalProviderDeletionScopeChangedError');
     expect(source).toContain('error.actualSessionCount');
