@@ -260,7 +260,7 @@ export function LocalProviderConfigScreen() {
         },
       ],
     );
-  }, [clearingKey, config.id, hasStoredKey, saving]);
+  }, [clearingKey, config.id, deletingProvider, hasStoredKey, saving]);
 
   const createSession = useCallback(async () => {
     try {
