@@ -281,7 +281,7 @@ describe('LocalProviderRuntime rejected provider streams', () => {
         listTools: async () => [{
           name: 'search',
           description: 'Search',
-          inputSchema: { type: 'object' },
+          parameters: { type: 'object' },
         }],
         callTool,
       },
