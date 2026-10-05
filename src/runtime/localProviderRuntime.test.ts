@@ -259,6 +259,31 @@ describe('LocalProviderRuntime Provider deletion', () => {
     ]);
   });
 
+  it('matches Provider ownership by exact id without folding case or whitespace', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const exact = await runtime.createSession('Exact', config.id);
+    const caseVariant = await repository.create('Provider-A', 'Case variant');
+    const whitespaceVariant = await repository.create(
+      'provider-a ',
+      'Whitespace variant',
+    );
+
+    await expect(runtime.getProviderDeletionImpact(config.id)).resolves.toEqual({
+      providerId: config.id,
+      sessionCount: 1,
+    });
+
+    await expect(runtime.deleteProvider(config.id, 1)).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 1,
+      deletedSessionIds: [exact.id],
+    });
+
+    await expect(repository.get(exact.id)).rejects.toThrow('not found');
+    await expect(repository.get(caseVariant.id)).resolves.toBeDefined();
+    await expect(repository.get(whitespaceVariant.id)).resolves.toBeDefined();
+  });
+
   it('deletes a Provider with zero conversations without touching another Provider', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
@@ -424,9 +449,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
     );
     jest.spyOn(configStore, 'upsert').mockResolvedValueOnce(undefined);
 
-    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
-      '本地回滚未完整完成',
-    );
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE',
+      originalError: expect.any(Error),
+    });
 
     await expect(
       configStore.load(),
