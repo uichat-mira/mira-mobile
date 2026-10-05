@@ -13,6 +13,7 @@ export interface LocalProviderConfig {
   protocol: OpenAiStandardProtocol;
   toolGatewayId?: string;
   requiresStandardProtocolReview?: boolean;
+  legacyReasoningBehaviorChanged?: boolean;
 }
 
 export const LOCAL_PROVIDER_CONFIG_STORAGE_KEYS = {
@@ -48,6 +49,8 @@ const parseCurrentConfig = (value: unknown): LocalProviderConfig => {
   const baseUrl = record.baseUrl as string;
   const requiresStandardProtocolReview =
     record.requiresStandardProtocolReview === true;
+  const legacyReasoningBehaviorChanged =
+    record.legacyReasoningBehaviorChanged === true;
 
   if (!requiresStandardProtocolReview) {
     normalizeOpenAiStandardBaseUrl(baseUrl);
@@ -65,23 +68,33 @@ const parseCurrentConfig = (value: unknown): LocalProviderConfig => {
     ...(requiresStandardProtocolReview
       ? { requiresStandardProtocolReview: true }
       : {}),
+    ...(legacyReasoningBehaviorChanged
+      ? { legacyReasoningBehaviorChanged: true }
+      : {}),
   };
 };
 
 const normalizeConfigForWrite = (
   value: LocalProviderConfig,
+  acknowledgeMigration = false,
 ): LocalProviderConfig => {
   const parsed = parseCurrentConfig(value);
-  if (!parsed.requiresStandardProtocolReview) return parsed;
+  const normalized = { ...parsed };
 
-  const isCorrectedHttpsBase =
-    /^https:\/\//iu.test(parsed.baseUrl.trim()) &&
-    isOpenAiStandardBaseUrl(parsed.baseUrl);
-  if (!isCorrectedHttpsBase) return parsed;
+  if (acknowledgeMigration) {
+    delete normalized.legacyReasoningBehaviorChanged;
+  }
 
-  const corrected = { ...parsed };
-  delete corrected.requiresStandardProtocolReview;
-  return corrected;
+  if (parsed.requiresStandardProtocolReview && acknowledgeMigration) {
+    const isCorrectedHttpsBase =
+      /^https:\/\//iu.test(parsed.baseUrl.trim()) &&
+      isOpenAiStandardBaseUrl(parsed.baseUrl);
+    if (isCorrectedHttpsBase) {
+      delete normalized.requiresStandardProtocolReview;
+    }
+  }
+
+  return normalized;
 };
 
 const legacyReasoningTagMode = (value: unknown): 'strip' | 'preserve' => {
@@ -115,8 +128,8 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
     /^https:\/\//iu.test(baseUrl.trim()) &&
     isOpenAiStandardBaseUrl(baseUrl);
   const reasoningTagMode = legacyReasoningTagMode(record.compatibility);
-  const requiresStandardProtocolReview =
-    !isHttpsLegacyBase || reasoningTagMode === 'strip';
+  const requiresStandardProtocolReview = !isHttpsLegacyBase;
+  const legacyReasoningBehaviorChanged = reasoningTagMode === 'strip';
   return {
     id: record.id as string,
     name: record.name as string,
@@ -128,6 +141,9 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
       : {}),
     ...(requiresStandardProtocolReview
       ? { requiresStandardProtocolReview: true }
+      : {}),
+    ...(legacyReasoningBehaviorChanged
+      ? { legacyReasoningBehaviorChanged: true }
       : {}),
   };
 };
@@ -164,7 +180,9 @@ export class ProviderConfigStore {
   }
 
   async save(configs: readonly LocalProviderConfig[]): Promise<void> {
-    const normalized = configs.map(normalizeConfigForWrite);
+    const normalized = configs.map((config) =>
+      normalizeConfigForWrite(config),
+    );
     await this.store.set(
       LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.current,
       JSON.stringify(normalized),
@@ -173,7 +191,7 @@ export class ProviderConfigStore {
 
   async upsert(config: LocalProviderConfig): Promise<void> {
     const configs = await this.load();
-    const normalized = normalizeConfigForWrite(config);
+    const normalized = normalizeConfigForWrite(config, true);
     const index = configs.findIndex((item) => item.id === normalized.id);
     if (index < 0) {
       await this.save([...configs, normalized]);
