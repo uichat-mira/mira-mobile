@@ -21,6 +21,13 @@ let localSessionIdSequence = 0;
 
 export const DEFAULT_LOCAL_SESSION_TITLE = 'New local conversation';
 
+export class LocalProviderSessionSetChangedError extends Error {
+  constructor(readonly actualSessionIds: string[]) {
+    super('Local Provider session set changed during deletion');
+    this.name = 'LocalProviderSessionSetChangedError';
+  }
+}
+
 const createLocalSessionId = (): string => {
   localSessionIdSequence += 1;
   return `local-${Date.now()}-${localSessionIdSequence.toString(36)}`;
@@ -219,14 +226,28 @@ export class LocalSessionRepository {
     });
   }
 
-  deleteByProvider(providerId: string): Promise<string[]> {
+  deleteByProvider(
+    providerId: string,
+    expectedSessionIds?: readonly string[],
+  ): Promise<string[]> {
     return this.enqueueWrite(async () => {
       const values = await this.loadStored();
       const deletedSessionIds = values
         .filter((item) => item.providerId === providerId)
         .map((item) => item.id);
-      if (deletedSessionIds.length === 0) return [];
 
+      if (expectedSessionIds) {
+        const expected = [...expectedSessionIds].sort();
+        const actual = [...deletedSessionIds].sort();
+        if (
+          expected.length !== actual.length ||
+          expected.some((sessionId, index) => sessionId !== actual[index])
+        ) {
+          throw new LocalProviderSessionSetChangedError(deletedSessionIds);
+        }
+      }
+
+      if (deletedSessionIds.length === 0) return [];
       await this.saveStored(values.filter((item) => item.providerId !== providerId));
       return deletedSessionIds;
     });
