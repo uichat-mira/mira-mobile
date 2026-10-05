@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, TextInput } from 'react-native';
+import { Text, TextInput } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
@@ -57,13 +57,12 @@ describe('SettingsInputModal validation', () => {
       input.props.onChangeText('亲和友善');
     });
 
-    const confirm = tree.root
-      .findAllByType(Pressable)
-      .find((node) => node.props.accessibilityLabel === '添加');
-    expect(confirm).toBeDefined();
+    const confirm = tree.root.find(
+      (node) => node.props.accessibilityLabel === '添加',
+    );
 
     act(() => {
-      confirm!.props.onPress();
+      confirm.props.onPress();
     });
 
     expect(renderedStrings(tree)).toContain(
