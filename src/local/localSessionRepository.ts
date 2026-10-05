@@ -219,6 +219,19 @@ export class LocalSessionRepository {
     });
   }
 
+  deleteByProvider(providerId: string): Promise<string[]> {
+    return this.enqueueWrite(async () => {
+      const values = await this.loadStored();
+      const deletedSessionIds = values
+        .filter((item) => item.providerId === providerId)
+        .map((item) => item.id);
+      if (deletedSessionIds.length === 0) return [];
+
+      await this.saveStored(values.filter((item) => item.providerId !== providerId));
+      return deletedSessionIds;
+    });
+  }
+
   clear(): Promise<void> {
     return this.enqueueWrite(() => this.store.remove(STORAGE_KEY));
   }
