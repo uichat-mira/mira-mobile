@@ -199,7 +199,7 @@ const drain = async (stream: AsyncIterable<unknown>) => {
 describe('LocalProviderRuntime personalization context', () => {
   const personalized: PersonalizationSettings = {
     baseStyle: { tone: 'professional' },
-    characteristics: { warmth: true, traits: ['讲话简短'], conciseFirst: true },
+    characteristics: { traits: ['给出反例'] },
     instructions: '保持克制',
   };
 
