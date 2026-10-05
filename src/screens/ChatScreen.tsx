@@ -583,6 +583,9 @@ export function ChatScreen() {
           setAgentPauseReason(null);
           setAgentError(null);
           break;
+        case 'clear-approval-action':
+          setApprovalAction(null);
+          break;
         case 'clear-approval':
           setPendingAgentApproval(null);
           setApprovalAction(null);
@@ -661,12 +664,22 @@ export function ChatScreen() {
   );
 
   const runTurn = useCallback(
-    async (content: string, messageId: string, useLocalAgent: boolean) => {
+    async (
+      content: string,
+      messageId: string,
+      userTimestamp: number,
+      useLocalAgent: boolean,
+    ) => {
       const orchestrator = getOrchestrator();
       orchestratorRef.current = orchestrator;
       try {
         await orchestrator.dispatchTurn(
-          { content, messageId, agentEnabled: useLocalAgent },
+          {
+            content,
+            messageId,
+            agentEnabled: useLocalAgent,
+            userTimestamp,
+          },
           { emit: handleLifecycleEvent },
           createLocalMessageId,
         );
@@ -703,7 +716,7 @@ export function ChatScreen() {
         setMessages((prev) => [...prev, userMsg]);
       }
 
-      await runTurn(content, userMsg.id, useLocalAgent);
+      await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
     },
     [
       agentEnabled,

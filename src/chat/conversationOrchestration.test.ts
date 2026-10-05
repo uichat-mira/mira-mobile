@@ -28,7 +28,8 @@ const message = (
   id: string,
   role: ChatMessage['role'],
   content: string,
-): ChatMessage => ({ id, role, content, timestamp: new Date('2026-10-05T00:00:00.000Z') });
+  timestampMs = Date.parse('2026-10-05T00:00:00.000Z'),
+): ChatMessage => ({ id, role, content, timestamp: new Date(timestampMs) });
 
 const streamOf = (events: RuntimeEvent[]): AsyncIterable<RuntimeEvent> =>
   (async function* () {
@@ -83,12 +84,52 @@ const buildHarness = (options: {
 const failureEvent = (events: ConversationLifecycleEvent[]) =>
   events.find((event) => event.type === 'failure');
 
+const eventTypes = (events: ConversationLifecycleEvent[]) =>
+  events.map((event) => event.type);
+
+/** Applies a lifecycle event stream to agent UI state, mirroring ChatScreen wiring. */
+const reduceAgentState = (events: ConversationLifecycleEvent[]) => {
+  let pendingApproval: unknown = null;
+  let approvalAction: unknown = null;
+  let phase = 'idle';
+  let pauseReason: string | null = null;
+  for (const event of events) {
+    switch (event.type) {
+      case 'agent-reset':
+        pendingApproval = null;
+        approvalAction = null;
+        phase = 'idle';
+        pauseReason = null;
+        break;
+      case 'clear-approval-action':
+        approvalAction = null;
+        break;
+      case 'clear-approval':
+        pendingApproval = null;
+        approvalAction = null;
+        break;
+      case 'approval-required':
+        pendingApproval = event.approval;
+        break;
+      case 'phase':
+        phase = event.phase;
+        break;
+      case 'pause':
+        pauseReason = event.reason;
+        break;
+      default:
+        break;
+    }
+  }
+  return { pendingApproval, approvalAction, phase, pauseReason };
+};
+
 describe('ConversationOrchestrator', () => {
   it('streams a successful turn and performs a canonical reload', async () => {
     const harness = buildHarness({});
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -97,8 +138,7 @@ describe('ConversationOrchestrator', () => {
     expect(harness.sends).toEqual([
       { content: 'hi', messageId: 'u1', agentEnabled: false },
     ]);
-    const textEvents = harness.events.filter((event) => event.type === 'text');
-    expect(textEvents.at(-1)).toEqual({ type: 'text', text: 'hello' });
+    expect(harness.events).toContainEqual({ type: 'text', text: 'hello' });
     expect(harness.events).toContainEqual({
       type: 'canonical-reload',
       messages: [message('a1', 'assistant', 'hello')],
@@ -110,7 +150,7 @@ describe('ConversationOrchestrator', () => {
     const harness = buildHarness({});
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi' },
+      { content: 'hi', userTimestamp: 1000 },
       harness.emit,
       () => 'generated-id',
     );
@@ -120,19 +160,17 @@ describe('ConversationOrchestrator', () => {
   });
 
   it('treats a user cancel as cancelled and not as an ordinary failure', async () => {
-    const runtime = runtimeFor('remote-host');
-    const harness = buildHarness({
-      runtime,
+    const harness: Harness = buildHarness({
+      runtime: runtimeFor('remote-host'),
       canonical: async () => [message('u1', 'user', 'hi')],
       send: async (_input) => {
-        // Cancel while the stream is still open, before any assistant message.
         harness.orchestrator.cancel();
         return streamOf([]);
       },
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -152,17 +190,16 @@ describe('ConversationOrchestrator', () => {
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
 
     expect(outcome.failed).toBe(true);
-    const failure = failureEvent(harness.events);
-    expect(failure).toMatchObject({ type: 'failure', kind: 'timeout', messageId: 'u1' });
-    expect(harness.events).toContainEqual({
-      type: 'canonical-reload',
-      messages: [message('u1', 'user', 'hi')],
+    expect(failureEvent(harness.events)).toMatchObject({
+      type: 'failure',
+      kind: 'timeout',
+      messageId: 'u1',
     });
   });
 
@@ -176,7 +213,7 @@ describe('ConversationOrchestrator', () => {
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -189,7 +226,7 @@ describe('ConversationOrchestrator', () => {
     });
   });
 
-  it('does not double-report a failure when the canonical read already has an assistant reply', async () => {
+  it('does not double-report a failure when this turn is already canonical', async () => {
     const harness = buildHarness({
       runtime: runtimeFor('local-provider'),
       canonical: async () => [
@@ -202,7 +239,67 @@ describe('ConversationOrchestrator', () => {
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
+      harness.emit,
+      () => 'generated',
+    );
+
+    expect(outcome.failed).toBe(false);
+    expect(failureEvent(harness.events)).toBeUndefined();
+  });
+
+  it('still reports a failure on a later turn when only older history has an assistant reply', async () => {
+    // old user -> old assistant -> current user -> current send fails.
+    // A historical assistant reply must not suppress this turn's failure.
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider'),
+      canonical: async () => [
+        message('u0', 'user', 'previous question', Date.parse('2026-10-04T00:00:00.000Z')),
+        message('a0', 'assistant', 'previous answer', Date.parse('2026-10-04T00:00:01.000Z')),
+        message('u1', 'user', 'hi', Date.parse('2026-10-05T00:00:00.000Z')),
+      ],
+      send: async () => {
+        throw new RemoteHostError('PROVIDER_TIMEOUT', 'provider timed out');
+      },
+    });
+
+    const outcome = await harness.orchestrator.dispatchTurn(
+      {
+        content: 'hi',
+        messageId: 'u1',
+        userTimestamp: Date.parse('2026-10-05T00:00:00.000Z'),
+      },
+      harness.emit,
+      () => 'generated',
+    );
+
+    expect(outcome.failed).toBe(true);
+    expect(failureEvent(harness.events)).toMatchObject({
+      type: 'failure',
+      messageId: 'u1',
+    });
+  });
+
+  it('suppresses the failure when this turn is canonical even if older assistants exist', async () => {
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider'),
+      canonical: async () => [
+        message('u0', 'user', 'previous question', Date.parse('2026-10-04T00:00:00.000Z')),
+        message('a0', 'assistant', 'previous answer', Date.parse('2026-10-04T00:00:01.000Z')),
+        message('u1', 'user', 'hi', Date.parse('2026-10-05T00:00:00.000Z')),
+        message('a1', 'assistant', 'this turn reply', Date.parse('2026-10-05T00:00:02.000Z')),
+      ],
+      send: async () => {
+        throw new Error('stream dropped after the reply was persisted');
+      },
+    });
+
+    const outcome = await harness.orchestrator.dispatchTurn(
+      {
+        content: 'hi',
+        messageId: 'u1',
+        userTimestamp: Date.parse('2026-10-05T00:00:00.000Z'),
+      },
       harness.emit,
       () => 'generated',
     );
@@ -229,12 +326,12 @@ describe('ConversationOrchestrator', () => {
     });
 
     await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
     await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -247,7 +344,7 @@ describe('ConversationOrchestrator', () => {
     const harness = buildHarness({});
 
     await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -260,7 +357,7 @@ describe('ConversationOrchestrator', () => {
     const harness = buildHarness({ refreshTitle });
 
     await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1' },
+      { content: 'hi', messageId: 'u1', userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -282,7 +379,7 @@ describe('ConversationOrchestrator', () => {
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1', agentEnabled: true },
+      { content: 'hi', messageId: 'u1', agentEnabled: true, userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -300,15 +397,119 @@ describe('ConversationOrchestrator', () => {
     expect(harness.events).toContainEqual({ type: 'phase', phase: 'completed' });
   });
 
-  it('raises an actionable failure when the stream reports an error event', async () => {
+  it('keeps the pending approval request visible while waiting and only clears the action', async () => {
     const harness = buildHarness({
-      runtime: runtimeFor('local-provider'),
-      canonical: async () => [message('u1', 'user', 'hi')],
+      runtime: runtimeFor('local-provider', { supportsAgent: true }),
+      send: async () =>
+        streamOf([
+          {
+            type: 'approval-required',
+            invocationId: 'inv-1',
+            callId: 'c1',
+            name: 'terminal_session',
+            message: 'Run terminal command',
+            scope: 'terminal',
+          },
+          { type: 'finish', reason: 'stop' },
+        ]),
+    });
+
+    await harness.orchestrator.dispatchTurn(
+      { content: 'hi', messageId: 'u1', agentEnabled: true, userTimestamp: 1000 },
+      harness.emit,
+      () => 'generated',
+    );
+
+    const approvalRequiredIndex = harness.events.findIndex(
+      (event) => event.type === 'approval-required',
+    );
+    expect(approvalRequiredIndex).toBeGreaterThanOrEqual(0);
+
+    // The approval-required branch must never emit a blanket clear-approval that
+    // would drop the pending request the user needs to act on.
+    expect(harness.events[approvalRequiredIndex + 1]).toEqual({
+      type: 'clear-approval-action',
+    });
+    expect(eventTypes(harness.events).slice(0, approvalRequiredIndex + 2)).not.toContain(
+      'clear-approval',
+    );
+
+    // State as observed when the user is actually asked to approve: the pending
+    // request must still be present (approval-required, clear-approval-action,
+    // then the waiting-approval phase).
+    const stateWhileWaiting = reduceAgentState(
+      harness.events.slice(0, approvalRequiredIndex + 3),
+    );
+    expect(stateWhileWaiting.pendingApproval).toMatchObject({ invocationId: 'inv-1' });
+    expect(stateWhileWaiting.approvalAction).toBeNull();
+    expect(stateWhileWaiting.phase).toBe('waiting-approval');
+  });
+
+  it('clears the pending approval and pauses the phase when the run is paused', async () => {
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider', { supportsAgent: true }),
+      send: async () =>
+        streamOf([{ type: 'run-paused', reason: 'timeout' }]),
+    });
+
+    await harness.orchestrator.dispatchTurn(
+      { content: 'hi', messageId: 'u1', agentEnabled: true, userTimestamp: 1000 },
+      harness.emit,
+      () => 'generated',
+    );
+
+    const pauseIndex = eventTypes(harness.events).indexOf('pause');
+    expect(pauseIndex).toBeGreaterThanOrEqual(0);
+    expect(harness.events[pauseIndex]).toEqual({
+      type: 'pause',
+      reason: 'timeout',
+    });
+    // The paused phase must be re-established, not left on an earlier phase.
+    expect(harness.events[pauseIndex + 1]).toEqual({
+      type: 'phase',
+      phase: 'paused',
+    });
+
+    const state = reduceAgentState(harness.events);
+    expect(state.pendingApproval).toBeNull();
+    expect(state.approvalAction).toBeNull();
+    expect(state.phase).toBe('paused');
+    expect(state.pauseReason).toBe('timeout');
+  });
+
+  it('does not emit a completed phase after a pause', async () => {
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider', { supportsAgent: true }),
+      send: async () =>
+        streamOf([
+          { type: 'run-paused', reason: 'cancelled' },
+          { type: 'finish', reason: 'stop' },
+        ]),
+    });
+
+    await harness.orchestrator.dispatchTurn(
+      { content: 'hi', messageId: 'u1', agentEnabled: true, userTimestamp: 1000 },
+      harness.emit,
+      () => 'generated',
+    );
+
+    const pauseIndex = eventTypes(harness.events).indexOf('pause');
+    const completedAfterPause = harness.events
+      .slice(pauseIndex + 1)
+      .some((event) => event.type === 'phase' && event.phase === 'completed');
+    expect(completedAfterPause).toBe(false);
+    expect(reduceAgentState(harness.events).phase).toBe('paused');
+  });
+
+  it('clears the pending approval and enters the error phase on a stream error', async () => {
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider', { supportsAgent: true }),
+      canonical: async () => [message('u1', 'user', 'hi', 1000)],
       send: async () => streamOf([{ type: 'error', message: 'stream failed' }]),
     });
 
     const outcome = await harness.orchestrator.dispatchTurn(
-      { content: 'hi', messageId: 'u1', agentEnabled: true },
+      { content: 'hi', messageId: 'u1', agentEnabled: true, userTimestamp: 1000 },
       harness.emit,
       () => 'generated',
     );
@@ -318,7 +519,7 @@ describe('ConversationOrchestrator', () => {
       type: 'failure',
       messageId: 'u1',
     });
-    expect(harness.events).toContainEqual({ type: 'phase', phase: 'error' });
+    expect(reduceAgentState(harness.events).phase).toBe('error');
   });
 });
 

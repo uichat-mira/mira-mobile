@@ -47,6 +47,9 @@ export type ConversationStreamErrorKind =
 export type ConversationLifecycleEvent =
   | { type: 'turn-started'; messageId: string }
   | { type: 'agent-reset' }
+  /** Clears only the in-flight approval action, without dropping the pending request. */
+  | { type: 'clear-approval-action' }
+  /** Clears both the pending approval request and the in-flight approval action. */
   | { type: 'clear-approval' }
   | { type: 'text'; text: string }
   | {
@@ -90,6 +93,12 @@ export interface DispatchConversationTurnOptions {
   /** Reuse the same user-message id on retry so an uncertain reconnect cannot duplicate it. */
   messageId?: string;
   agentEnabled?: boolean;
+  /**
+   * Timestamp (ms) of the user message that started this turn. Used to tell a
+   * canonical Assistant reply for *this* turn apart from older history, so a
+   * failure is only suppressed when this turn's reply was already persisted.
+   */
+  userTimestamp: number;
 }
 
 export interface ConversationTurnOutcome {
@@ -123,6 +132,8 @@ export class ConversationOrchestrator {
       sink.emit({ type: 'agent-reset' });
       sink.emit({ type: 'phase', phase: 'thinking' });
     }
+
+    const userTimestamp = input.userTimestamp;
 
     let replyText = '';
     let agentPaused = false;
@@ -161,7 +172,7 @@ export class ConversationOrchestrator {
                   ...(event.scope ? { scope: event.scope } : {}),
                 },
               });
-              sink.emit({ type: 'clear-approval' });
+              sink.emit({ type: 'clear-approval-action' });
               sink.emit({ type: 'phase', phase: 'waiting-approval' });
               break;
             case 'approval-resolved':
@@ -200,6 +211,7 @@ export class ConversationOrchestrator {
               agentPaused = true;
               sink.emit({ type: 'clear-approval' });
               sink.emit({ type: 'pause', reason: event.reason });
+              sink.emit({ type: 'phase', phase: 'paused' });
               break;
             case 'finish':
               if (event.reason !== 'tool_calls' && !agentPaused) {
@@ -233,7 +245,10 @@ export class ConversationOrchestrator {
       if (canonicalMessages) {
         sink.emit({ type: 'canonical-reload', messages: canonicalMessages });
       }
-      if (!this.abortRequested && !hasCanonicalAssistant(canonicalMessages)) {
+      if (
+        !this.abortRequested &&
+        !hasCurrentTurnAssistant(canonicalMessages, messageId, userTimestamp)
+      ) {
         const kind = classifyConversationSendError(error, this.options.runtime.kind);
         if (useLocalAgent) {
           sink.emit({ type: 'clear-approval' });
@@ -273,8 +288,34 @@ const emitActivity = (
   });
 };
 
-const hasCanonicalAssistant = (messages: ChatMessage[] | null): boolean =>
-  Boolean(messages?.some((message) => message.role === 'assistant'));
+/**
+ * True only when the canonical state already contains an Assistant reply that
+ * belongs to *this* turn. An Assistant reply from an earlier turn must not
+ * suppress a real failure (otherwise the user would silently lose the error and
+ * the retry affordance on every turn after the first).
+ *
+ * The canonical user message is located by `messageId`; the Assistant must sit
+ * after it. When the canonical read does not yet contain this turn's user
+ * message, fall back to the turn's user timestamp.
+ */
+const hasCurrentTurnAssistant = (
+  messages: ChatMessage[] | null,
+  messageId: string,
+  userTimestamp: number,
+): boolean => {
+  if (!messages) return false;
+  const userIndex = messages.findIndex((message) => message.id === messageId);
+  if (userIndex >= 0) {
+    return messages
+      .slice(userIndex + 1)
+      .some((message) => message.role === 'assistant');
+  }
+  return messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      message.timestamp.getTime() >= userTimestamp,
+  );
+};
 
 export const classifyConversationSendError = (
   error: unknown,
