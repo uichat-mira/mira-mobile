@@ -68,6 +68,16 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('刚才的删除确认已失效');
   });
 
+  it('surfaces active-run deletion refusal with a clear recovery path', () => {
+    expect(source).toContain(
+      'error instanceof LocalProviderDeletionBlockedByActiveRunError',
+    );
+    expect(source).toContain("'Provider 正在执行请求'");
+    expect(source).toContain(
+      '请先返回对应的本地对话停止当前生成，再回来删除此 Provider',
+    );
+  });
+
   it('reconfirms when the deletion scope changes before commit', () => {
     expect(source).toContain('error instanceof LocalProviderDeletionScopeChangedError');
     expect(source).toContain('error.actualSessionCount');
