@@ -130,10 +130,10 @@ describe('personalizationSettings', () => {
       instructions: '保持克制',
     });
     await expect(store.get(V3_KEY)).resolves.not.toBeNull();
-    await expect(store.get(V2_KEY)).resolves.toBeNull();
+    await expect(store.get(V2_KEY)).resolves.not.toBeNull();
   });
 
-  it('migrates conflicting v2 style signals into visible Custom Instructions', async () => {
+  it('keeps an explicitly chosen Base style when v2 style signals conflict', async () => {
     const store = new MemoryLocalKeyValueStore();
     await persistV2(store, {
       warmth: true,
@@ -143,22 +143,43 @@ describe('personalizationSettings', () => {
 
     const loaded = await loadPersonalizationSettings(store);
 
-    expect(loaded.baseStyle.tone).toBe('professional');
-    expect(loaded.characteristics.traits).toEqual(['给出反例']);
-    expect(loaded.instructions).toContain('保持克制');
-    expect(loaded.instructions).toContain('保持亲和友善的表达。');
-    expect(loaded.instructions).toContain('优先简洁直接，先给结论。');
+    expect(loaded).toEqual({
+      baseStyle: { tone: 'professional' },
+      characteristics: { traits: ['给出反例'] },
+      instructions: '保持克制',
+    });
   });
 
-  it('is idempotent after a v2 migration and does not append migration instructions twice', async () => {
+  it('uses a deterministic single winner when legacy signals conflict without an explicit Base style', async () => {
     const store = new MemoryLocalKeyValueStore();
-    await persistV2(store, { warmth: true, traits: [] });
+    await persistV2(store, {
+      tone: 'default',
+      warmth: true,
+      traits: ['亲和友善', '讲话简短', '给出反例'],
+      conciseFirst: true,
+    });
+
+    await expect(loadPersonalizationSettings(store)).resolves.toEqual({
+      baseStyle: { tone: 'concise' },
+      characteristics: { traits: ['给出反例'] },
+      instructions: '保持克制',
+    });
+  });
+
+  it('is idempotent after v2 migration and keeps the legacy payload as a recovery snapshot', async () => {
+    const store = new MemoryLocalKeyValueStore();
+    await persistV2(store, { tone: 'default', warmth: true, traits: [] });
 
     const first = await loadPersonalizationSettings(store);
     const second = await loadPersonalizationSettings(store);
 
+    expect(first).toEqual({
+      baseStyle: { tone: 'friendly' },
+      characteristics: { traits: [] },
+      instructions: '保持克制',
+    });
     expect(second).toEqual(first);
-    expect(second.instructions.match(/保持亲和友善的表达。/g)).toHaveLength(1);
+    await expect(store.get(V2_KEY)).resolves.not.toBeNull();
   });
 
   it('treats v3 as authoritative when a prior migration wrote v3 but v2 cleanup did not finish', async () => {
@@ -166,7 +187,7 @@ describe('personalizationSettings', () => {
     const current = {
       baseStyle: { tone: 'professional' },
       characteristics: { traits: ['给出反例'] },
-      instructions: '保持克制\n保持亲和友善的表达。',
+      instructions: '保持克制',
     };
     await store.set(V3_KEY, JSON.stringify(current));
     await persistV2(store, { warmth: true, traits: [] });
@@ -186,6 +207,22 @@ describe('personalizationSettings', () => {
       baseStyle: { tone: 'concise' },
       characteristics: { traits: ['给出反例'] },
     });
+  });
+
+  it('keeps v2 recoverable when writing the migrated v3 value fails', async () => {
+    class FailingCurrentWriteStore extends MemoryLocalKeyValueStore {
+      override async set(key: string, value: string) {
+        if (key === V3_KEY) throw new Error('v3 write failed');
+        return super.set(key, value);
+      }
+    }
+
+    const store = new FailingCurrentWriteStore();
+    await persistV2(store, { tone: 'default', warmth: true });
+
+    await expect(loadPersonalizationSettings(store)).rejects.toThrow('v3 write failed');
+    await expect(store.get(V2_KEY)).resolves.not.toBeNull();
+    await expect(store.get(V3_KEY)).resolves.toBeNull();
   });
 
   it('preserves a corrupted v2 payload instead of writing defaults over it', async () => {
@@ -219,11 +256,13 @@ describe('personalizationSettings', () => {
 
     const loaded = await loadPersonalizationSettings(store);
 
-    expect(loaded.baseStyle.tone).toBe('professional');
-    expect(loaded.characteristics.traits).toEqual(['多用类比']);
-    expect(loaded.instructions).toContain('优先简洁直接，先给结论。');
+    expect(loaded).toEqual({
+      baseStyle: { tone: 'professional' },
+      characteristics: { traits: ['多用类比'] },
+      instructions: '保持克制',
+    });
     await expect(store.get(V3_KEY)).resolves.not.toBeNull();
-    await expect(store.get(V1_KEY)).resolves.toBeNull();
+    await expect(store.get(V1_KEY)).resolves.not.toBeNull();
   });
 
   it('keeps unreadable v1 data untouched and falls back to defaults', async () => {
