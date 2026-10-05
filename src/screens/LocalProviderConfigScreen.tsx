@@ -158,19 +158,9 @@ export function LocalProviderConfigScreen() {
       }
     } catch (error) {
       if (error instanceof LocalProviderDeletionScopeChangedError) {
-        const updatedCount = error.actualSessionCount;
         Alert.alert(
           '删除范围已变化',
-          `此 Provider 当前关联 ${updatedCount} 个本地对话。请按最新范围重新确认删除。`,
-          [
-            { text: '取消', style: 'cancel' },
-            {
-              text: `删除 Provider 和 ${updatedCount} 个对话`,
-              style: 'destructive',
-              onPress: () =>
-                void finishProviderRemoval(providerId, updatedCount),
-            },
-          ],
+          `此 Provider 当前关联 ${error.actualSessionCount} 个本地对话。刚才的确认已失效；请再次点击“删除当前配置”，按最新范围重新确认。`,
         );
         return;
       }
