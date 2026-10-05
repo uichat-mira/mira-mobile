@@ -140,7 +140,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly providerSendWaiters = new Map<string, Set<() => void>>();
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
-  private cancellationGeneration = 0;
+  private currentProviderSend: ActiveProviderSend | null = null;
+  private pendingProviderSend: ActiveProviderSend | null = null;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
@@ -237,22 +238,35 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
-  private beginProviderSend(providerId: string): ActiveProviderSend {
-    const providerKey = this.requireProviderId(providerId);
-    if (this.deletingProviderIds.has(providerKey)) {
-      throw new LocalProviderSendUnavailableError('provider-deleting');
-    }
-
+  private prepareProviderSend(providerId: string): ActiveProviderSend {
     const send: ActiveProviderSend = {
-      providerId: providerKey,
+      providerId: this.requireProviderId(providerId),
       cancelled: false,
       close: null,
     };
-    this.activeProviderSends.add(send);
+    this.pendingProviderSend = send;
     return send;
   }
 
+  private activateProviderSend(send: ActiveProviderSend): void {
+    if (this.pendingProviderSend === send) {
+      this.pendingProviderSend = null;
+    }
+    if (send.cancelled) {
+      throw new Error('Local Provider request was cancelled');
+    }
+    if (this.deletingProviderIds.has(send.providerId)) {
+      throw new LocalProviderSendUnavailableError('provider-deleting');
+    }
+
+    this.activeProviderSends.add(send);
+    this.currentProviderSend = send;
+  }
+
   private finishProviderSend(send: ActiveProviderSend): void {
+    if (this.currentProviderSend === send) {
+      this.currentProviderSend = null;
+    }
     if (!this.activeProviderSends.delete(send)) return;
     if (!this.hasProviderSend(send.providerId)) {
       const waiters = this.providerSendWaiters.get(send.providerId);
@@ -261,12 +275,15 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
   }
 
-  private cancelTrackedProviderSends(): void {
-    this.cancellationGeneration += 1;
-    for (const send of [...this.activeProviderSends]) {
-      send.cancelled = true;
-      send.close?.();
+  private cancelCurrentProviderSend(): void {
+    const send = this.currentProviderSend ?? this.pendingProviderSend;
+    if (!send) return;
+
+    send.cancelled = true;
+    if (this.pendingProviderSend === send) {
+      this.pendingProviderSend = null;
     }
+    send.close?.();
   }
 
   async listSessions(): Promise<Session[]> {
@@ -485,17 +502,15 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
 
     const runtime = this;
-    const cancellationGeneration = this.cancellationGeneration;
+    const preparedSend = this.prepareProviderSend(providerId);
     let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
 
     generator = (async function* () {
-      if (
-        runtime.cancellationGeneration !== cancellationGeneration ||
-        runtime.providerExecution.executionSuspended
-      ) {
+      if (runtime.providerExecution.executionSuspended || preparedSend.cancelled) {
         throw new Error('Local Provider request was cancelled');
       }
-      const activeSend = runtime.beginProviderSend(providerId);
+      runtime.activateProviderSend(preparedSend);
+      const activeSend = preparedSend;
       let closeRequested = false;
       activeSend.close = () => {
         if (closeRequested) return;
@@ -598,7 +613,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     // Mark the send cancelled first, but keep it tracked until its generator
     // really unwinds. Agent cancellation still precedes the Provider abort so
     // the stream classifies this as intentional cancellation.
-    this.cancelTrackedProviderSends();
+    this.cancelCurrentProviderSend();
     this.agentRun?.cancelActiveRun();
     this.providerExecution.cancelActiveRun();
   }
@@ -606,7 +621,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   setExecutionSuspended(suspended: boolean): void {
     // Keep cancelled sends tracked until their generator finally unwinds.
     if (suspended) {
-      this.cancelTrackedProviderSends();
+      this.cancelCurrentProviderSend();
     }
     // Set the shared suspension predicate before interrupting Agent approval /
     // control flow so MobileAgentLoop reports app-suspended, not cancelled.
