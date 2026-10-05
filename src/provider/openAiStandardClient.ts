@@ -703,6 +703,7 @@ const buildWireRequest = (
       input: toResponsesInput(request.messages, continuationBatches),
       stream: true,
       store: false,
+      include: ['reasoning.encrypted_content'],
       ...(request.tools && request.tools.length > 0
         ? { tools: toResponsesTools(request.tools) }
         : {}),
