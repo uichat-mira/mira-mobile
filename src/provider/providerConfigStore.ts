@@ -1,6 +1,7 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   isOpenAiStandardBaseUrl,
+  normalizeOpenAiStandardBaseUrl,
   type OpenAiStandardProtocol,
 } from './openAiStandardProtocol';
 
@@ -85,6 +86,26 @@ const normalizeConfigForWrite = (
   return corrected;
 };
 
+const legacyReasoningTagMode = (value: unknown): 'strip' | 'preserve' => {
+  if (value === undefined) return 'strip';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(
+      'Stored legacy Local Provider compatibility configuration is invalid',
+    );
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.reasoningTags !== undefined &&
+    record.reasoningTags !== 'strip' &&
+    record.reasoningTags !== 'preserve'
+  ) {
+    throw new Error(
+      'Stored legacy Local Provider reasoning-tag compatibility is invalid',
+    );
+  }
+  return record.reasoningTags === 'preserve' ? 'preserve' : 'strip';
+};
+
 const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
   const record = parseCommonFields(value);
   if (record.protocol !== 'chat-completions') {
@@ -95,6 +116,9 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
   const isHttpsLegacyBase =
     /^https:\/\//iu.test(baseUrl.trim()) &&
     isOpenAiStandardBaseUrl(baseUrl);
+  const reasoningTagMode = legacyReasoningTagMode(record.compatibility);
+  const requiresStandardProtocolReview =
+    !isHttpsLegacyBase || reasoningTagMode === 'strip';
   return {
     id: record.id as string,
     name: record.name as string,
@@ -104,7 +128,7 @@ const migrateLegacyConfig = (value: unknown): LocalProviderConfig => {
     ...(typeof record.toolGatewayId === 'string'
       ? { toolGatewayId: record.toolGatewayId }
       : {}),
-    ...(!isHttpsLegacyBase
+    ...(requiresStandardProtocolReview
       ? { requiresStandardProtocolReview: true }
       : {}),
   };
