@@ -9,6 +9,13 @@ import renderer, { act } from 'react-test-renderer';
 
 const mockLoadPersonalizationSettings = jest.fn();
 
+interface MockInputModalProps {
+  visible: boolean;
+  validate?: (value: string) => string | null;
+}
+
+let mockInputModalProps: MockInputModalProps | null = null;
+
 jest.mock('../settings/personalizationSettings', () => {
   const actual = jest.requireActual('../settings/personalizationSettings');
   return {
@@ -45,7 +52,10 @@ jest.mock('../settings/SettingsChoiceModal', () => ({
 }));
 
 jest.mock('../settings/SettingsInputModal', () => ({
-  SettingsInputModal: () => null,
+  SettingsInputModal: (props: MockInputModalProps) => {
+    mockInputModalProps = props;
+    return null;
+  },
 }));
 
 jest.mock('../settings/SettingsPageHeader', () => ({
@@ -80,6 +90,7 @@ const renderedStrings = (tree: ReactTestRenderer): string[] =>
 describe('PersonalizationScreen corrupted-payload handling', () => {
   afterEach(() => {
     mockLoadPersonalizationSettings.mockReset();
+    mockInputModalProps = null;
   });
 
   it('enters the load-failed state when loading a corrupted payload throws', async () => {
@@ -125,5 +136,23 @@ describe('PersonalizationScreen corrupted-payload handling', () => {
     expect(strings.some((value) => value.includes('只在其上增量调整'))).toBe(true);
     expect(strings).not.toContain('提高亲和度');
     expect(strings).not.toContain('快速回答');
+  });
+
+  it('redirects Base-style duplicate Traits with a visible validation reason', async () => {
+    mockLoadPersonalizationSettings.mockResolvedValue(DEFAULT_PERSONALIZATION_SETTINGS);
+
+    const tree = await renderScreen();
+    const addTraitButton = tree.root.find(
+      (node) => node.props.accessibilityLabel === '添加额外特征',
+    );
+
+    act(() => {
+      addTraitButton.props.onPress();
+    });
+
+    expect(mockInputModalProps?.visible).toBe(true);
+    expect(mockInputModalProps?.validate?.('亲和友善')).toContain('基本风格和语调');
+    expect(mockInputModalProps?.validate?.('讲话简短')).toContain('基本风格和语调');
+    expect(mockInputModalProps?.validate?.('多用类比')).toBeNull();
   });
 });
