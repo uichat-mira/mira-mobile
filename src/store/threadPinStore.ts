@@ -53,6 +53,7 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
     if (!threadId.trim()) return;
     if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previous = get().pinnedAtByThreadId;
     if (isThreadPinned(previous, threadId)) return;
 
@@ -72,6 +73,7 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
   unpinThread: async (threadId) => {
     if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previous = get().pinnedAtByThreadId;
     if (!isThreadPinned(previous, threadId)) return;
 
