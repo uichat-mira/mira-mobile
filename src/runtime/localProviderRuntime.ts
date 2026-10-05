@@ -56,8 +56,15 @@ export class LocalProviderDeletionScopeChangedError extends Error {
 export class LocalProviderDeletionRollbackIncompleteError extends Error {
   readonly code = 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE';
 
-  constructor(readonly originalError: unknown) {
-    super('删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。');
+  constructor(
+    readonly originalError: unknown,
+    readonly reason: 'canonical-sessions' | 'rollback' = 'rollback',
+  ) {
+    super(
+      reason === 'canonical-sessions'
+        ? '本地对话存储未能完整恢复；关联会话引用已保持清理状态。'
+        : '删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。',
+    );
     this.name = 'LocalProviderDeletionRollbackIncompleteError';
   }
 }
@@ -84,6 +91,7 @@ export type StageLocalSessionReferenceRemoval = (
 interface ActiveProviderSend {
   providerId: string;
   cancelled: boolean;
+  close: (() => void) | null;
 }
 
 export interface LocalProviderRuntimeOptions {
@@ -236,6 +244,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     const send: ActiveProviderSend = {
       providerId: normalizedProviderId,
       cancelled: false,
+      close: null,
     };
     this.activeProviderSends.add(send);
     return send;
@@ -253,7 +262,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private cancelTrackedProviderSends(): void {
     for (const send of [...this.activeProviderSends]) {
       send.cancelled = true;
-      this.finishProviderSend(send);
+      send.close?.();
     }
   }
 
@@ -381,8 +390,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
           this.credentialStore.save(normalizedProviderId, credentialToRestore),
         );
       }
+      const canonicalSessionsIncomplete =
+        error instanceof LocalProviderSessionRollbackIncompleteError;
       if (stagedSessionReferences) {
-        rollback.push(stagedSessionReferences.rollback());
+        if (canonicalSessionsIncomplete) {
+          stagedSessionReferences.commit();
+        } else {
+          rollback.push(stagedSessionReferences.rollback());
+        }
       }
 
       const rollbackResults = await Promise.allSettled(rollback);
@@ -402,10 +417,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
         rollbackComplete = restoredCredential === credentialToRestore;
       }
 
-      if (
-        !rollbackComplete ||
-        error instanceof LocalProviderSessionRollbackIncompleteError
-      ) {
+      if (error instanceof LocalProviderSessionRollbackIncompleteError) {
+        throw new LocalProviderDeletionRollbackIncompleteError(
+          error,
+          'canonical-sessions',
+        );
+      }
+      if (!rollbackComplete) {
         throw new LocalProviderDeletionRollbackIncompleteError(error);
       }
       if (error instanceof LocalProviderSessionSetChangedError) {
@@ -446,10 +464,36 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (this.deletingProviderIds.has(providerId)) {
       throw new LocalProviderSendUnavailableError('provider-deleting');
     }
-    const runtime = this;
 
-    return (async function* () {
+    // Preserve the established call-time error surface for clearly invalid
+    // Local sends. The stream body re-reads these facts before any write so a
+    // later Provider deletion/config change cannot reuse this preflight state.
+    const preflightConfigs = await this.configStore.load();
+    const preflightConfig = preflightConfigs.find(
+      (item) => item.id === providerId,
+    );
+    if (!preflightConfig) {
+      throw new LocalProviderSendUnavailableError('provider-missing');
+    }
+    const preflightApiKey = await this.credentialStore.load(providerId);
+    if (!preflightApiKey) {
+      throw new Error('Local Provider API key is not configured');
+    }
+    if (this.deletingProviderIds.has(providerId)) {
+      throw new LocalProviderSendUnavailableError('provider-deleting');
+    }
+
+    const runtime = this;
+    let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
+
+    generator = (async function* () {
       const activeSend = runtime.beginProviderSend(providerId);
+      let closeRequested = false;
+      activeSend.close = () => {
+        if (closeRequested) return;
+        closeRequested = true;
+        void generator.return(undefined).catch(() => undefined);
+      };
 
       try {
         const configs = await runtime.configStore.load();
@@ -513,9 +557,12 @@ export class LocalProviderRuntime implements ConversationRuntime {
           yield event;
         }
       } finally {
+        activeSend.close = null;
         runtime.finishProviderSend(activeSend);
       }
     })();
+
+    return generator;
   }
 
   getAgentEnabled(sessionId: string): Promise<boolean> {
