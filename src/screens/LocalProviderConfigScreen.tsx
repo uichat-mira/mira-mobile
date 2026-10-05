@@ -6,6 +6,10 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ChevronLeft, Plus, Save, Trash2 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
+import {
+  OPENAI_STANDARD_PROTOCOL_OPTIONS,
+  normalizeOpenAiStandardBaseUrl,
+} from '../provider/openAiStandardProtocol';
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import {
@@ -22,7 +26,7 @@ const createDraftProvider = (name: string): LocalProviderConfig => ({
   name,
   baseUrl: '',
   model: '',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 });
 
 export function LocalProviderConfigScreen() {
@@ -33,7 +37,7 @@ export function LocalProviderConfigScreen() {
     name: 'Local Provider',
     baseUrl: '',
     model: '',
-    protocol: 'chat-completions',
+    protocol: 'openai-chat-completions',
   });
   const [configs, setConfigs] = useState<LocalProviderConfig[]>([]);
   const [apiKeyDraft, setApiKeyDraft] = useState('');
@@ -74,17 +78,32 @@ export function LocalProviderConfigScreen() {
 
   const save = useCallback(async () => {
     if (saving) return;
-    const next = {
-      ...config,
-      id: config.id.trim() || 'default-provider',
-      name: config.name.trim() || 'Local Provider',
-      baseUrl: config.baseUrl.trim(),
-      model: config.model.trim(),
-    };
-    if (!next.baseUrl || !next.model) {
+    if (!config.baseUrl.trim() || !config.model.trim()) {
       Alert.alert('配置不完整', '请填写 Provider 地址和模型名称。');
       return;
     }
+
+    let standardBaseUrl: string;
+    try {
+      standardBaseUrl = normalizeOpenAiStandardBaseUrl(config.baseUrl);
+    } catch (error) {
+      Alert.alert(
+        'Base URL 不是标准 OpenAI 地址',
+        error instanceof Error
+          ? `${error.message}。请填写 API 根地址，例如 https://api.openai.com 或标准 /v1 根地址。`
+          : '请填写 API 根地址或标准 /v1 根地址。',
+      );
+      return;
+    }
+
+    const next: LocalProviderConfig = {
+      id: config.id.trim() || 'default-provider',
+      name: config.name.trim() || 'Local Provider',
+      baseUrl: standardBaseUrl,
+      model: config.model.trim(),
+      protocol: config.protocol,
+      ...(config.toolGatewayId ? { toolGatewayId: config.toolGatewayId } : {}),
+    };
     setSaving(true);
     try {
       await new ProviderConfigStore().upsert(next);
@@ -322,10 +341,64 @@ export function LocalProviderConfigScreen() {
             </Pressable>
           ))}
         </ScrollView>
-        <Text style={[styles.help, { color: colors.text.soft }]}>手机直连 OpenAI-compatible Provider。API Key 只保存在设备安全存储中。</Text>
+        <Text style={[styles.help, { color: colors.text.soft }]}>
+          手机直连标准 OpenAI 协议。API Key 只保存在设备安全存储中。
+        </Text>
+        {config.requiresStandardProtocolReview ? (
+          <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
+            此配置由旧版本迁移而来，Base URL 含非标准路径。请改为 API 根地址或标准 /v1 根地址并重新保存。
+          </Text>
+        ) : null}
         <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey && !deletingProvider} />
         <Field label="Provider 地址" value={config.baseUrl} onChangeText={(baseUrl) => setConfig((current) => ({ ...current, baseUrl }))} placeholder="https://example.com" colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
         <Field label="模型" value={config.model} onChangeText={(model) => setConfig((current) => ({ ...current, model }))} colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
+        <View style={styles.field}>
+          <Text style={[styles.label, { color: colors.text.ink }]}>协议</Text>
+          <View style={styles.protocolOptions}>
+            {OPENAI_STANDARD_PROTOCOL_OPTIONS.map((option) => {
+              const selected = config.protocol === option.value;
+              return (
+                <Pressable
+                  key={option.value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  disabled={saving || clearingKey || deletingProvider}
+                  onPress={() =>
+                    setConfig((current) => ({
+                      ...current,
+                      protocol: option.value,
+                    }))
+                  }
+                  style={[
+                    styles.protocolOption,
+                    {
+                      borderColor: selected
+                        ? colors.primary
+                        : colors.border.default,
+                      backgroundColor: selected
+                        ? colors.bg.soft
+                        : colors.bg.card,
+                    },
+                    (saving || clearingKey || deletingProvider) &&
+                      styles.disabledButton,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.protocolLabel,
+                      { color: selected ? colors.primary : colors.text.base },
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                  <Text style={[styles.protocolEndpoint, { color: colors.text.soft }]}>
+                    {option.endpoint}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
         <Field
           label="API Key"
           value={apiKeyDraft}
@@ -348,7 +421,7 @@ export function LocalProviderConfigScreen() {
           <Save size={18} color={colors.onPrimary} />
           <Text style={[styles.buttonText, { color: colors.onPrimary }]}>{saving ? '保存中' : '保存配置'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={saving || clearingKey || deletingProvider} onPress={() => void createSession()} style={[styles.secondaryButton, { borderColor: colors.border.default }, (saving || clearingKey || deletingProvider) && styles.disabledButton]}>
+        <Pressable accessibilityRole="button" disabled={saving || clearingKey || deletingProvider || config.requiresStandardProtocolReview === true} onPress={() => void createSession()} style={[styles.secondaryButton, { borderColor: colors.border.default }, (saving || clearingKey || deletingProvider || config.requiresStandardProtocolReview === true) && styles.disabledButton]}>
           <Plus size={18} color={colors.primary} />
           <Text style={[styles.buttonText, { color: colors.primary }]}>新建本地对话</Text>
         </Pressable>
@@ -384,7 +457,20 @@ const styles = StyleSheet.create({
   providerTab: { maxWidth: 180, minHeight: 38, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.full, paddingHorizontal: spacing.md, justifyContent: 'center' },
   providerTabText: { fontSize: fontSize.button, fontWeight: '600' },
   help: { fontSize: fontSize.button, lineHeight: 21, marginBottom: spacing.sm },
+  reviewWarning: { fontSize: fontSize.button, lineHeight: 21 },
   field: { gap: spacing.xs },
+  protocolOptions: { gap: spacing.sm },
+  protocolOption: {
+    minHeight: sizing.touchTarget,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  protocolLabel: { fontSize: fontSize.button, fontWeight: '600' },
+  protocolEndpoint: { fontSize: fontSize.bodySm },
   label: { fontSize: fontSize.button, fontWeight: '600' },
   input: { minHeight: sizing.touchTarget, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: spacing.md, fontSize: fontSize.button },
   credentialHelp: { marginTop: -spacing.xs, fontSize: fontSize.button, lineHeight: 20 },
