@@ -1,5 +1,5 @@
 import type { ChatMessage, Session } from '../types';
-import { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
   ProviderConfigStore,
   type LocalProviderConfig,
@@ -102,7 +102,7 @@ export interface LocalProviderRuntimeOptions {
   clientFactory?: (
     config: LocalProviderConfig,
     apiKey: string,
-  ) => OpenAiCompatibleClient;
+  ) => OpenAiStandardClient;
   toolGateway?: ToolGatewayClient;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
@@ -130,7 +130,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly clientFactory: (
     config: LocalProviderConfig,
     apiKey: string,
-  ) => OpenAiCompatibleClient;
+  ) => OpenAiStandardClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
   private readonly memoryService: LocalMemoryService;
   private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
@@ -153,9 +153,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.clientFactory =
       options.clientFactory ??
       ((config, apiKey) =>
-        new OpenAiCompatibleClient({
+        new OpenAiStandardClient({
           baseUrl: config.baseUrl,
           apiKey,
+          protocol: config.protocol,
         }));
     this.loadPersonalization =
       options.loadPersonalization ?? loadPersonalizationSettings;
@@ -330,6 +331,11 @@ export class LocalProviderRuntime implements ConversationRuntime {
       ? configs.find((item) => item.id === providerId)
       : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
+    if (config.requiresStandardProtocolReview) {
+      throw new Error(
+        '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
+      );
+    }
 
     const release = this.acquireProviderMutation(config.id);
     try {
@@ -550,6 +556,11 @@ export class LocalProviderRuntime implements ConversationRuntime {
         const config = configs.find((item) => item.id === providerId);
         if (!config) {
           throw new LocalProviderSendUnavailableError('provider-missing');
+        }
+        if (config.requiresStandardProtocolReview) {
+          throw new Error(
+            '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
+          );
         }
 
         const session = await runtime.sessionRepository.get(sessionId);
