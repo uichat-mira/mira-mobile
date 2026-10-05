@@ -137,41 +137,68 @@ export class PersonalizationLoadError extends Error {
   }
 }
 
-const parseCurrentSettings = (value: unknown): PersonalizationSettings => {
+interface StoredPersonalizationEnvelope {
+  tone: BaseStyleTone;
+  characteristics: Record<string, unknown>;
+  instructions: string;
+}
+
+const parseStoredEnvelope = (value: unknown): StoredPersonalizationEnvelope => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new PersonalizationLoadError('Stored personalization settings are not an object');
   }
   const candidate = value as Record<string, unknown>;
-  const baseStyleRecord =
+  const baseStyle =
     typeof candidate.baseStyle === 'object' && candidate.baseStyle !== null
       ? (candidate.baseStyle as Record<string, unknown>)
       : null;
-  const characteristicsRecord =
+  const characteristics =
     typeof candidate.characteristics === 'object' && candidate.characteristics !== null
       ? (candidate.characteristics as Record<string, unknown>)
       : null;
 
-  if (!baseStyleRecord || !isTone(baseStyleRecord.tone)) {
+  if (!baseStyle || !isTone(baseStyle.tone)) {
     throw new PersonalizationLoadError('Stored personalization base style is invalid');
   }
-  if (!characteristicsRecord || !Array.isArray(characteristicsRecord.traits)) {
-    throw new PersonalizationLoadError('Stored personalization traits are invalid');
-  }
-  for (const item of characteristicsRecord.traits) {
-    if (typeof item !== 'string') {
-      throw new PersonalizationLoadError('Stored personalization traits are invalid');
-    }
+  if (!characteristics) {
+    throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
   }
   if (typeof candidate.instructions !== 'string') {
     throw new PersonalizationLoadError('Stored personalization instructions are invalid');
   }
 
   return {
-    baseStyle: { tone: baseStyleRecord.tone },
+    tone: baseStyle.tone,
+    characteristics,
+    instructions: candidate.instructions,
+  };
+};
+
+const requireStringTraits = (value: unknown): string[] => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new PersonalizationLoadError('Stored personalization traits are invalid');
+  }
+  return value as string[];
+};
+
+const parseStoredJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new PersonalizationLoadError('Stored personalization settings are not valid JSON');
+  }
+};
+
+const parseCurrentSettings = (value: unknown): PersonalizationSettings => {
+  const stored = parseStoredEnvelope(value);
+  const traits = requireStringTraits(stored.characteristics.traits);
+
+  return {
+    baseStyle: { tone: stored.tone },
     characteristics: {
-      traits: sanitizeTraits(characteristicsRecord.traits, true),
+      traits: sanitizeTraits(traits, true),
     },
-    instructions: candidate.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH),
+    instructions: stored.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH),
   };
 };
 
@@ -200,40 +227,17 @@ const appendMigrationInstructions = (
  * preference. Base-style-like free-text traits are handled the same way.
  */
 const migrateV2Settings = (value: unknown): PersonalizationSettings => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new PersonalizationLoadError('Stored personalization settings are not an object');
-  }
-  const candidate = value as Record<string, unknown>;
-  const baseStyleRecord =
-    typeof candidate.baseStyle === 'object' && candidate.baseStyle !== null
-      ? (candidate.baseStyle as Record<string, unknown>)
-      : null;
-  const characteristicsRecord =
-    typeof candidate.characteristics === 'object' && candidate.characteristics !== null
-      ? (candidate.characteristics as Record<string, unknown>)
-      : null;
-
-  if (!baseStyleRecord || !isTone(baseStyleRecord.tone)) {
-    throw new PersonalizationLoadError('Stored personalization base style is invalid');
-  }
+  const stored = parseStoredEnvelope(value);
+  const { characteristics } = stored;
   if (
-    !characteristicsRecord ||
-    typeof characteristicsRecord.warmth !== 'boolean' ||
-    typeof characteristicsRecord.conciseFirst !== 'boolean' ||
-    !Array.isArray(characteristicsRecord.traits)
+    typeof characteristics.warmth !== 'boolean' ||
+    typeof characteristics.conciseFirst !== 'boolean'
   ) {
     throw new PersonalizationLoadError('Stored personalization characteristics are invalid');
   }
-  for (const item of characteristicsRecord.traits) {
-    if (typeof item !== 'string') {
-      throw new PersonalizationLoadError('Stored personalization traits are invalid');
-    }
-  }
-  if (typeof candidate.instructions !== 'string') {
-    throw new PersonalizationLoadError('Stored personalization instructions are invalid');
-  }
+  const legacyTraits = requireStringTraits(characteristics.traits);
 
-  let tone: BaseStyleTone = baseStyleRecord.tone;
+  let tone: BaseStyleTone = stored.tone;
   const migratedInstructions: string[] = [];
   const absorbStyleSignal = (target: Exclude<BaseStyleTone, 'default'>) => {
     if (tone === 'default') {
@@ -245,11 +249,11 @@ const migrateV2Settings = (value: unknown): PersonalizationSettings => {
     }
   };
 
-  if (characteristicsRecord.warmth) absorbStyleSignal('friendly');
-  if (characteristicsRecord.conciseFirst) absorbStyleSignal('concise');
+  if (characteristics.warmth) absorbStyleSignal('friendly');
+  if (characteristics.conciseFirst) absorbStyleSignal('concise');
 
   const traits: string[] = [];
-  for (const trait of sanitizeTraits(characteristicsRecord.traits)) {
+  for (const trait of sanitizeTraits(legacyTraits)) {
     const duplicateTone = baseStyleToneForTrait(trait);
     if (duplicateTone) {
       absorbStyleSignal(duplicateTone);
@@ -262,7 +266,7 @@ const migrateV2Settings = (value: unknown): PersonalizationSettings => {
     baseStyle: { tone },
     characteristics: { traits },
     instructions: appendMigrationInstructions(
-      candidate.instructions,
+      stored.instructions,
       migratedInstructions,
     ),
   };
@@ -297,24 +301,12 @@ export async function loadPersonalizationSettings(
 ): Promise<PersonalizationSettings> {
   const currentRaw = await store.get(PERSONALIZATION_KEY);
   if (currentRaw !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(currentRaw) as unknown;
-    } catch {
-      throw new PersonalizationLoadError('Stored personalization settings are not valid JSON');
-    }
-    return parseCurrentSettings(parsed);
+    return parseCurrentSettings(parseStoredJson(currentRaw));
   }
 
   const v2Raw = await store.get(LEGACY_PERSONALIZATION_V2_KEY);
   if (v2Raw !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(v2Raw) as unknown;
-    } catch {
-      throw new PersonalizationLoadError('Stored personalization settings are not valid JSON');
-    }
-    const migrated = migrateV2Settings(parsed);
+    const migrated = migrateV2Settings(parseStoredJson(v2Raw));
     await store.set(PERSONALIZATION_KEY, JSON.stringify(migrated));
     await store.remove(LEGACY_PERSONALIZATION_V2_KEY);
     return migrated;
