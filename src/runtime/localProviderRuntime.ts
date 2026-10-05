@@ -129,6 +129,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly agentRun: LocalAgentRunController | null;
   private readonly activeProviderMutations = new Map<string, number>();
   private readonly providerMutationWaiters = new Map<string, Set<() => void>>();
+  private readonly providerSendWaiters = new Map<string, Set<() => void>>();
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
 
@@ -199,10 +200,28 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
-  private hasActiveProviderSend(providerId: string): boolean {
+  private hasUncancelledProviderSend(providerId: string): boolean {
+    return [...this.activeProviderSends].some(
+      (send) => send.providerId === providerId && !send.cancelled,
+    );
+  }
+
+  private hasProviderSend(providerId: string): boolean {
     return [...this.activeProviderSends].some(
       (send) => send.providerId === providerId,
     );
+  }
+
+  private waitForProviderSends(providerId: string): Promise<void> {
+    if (!this.hasProviderSend(providerId)) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const waiters =
+        this.providerSendWaiters.get(providerId) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.providerSendWaiters.set(providerId, waiters);
+    });
   }
 
   private beginProviderSend(providerId: string): ActiveProviderSend {
@@ -223,13 +242,17 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private finishProviderSend(send: ActiveProviderSend): void {
-    this.activeProviderSends.delete(send);
+    if (!this.activeProviderSends.delete(send)) return;
+    if (!this.hasProviderSend(send.providerId)) {
+      const waiters = this.providerSendWaiters.get(send.providerId);
+      this.providerSendWaiters.delete(send.providerId);
+      waiters?.forEach((resolve) => resolve());
+    }
   }
 
   private cancelTrackedProviderSends(): void {
-    for (const send of [...this.activeProviderSends]) {
+    for (const send of this.activeProviderSends) {
       send.cancelled = true;
-      this.finishProviderSend(send);
     }
   }
 
@@ -295,7 +318,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (this.deletingProviderIds.has(normalizedProviderId)) {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
-    if (this.hasActiveProviderSend(normalizedProviderId)) {
+    if (this.hasUncancelledProviderSend(normalizedProviderId)) {
       throw new Error('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
     }
 
@@ -307,6 +330,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     let configRemoved = false;
 
     try {
+      await this.waitForProviderSends(normalizedProviderId);
       await this.waitForProviderMutations(normalizedProviderId);
       const configs = await this.configStore.load();
       configToRestore =
@@ -515,20 +539,24 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   cancelActiveRun(): void {
-    // Abort Agent control flow first so a Provider abort is classified as an
-    // intentional Agent cancellation rather than an ordinary stream failure.
+    // Mark the send cancelled first, but keep it tracked until its generator
+    // really unwinds. Agent cancellation still precedes the Provider abort so
+    // the stream classifies this as intentional cancellation.
+    this.cancelTrackedProviderSends();
     this.agentRun?.cancelActiveRun();
     this.providerExecution.cancelActiveRun();
-    this.cancelTrackedProviderSends();
   }
 
   setExecutionSuspended(suspended: boolean): void {
+    // Keep cancelled sends tracked until their generator finally unwinds.
+    if (suspended) {
+      this.cancelTrackedProviderSends();
+    }
     // Set the shared suspension predicate before interrupting Agent approval /
     // control flow so MobileAgentLoop reports app-suspended, not cancelled.
     this.providerExecution.setExecutionSuspended(suspended);
     if (suspended) {
       this.agentRun?.interruptForSuspension();
-      this.cancelTrackedProviderSends();
     }
   }
 }
