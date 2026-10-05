@@ -67,8 +67,8 @@ export type StageLocalSessionReferenceRemoval = (
 
 interface ActiveProviderSend {
   providerId: string;
-  cancel: () => void;
-  release: () => void;
+  cancelled: boolean;
+  cancelProviderRun: (() => void) | null;
 }
 
 export interface LocalProviderRuntimeOptions {
@@ -112,7 +112,8 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
   private readonly providerExecution = new LocalProviderExecutionController();
   private readonly agentRun: LocalAgentRunController | null;
-  private readonly activeProviderOperations = new Map<string, number>();
+  private readonly activeProviderMutations = new Map<string, number>();
+  private readonly providerMutationWaiters = new Map<string, Set<() => void>>();
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
 
@@ -140,7 +141,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.supportsAgent = Boolean(options.toolGateway);
   }
 
-  private acquireProviderOperation(providerId: string): () => void {
+  private acquireProviderMutation(providerId: string): () => void {
     const normalizedProviderId = providerId.trim();
     if (!normalizedProviderId) {
       throw new Error('Local Provider id is required');
@@ -149,46 +150,73 @@ export class LocalProviderRuntime implements ConversationRuntime {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
 
-    this.activeProviderOperations.set(
+    this.activeProviderMutations.set(
       normalizedProviderId,
-      (this.activeProviderOperations.get(normalizedProviderId) ?? 0) + 1,
+      (this.activeProviderMutations.get(normalizedProviderId) ?? 0) + 1,
     );
 
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const next = (this.activeProviderOperations.get(normalizedProviderId) ?? 1) - 1;
+      const next =
+        (this.activeProviderMutations.get(normalizedProviderId) ?? 1) - 1;
       if (next <= 0) {
-        this.activeProviderOperations.delete(normalizedProviderId);
+        this.activeProviderMutations.delete(normalizedProviderId);
+        const waiters = this.providerMutationWaiters.get(normalizedProviderId);
+        this.providerMutationWaiters.delete(normalizedProviderId);
+        waiters?.forEach((resolve) => resolve());
       } else {
-        this.activeProviderOperations.set(normalizedProviderId, next);
+        this.activeProviderMutations.set(normalizedProviderId, next);
       }
     };
   }
 
-  private trackProviderSend(
-    providerId: string,
-    cancel: () => void,
-    release: () => void,
-  ): ActiveProviderSend {
-    const send = { providerId, cancel, release };
+  private waitForProviderMutations(providerId: string): Promise<void> {
+    if ((this.activeProviderMutations.get(providerId) ?? 0) === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const waiters =
+        this.providerMutationWaiters.get(providerId) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.providerMutationWaiters.set(providerId, waiters);
+    });
+  }
+
+  private hasActiveProviderSend(providerId: string): boolean {
+    return [...this.activeProviderSends].some(
+      (send) => send.providerId === providerId,
+    );
+  }
+
+  private beginProviderSend(providerId: string): ActiveProviderSend {
+    const normalizedProviderId = providerId.trim();
+    if (!normalizedProviderId) {
+      throw new Error('Local Provider id is required');
+    }
+    if (this.deletingProviderIds.has(normalizedProviderId)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
+
+    const send: ActiveProviderSend = {
+      providerId: normalizedProviderId,
+      cancelled: false,
+      cancelProviderRun: null,
+    };
     this.activeProviderSends.add(send);
     return send;
   }
 
   private finishProviderSend(send: ActiveProviderSend): void {
-    if (!this.activeProviderSends.delete(send)) return;
-    send.release();
+    this.activeProviderSends.delete(send);
   }
 
   private cancelTrackedProviderSends(): void {
     for (const send of [...this.activeProviderSends]) {
-      try {
-        send.cancel();
-      } finally {
-        this.finishProviderSend(send);
-      }
+      send.cancelled = true;
+      send.cancelProviderRun?.();
+      this.finishProviderSend(send);
     }
   }
 
@@ -215,7 +243,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
 
-    const release = this.acquireProviderOperation(config.id);
+    const release = this.acquireProviderMutation(config.id);
     try {
       return await this.sessionRepository.create(config.id, title);
     } finally {
@@ -239,7 +267,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     if (this.deletingProviderIds.has(normalizedProviderId)) {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
-    if ((this.activeProviderOperations.get(normalizedProviderId) ?? 0) > 0) {
+    if (this.hasActiveProviderSend(normalizedProviderId)) {
       throw new Error('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
     }
 
@@ -251,6 +279,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     let configRemoved = false;
 
     try {
+      await this.waitForProviderMutations(normalizedProviderId);
       const configs = await this.configStore.load();
       configToRestore =
         configs.find((item) => item.id === normalizedProviderId) ?? null;
@@ -335,7 +364,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
   async deleteSession(sessionId: string): Promise<void> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
-    const release = this.acquireProviderOperation(providerId);
+    const release = this.acquireProviderMutation(providerId);
     try {
       await this.sessionRepository.delete(sessionId);
     } finally {
@@ -363,36 +392,45 @@ export class LocalProviderRuntime implements ConversationRuntime {
     const runtime = this;
 
     return (async function* () {
-      const session = await runtime.sessionRepository.get(sessionId);
-      const currentProviderId =
-        await runtime.sessionRepository.getProviderId(sessionId);
-      if (currentProviderId !== providerId) {
-        throw new Error('Local Provider session ownership changed');
-      }
-      const releaseProviderOperation =
-        runtime.acquireProviderOperation(providerId);
-      let activeSend: ActiveProviderSend | null = null;
+      const activeSend = runtime.beginProviderSend(providerId);
 
       try {
         const configs = await runtime.configStore.load();
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
+        }
         const config = configs.find((item) => item.id === providerId);
         if (!config) {
           throw new Error('Local Provider configuration was not found');
         }
+
+        const session = await runtime.sessionRepository.get(sessionId);
+        const currentProviderId =
+          await runtime.sessionRepository.getProviderId(sessionId);
+        if (currentProviderId !== providerId) {
+          throw new Error('Local Provider session ownership changed');
+        }
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
+        }
+
         const apiKey = await runtime.credentialStore.load(config.id);
         if (!apiKey) {
           throw new Error('Local Provider API key is not configured');
+        }
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
         }
 
         const executor = createLocalProviderExecutor(
           runtime.clientFactory(config, apiKey),
           config,
         );
-        activeSend = runtime.trackProviderSend(
-          providerId,
-          () => executor.client.cancelActiveRun(),
-          releaseProviderOperation,
-        );
+        activeSend.cancelProviderRun = () => executor.client.cancelActiveRun();
+        if (activeSend.cancelled) {
+          activeSend.cancelProviderRun();
+          throw new Error('Local Provider request was cancelled');
+        }
 
         const stream = await executeLocalConversationTurn(
           {
@@ -420,11 +458,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
           yield event;
         }
       } finally {
-        if (activeSend) {
-          runtime.finishProviderSend(activeSend);
-        } else {
-          releaseProviderOperation();
-        }
+        runtime.finishProviderSend(activeSend);
       }
     })();
   }
@@ -433,8 +467,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return this.sessionRepository.getAgentEnabled(sessionId);
   }
 
-  setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
-    return this.sessionRepository.setAgentEnabled(sessionId, enabled);
+  async setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderMutation(providerId);
+    try {
+      await this.sessionRepository.setAgentEnabled(sessionId, enabled);
+    } finally {
+      release();
+    }
   }
 
   resolveToolApproval(
