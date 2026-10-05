@@ -509,7 +509,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
     });
 
     const iterator = stream[Symbol.asyncIterator]();
-    await expect(iterator.next()).rejects.toThrow('not found');
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_SEND_UNAVAILABLE',
+      reason: 'provider-missing',
+    });
     await expect(repository.list(config.id)).resolves.toEqual([]);
   });
 
