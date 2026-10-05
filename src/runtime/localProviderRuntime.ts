@@ -140,6 +140,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly providerSendWaiters = new Map<string, Set<() => void>>();
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
+  private cancellationGeneration = 0;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
@@ -165,18 +166,22 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.supportsAgent = Boolean(options.toolGateway);
   }
 
-  private acquireProviderMutation(providerId: string): () => void {
-    const normalizedProviderId = providerId.trim();
-    if (!normalizedProviderId) {
+  private requireProviderId(providerId: string): string {
+    if (!providerId.trim()) {
       throw new Error('Local Provider id is required');
     }
-    if (this.deletingProviderIds.has(normalizedProviderId)) {
+    return providerId;
+  }
+
+  private acquireProviderMutation(providerId: string): () => void {
+    const providerKey = this.requireProviderId(providerId);
+    if (this.deletingProviderIds.has(providerKey)) {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
 
     this.activeProviderMutations.set(
-      normalizedProviderId,
-      (this.activeProviderMutations.get(normalizedProviderId) ?? 0) + 1,
+      providerKey,
+      (this.activeProviderMutations.get(providerKey) ?? 0) + 1,
     );
 
     let released = false;
@@ -184,14 +189,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
       if (released) return;
       released = true;
       const next =
-        (this.activeProviderMutations.get(normalizedProviderId) ?? 1) - 1;
+        (this.activeProviderMutations.get(providerKey) ?? 1) - 1;
       if (next <= 0) {
-        this.activeProviderMutations.delete(normalizedProviderId);
-        const waiters = this.providerMutationWaiters.get(normalizedProviderId);
-        this.providerMutationWaiters.delete(normalizedProviderId);
+        this.activeProviderMutations.delete(providerKey);
+        const waiters = this.providerMutationWaiters.get(providerKey);
+        this.providerMutationWaiters.delete(providerKey);
         waiters?.forEach((resolve) => resolve());
       } else {
-        this.activeProviderMutations.set(normalizedProviderId, next);
+        this.activeProviderMutations.set(providerKey, next);
       }
     };
   }
@@ -233,16 +238,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private beginProviderSend(providerId: string): ActiveProviderSend {
-    const normalizedProviderId = providerId.trim();
-    if (!normalizedProviderId) {
-      throw new Error('Local Provider id is required');
-    }
-    if (this.deletingProviderIds.has(normalizedProviderId)) {
+    const providerKey = this.requireProviderId(providerId);
+    if (this.deletingProviderIds.has(providerKey)) {
       throw new LocalProviderSendUnavailableError('provider-deleting');
     }
 
     const send: ActiveProviderSend = {
-      providerId: normalizedProviderId,
+      providerId: providerKey,
       cancelled: false,
       close: null,
     };
@@ -260,6 +262,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private cancelTrackedProviderSends(): void {
+    this.cancellationGeneration += 1;
     for (const send of [...this.activeProviderSends]) {
       send.cancelled = true;
       send.close?.();
@@ -313,26 +316,24 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   async getProviderDeletionImpact(providerId: string): Promise<LocalProviderDeletionImpact> {
-    const normalizedProviderId = providerId.trim();
-    if (!normalizedProviderId) throw new Error('Local Provider id is required');
-    const sessions = await this.sessionRepository.list(normalizedProviderId);
-    return { providerId: normalizedProviderId, sessionCount: sessions.length };
+    const providerKey = this.requireProviderId(providerId);
+    const sessions = await this.sessionRepository.list(providerKey);
+    return { providerId: providerKey, sessionCount: sessions.length };
   }
 
   async deleteProvider(
     providerId: string,
     expectedSessionCount?: number,
   ): Promise<LocalProviderDeletionResult> {
-    const normalizedProviderId = providerId.trim();
-    if (!normalizedProviderId) throw new Error('Local Provider id is required');
-    if (this.deletingProviderIds.has(normalizedProviderId)) {
+    const providerKey = this.requireProviderId(providerId);
+    if (this.deletingProviderIds.has(providerKey)) {
       throw new Error('当前 Provider 正在删除，请稍后重试。');
     }
-    if (this.hasUncancelledProviderSend(normalizedProviderId)) {
+    if (this.hasUncancelledProviderSend(providerKey)) {
       throw new Error('当前 Provider 正在执行本地请求，请先结束当前对话后再删除。');
     }
 
-    this.deletingProviderIds.add(normalizedProviderId);
+    this.deletingProviderIds.add(providerKey);
     let configToRestore: LocalProviderConfig | null = null;
     let credentialToRestore: string | null = null;
     let stagedSessionReferences: StagedLocalSessionReferenceRemoval | null = null;
@@ -340,13 +341,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
     let configRemoved = false;
 
     try {
-      await this.waitForProviderSends(normalizedProviderId);
-      await this.waitForProviderMutations(normalizedProviderId);
+      await this.waitForProviderSends(providerKey);
+      await this.waitForProviderMutations(providerKey);
       const configs = await this.configStore.load();
       configToRestore =
-        configs.find((item) => item.id === normalizedProviderId) ?? null;
+        configs.find((item) => item.id === providerKey) ?? null;
 
-      const sessions = await this.sessionRepository.list(normalizedProviderId);
+      const sessions = await this.sessionRepository.list(providerKey);
       if (
         expectedSessionCount !== undefined &&
         sessions.length !== expectedSessionCount
@@ -355,26 +356,26 @@ export class LocalProviderRuntime implements ConversationRuntime {
       }
 
       credentialToRestore =
-        await this.credentialStore.load(normalizedProviderId);
+        await this.credentialStore.load(providerKey);
       const sessionIds = sessions.map((session) => session.id);
       stagedSessionReferences =
         await this.stageSessionReferenceRemoval(sessionIds);
 
-      await this.credentialStore.clear(normalizedProviderId);
+      await this.credentialStore.clear(providerKey);
       credentialCleared = true;
 
       if (configToRestore) {
-        await this.configStore.remove(normalizedProviderId);
+        await this.configStore.remove(providerKey);
         configRemoved = true;
       }
 
       const deletedSessionIds =
         await this.sessionRepository.deleteByProvider(
-          normalizedProviderId,
+          providerKey,
           sessionIds,
         );
       const result: LocalProviderDeletionResult = {
-        providerId: normalizedProviderId,
+        providerId: providerKey,
         sessionCount: deletedSessionIds.length,
         deletedSessionIds,
       };
@@ -387,7 +388,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       }
       if (credentialCleared && credentialToRestore) {
         rollback.push(
-          this.credentialStore.save(normalizedProviderId, credentialToRestore),
+          this.credentialStore.save(providerKey, credentialToRestore),
         );
       }
       const canonicalSessionsIncomplete =
@@ -406,14 +407,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
       if (rollbackComplete && configRemoved && configToRestore) {
         const restoredConfig = (await this.configStore.load())
-          .find((item) => item.id === normalizedProviderId);
+          .find((item) => item.id === providerKey);
         rollbackComplete =
           restoredConfig !== undefined &&
           this.providerConfigsEqual(restoredConfig, configToRestore);
       }
       if (rollbackComplete && credentialCleared) {
         const restoredCredential =
-          await this.credentialStore.load(normalizedProviderId);
+          await this.credentialStore.load(providerKey);
         rollbackComplete = restoredCredential === credentialToRestore;
       }
 
@@ -433,7 +434,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
       }
       throw error;
     } finally {
-      this.deletingProviderIds.delete(normalizedProviderId);
+      this.deletingProviderIds.delete(providerKey);
     }
   }
 
@@ -484,9 +485,16 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
 
     const runtime = this;
+    const cancellationGeneration = this.cancellationGeneration;
     let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
 
     generator = (async function* () {
+      if (
+        runtime.cancellationGeneration !== cancellationGeneration ||
+        runtime.providerExecution.executionSuspended
+      ) {
+        throw new Error('Local Provider request was cancelled');
+      }
       const activeSend = runtime.beginProviderSend(providerId);
       let closeRequested = false;
       activeSend.close = () => {
