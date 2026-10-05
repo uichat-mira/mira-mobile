@@ -486,17 +486,30 @@ const toResponsesInput = (
   messages: readonly OpenAiMessage[],
 ): Array<Record<string, unknown>> => {
   const input: Array<Record<string, unknown>> = [];
+  const pendingToolCallIds = new Set<string>();
 
   for (const message of messages) {
+    if (pendingToolCallIds.size > 0 && message.role !== 'tool') {
+      throw new Error(
+        'Responses transcript has a function call without its tool output',
+      );
+    }
+
     if (message.role === 'tool') {
       if (!message.tool_call_id) {
         throw new Error('Tool result is missing tool_call_id');
+      }
+      if (!pendingToolCallIds.has(message.tool_call_id)) {
+        throw new Error(
+          'Responses transcript has an unexpected function call output',
+        );
       }
       input.push({
         type: 'function_call_output',
         call_id: message.tool_call_id,
         output: message.content ?? '',
       });
+      pendingToolCallIds.delete(message.tool_call_id);
       continue;
     }
 
@@ -509,12 +522,16 @@ const toResponsesInput = (
 
     if (message.role === 'assistant' && message.tool_calls) {
       for (const call of message.tool_calls) {
+        if (pendingToolCallIds.has(call.id)) {
+          throw new Error('Responses transcript has a duplicate function call id');
+        }
         input.push({
           type: 'function_call',
           call_id: call.id,
           name: call.function.name,
           arguments: call.function.arguments,
         });
+        pendingToolCallIds.add(call.id);
       }
     }
 
@@ -524,6 +541,12 @@ const toResponsesInput = (
     ) {
       input.push({ role: message.role, content: '' });
     }
+  }
+
+  if (pendingToolCallIds.size > 0) {
+    throw new Error(
+      'Responses transcript ended before all function call outputs arrived',
+    );
   }
 
   return input;
@@ -727,6 +750,17 @@ export class OpenAiStandardClient {
           throw new RemoteHostError(
             'INVALID_PROVIDER_EVENT',
             'Responses API stream ended without a terminal response event',
+          );
+        }
+
+        if (
+          this.options.protocol === 'openai-chat-completions' &&
+          !chatState.receivedFinishReason &&
+          chatState.pendingToolCalls.size > 0
+        ) {
+          throw new RemoteHostError(
+            'INVALID_PROVIDER_EVENT',
+            'Chat Completions stream ended during a tool call',
           );
         }
 
