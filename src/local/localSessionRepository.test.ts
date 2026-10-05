@@ -124,6 +124,31 @@ describe('LocalSessionRepository', () => {
     ]);
   });
 
+  it('completes cascade rollback before a queued single-session delete runs', async () => {
+    const storage = new FailAfterPersistLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const cascadeSession = await repository.create('provider-a', 'Cascade');
+    const queuedDeleteSession = await repository.create('provider-b', 'Delete later');
+
+    storage.failNextSetAfterPersist = true;
+
+    const cascade = repository.deleteByProvider(
+      'provider-a',
+      [cascadeSession.id],
+    );
+    const queuedDelete = repository.delete(queuedDeleteSession.id);
+
+    await expect(cascade).rejects.toThrow(
+      'simulated write acknowledgement failure',
+    );
+    await expect(queuedDelete).resolves.toBeUndefined();
+
+    await expect(repository.get(cascadeSession.id)).resolves.toBeDefined();
+    await expect(repository.get(queuedDeleteSession.id)).rejects.toThrow(
+      'not found',
+    );
+  });
+
   it('surfaces incomplete canonical-session rollback when the snapshot cannot be restored', async () => {
     const storage = new FailCascadeAndRestoreLocalKeyValueStore();
     const repository = new LocalSessionRepository(storage);
