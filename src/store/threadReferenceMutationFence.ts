@@ -28,8 +28,5 @@ export const beginThreadReferenceMutationFence = (
   };
 };
 
-export const assertThreadReferenceMutationAllowed = (threadId: string): void => {
-  if (fencedThreadIds.has(threadId.trim())) {
-    throw new Error('Thread reference is locked for Local Provider deletion');
-  }
-};
+export const isThreadReferenceMutationFenced = (threadId: string): boolean =>
+  fencedThreadIds.has(threadId.trim());
