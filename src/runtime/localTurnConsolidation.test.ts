@@ -14,18 +14,20 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const createService = (store = new MemoryLocalKeyValueStore()) =>
   new LocalMemoryService(new LocalMemoryRepository(store), new LocalMemoryTurnLedger(store));
 
 const executorWith = (
-  streamChat: (request: { model: string }) => Promise<AsyncIterable<RuntimeEvent>>,
+  streamMessages: (
+    messages: readonly Array<{ role: string; content: string | null }>,
+  ) => Promise<AsyncIterable<RuntimeEvent>>,
 ): LocalProviderExecutor =>
   ({
-    client: { streamChat, cancelActiveRun: jest.fn() },
-    streamMessages: jest.fn(),
+    client: { cancelActiveRun: jest.fn() },
+    streamMessages,
   } as unknown as LocalProviderExecutor);
 
 const streaming = (events: RuntimeEvent[]): AsyncIterable<RuntimeEvent> => ({
@@ -78,17 +80,18 @@ describe('#227 consolidateLocalTurn', () => {
     assistantText: '记住了。',
   };
 
-  it('commits a completed turn using the executor model and client', async () => {
+  it('commits a completed turn through the selected Provider executor', async () => {
     const service = createService();
-    const seen: string[] = [];
-    const executor = executorWith(async (request) => {
-      seen.push(request.model);
+    const seenRoles: string[][] = [];
+    const executor = executorWith(async (messages) => {
+      seenRoles.push(messages.map((message) => message.role));
       return streaming([{ type: 'text-delta', delta: PROPOSAL_JSON }]);
     });
 
     await consolidateLocalTurn(input, { service, executor, config });
 
-    expect(seen).toEqual(['model-a']);
+    expect(seenRoles).toHaveLength(1);
+    expect(seenRoles[0]).toContain('system');
     const overview = await service.getOverview();
     expect(overview.records).toHaveLength(1);
     expect(await service.isProcessed({ type: 'conversation', ...input, threadId: 'thread-1' })).toBe(true);
