@@ -5,6 +5,7 @@ import {
   ThreadPinRepository,
   type ThreadPinMap,
 } from './threadPinning';
+import { assertThreadReferenceMutationAllowed } from './threadReferenceMutationFence';
 
 const repository = new ThreadPinRepository(localKeyValueStore);
 let hydratePromise: Promise<void> | null = null;
@@ -40,6 +41,7 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
 
   pinThread: async (threadId) => {
     if (!threadId.trim()) return;
+    assertThreadReferenceMutationAllowed(threadId);
     await get().hydrate();
     const previous = get().pinnedAtByThreadId;
     if (isThreadPinned(previous, threadId)) return;
@@ -60,6 +62,7 @@ export const useThreadPinStore = create<ThreadPinStore>((set, get) => ({
   },
 
   unpinThread: async (threadId) => {
+    assertThreadReferenceMutationAllowed(threadId);
     await get().hydrate();
     const previous = get().pinnedAtByThreadId;
     if (!isThreadPinned(previous, threadId)) return;
