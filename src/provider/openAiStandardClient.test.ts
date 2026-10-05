@@ -363,6 +363,128 @@ describe('OpenAiStandardClient Responses', () => {
     ]);
   });
 
+  it('clears chat continuation before a later same-client consolidation request', async () => {
+    const reasoningItem = {
+      id: 'rs-chat',
+      type: 'reasoning',
+      summary: [],
+      encrypted_content: 'chat-reasoning',
+    };
+    const functionCallItem = {
+      id: 'fc-chat',
+      type: 'function_call',
+      call_id: 'call-chat',
+      name: 'search',
+      arguments: '{"q":"mira"}',
+      status: 'completed',
+    };
+    const firstXhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: reasoningItem,
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: functionCallItem,
+        },
+        {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [reasoningItem, functionCallItem],
+          },
+        },
+      ),
+    );
+    const secondXhr = new FakeXhr(
+      sse(
+        {
+          type: 'response.output_text.delta',
+          output_index: 0,
+          content_index: 0,
+          delta: 'done',
+        },
+        {
+          type: 'response.completed',
+          response: { status: 'completed', output: [] },
+        },
+      ),
+    );
+    const consolidationXhr = new FakeXhr(
+      sse({
+        type: 'response.completed',
+        response: { status: 'completed', output: [] },
+      }),
+    );
+    const xhrs = [firstXhr, secondXhr, consolidationXhr];
+    let xhrIndex = 0;
+    const client = new OpenAiStandardClient({
+      baseUrl: 'https://provider.example.com',
+      apiKey: 'secret',
+      protocol: 'openai-responses',
+      xhrFactory: () => {
+        const xhr = xhrs[xhrIndex];
+        xhrIndex += 1;
+        if (!xhr) throw new Error('Unexpected extra Responses request');
+        return xhr as unknown as XMLHttpRequest;
+      },
+    });
+
+    await collect(await client.streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'find' }],
+      tools: [{
+        type: 'function',
+        function: { name: 'search', parameters: { type: 'object' } },
+      }],
+    }));
+
+    await collect(await client.streamMessages({
+      model: 'model-1',
+      messages: [
+        { role: 'user', content: 'find' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call-chat',
+            type: 'function',
+            function: { name: 'search', arguments: '{"q":"mira"}' },
+          }],
+        },
+        {
+          role: 'tool',
+          content: '{"result":"ok"}',
+          tool_call_id: 'call-chat',
+        },
+      ],
+      tools: [{
+        type: 'function',
+        function: { name: 'search', parameters: { type: 'object' } },
+      }],
+    }));
+
+    await collect(await client.streamMessages({
+      model: 'model-1',
+      messages: [
+        { role: 'system', content: 'Consolidate memory.' },
+        { role: 'user', content: 'Return JSON only.' },
+      ],
+    }));
+
+    const consolidationInput =
+      JSON.parse(consolidationXhr.requestBody ?? '{}').input;
+    expect(consolidationInput).toEqual([
+      { role: 'system', content: 'Consolidate memory.' },
+      { role: 'user', content: 'Return JSON only.' },
+    ]);
+    expect(JSON.stringify(consolidationInput)).not.toContain('chat-reasoning');
+    expect(JSON.stringify(consolidationInput)).not.toContain('call-chat');
+  });
+
   it('drops a stale Responses continuation batch when canonical tool-call identity no longer matches', async () => {
     const reasoningItem = {
       id: 'rs-stale',
