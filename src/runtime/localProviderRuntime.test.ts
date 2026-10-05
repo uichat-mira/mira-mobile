@@ -507,6 +507,40 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.list(config.id)).resolves.toEqual([]);
   });
 
+  it('waits for an in-flight single-session mutation instead of reporting an active request', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const first = await runtime.createSession('Delete first', config.id);
+    const second = await runtime.createSession('Cascade second', config.id);
+    const originalDelete = repository.delete.bind(repository);
+    let releaseDelete!: () => void;
+    let signalDeleteStarted!: () => void;
+    const deleteGate = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    const deleteStarted = new Promise<void>((resolve) => {
+      signalDeleteStarted = resolve;
+    });
+    jest.spyOn(repository, 'delete').mockImplementationOnce(async (sessionId) => {
+      signalDeleteStarted();
+      await deleteGate;
+      await originalDelete(sessionId);
+    });
+
+    const singleDelete = runtime.deleteSession(first.id);
+    await deleteStarted;
+    const providerDelete = runtime.deleteProvider(config.id);
+
+    releaseDelete();
+    await expect(singleDelete).resolves.toBeUndefined();
+    await expect(providerDelete).resolves.toEqual({
+      providerId: config.id,
+      sessionCount: 1,
+      deletedSessionIds: [second.id],
+    });
+
+    await expect(repository.list(config.id)).resolves.toEqual([]);
+  });
+
   it('refuses deletion while the selected Provider still owns an active run', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
