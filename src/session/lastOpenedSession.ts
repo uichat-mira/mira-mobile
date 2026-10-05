@@ -1,5 +1,5 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
-import { assertThreadReferenceMutationAllowed } from '../store/threadReferenceMutationFence';
+import { isThreadReferenceMutationFenced } from '../store/threadReferenceMutationFence';
 import type { SessionSource } from '../types';
 
 export interface LastOpenedSession {
@@ -37,7 +37,7 @@ export async function saveLastOpenedSession(
 ): Promise<void> {
   const sessionId = input.sessionId.trim();
   if (!sessionId) return;
-  assertThreadReferenceMutationAllowed(sessionId);
+  if (isThreadReferenceMutationFenced(sessionId)) return;
 
   const source: SessionSource =
     input.source ?? (sessionId.startsWith('local-') ? 'local-provider' : 'remote-host');
