@@ -5,14 +5,20 @@ import { useThreadReadStore } from '../store/threadReadStore';
 import {
   loadLastOpenedSession,
   removeLastOpenedSessions,
-  saveLastOpenedSession,
+  restoreLastOpenedSessionIfMissing,
   type LastOpenedSession,
 } from './lastOpenedSession';
+import { beginThreadReferenceMutationFence } from '../store/threadReferenceMutationFence';
 
 export interface LocalSessionReferenceSnapshot {
   pins: ThreadPinMap;
   readProgress: ThreadReadMap;
   lastOpened: LastOpenedSession | null;
+}
+
+export interface StagedLocalSessionReferenceRemoval {
+  commit(): void;
+  rollback(): Promise<void>;
 }
 
 export interface LocalSessionReferenceCleanupDependencies {
@@ -43,7 +49,7 @@ const defaultDependencies: LocalSessionReferenceCleanupDependencies = {
     return { ...useThreadReadStore.getState().progressByThreadId };
   },
   removeLastOpened: (threadIds) => removeLastOpenedSessions(threadIds),
-  restoreLastOpened: (record) => saveLastOpenedSession(record),
+  restoreLastOpened: (record) => restoreLastOpenedSessionIfMissing(record),
   loadLastOpened: () => loadLastOpenedSession(),
 };
 
@@ -81,7 +87,9 @@ const restoreSnapshot = async (
   );
   const lastOpenedRestored =
     snapshot.lastOpened === null ||
-    JSON.stringify(lastOpened) === JSON.stringify(snapshot.lastOpened);
+    JSON.stringify(lastOpened) === JSON.stringify(snapshot.lastOpened) ||
+    (lastOpened !== null &&
+      lastOpened.sessionId !== snapshot.lastOpened.sessionId);
 
   if (!pinsRestored || !readsRestored || !lastOpenedRestored) {
     throw new Error('本地会话引用回滚未完整完成。');
@@ -99,12 +107,18 @@ const restoreSnapshot = async (
 export async function stageLocalSessionReferenceRemoval(
   sessionIds: readonly string[],
   dependencies: LocalSessionReferenceCleanupDependencies = defaultDependencies,
-): Promise<() => Promise<void>> {
-  const normalizedIds = [...new Set(sessionIds.filter((sessionId) => sessionId.trim().length > 0))];
+): Promise<StagedLocalSessionReferenceRemoval> {
+  const normalizedIds = [...new Set(
+    sessionIds.filter((sessionId) => sessionId.trim().length > 0),
+  )];
   if (normalizedIds.length === 0) {
-    return async () => undefined;
+    return {
+      commit: () => undefined,
+      rollback: async () => undefined,
+    };
   }
 
+  const releaseFence = beginThreadReferenceMutationFence(normalizedIds);
   const snapshot: LocalSessionReferenceSnapshot = {
     pins: {},
     readProgress: {},
@@ -122,15 +136,33 @@ export async function stageLocalSessionReferenceRemoval(
     snapshot.lastOpened = await dependencies.removeLastOpened(normalizedIds);
     lastOpenedRemoved = snapshot.lastOpened !== null;
   } catch (error) {
-    if (pinsRemoved || readProgressRemoved || lastOpenedRemoved) {
-      try {
+    try {
+      if (pinsRemoved || readProgressRemoved || lastOpenedRemoved) {
         await restoreSnapshot(snapshot, dependencies);
-      } catch {
-        throw new Error('无法安全清理本地会话引用，且回滚未完整完成。');
       }
+    } catch {
+      throw new Error('无法安全清理本地会话引用，且回滚未完整完成。');
+    } finally {
+      releaseFence();
     }
     throw error;
   }
 
-  return () => restoreSnapshot(snapshot, dependencies);
+  let settled = false;
+  return {
+    commit: () => {
+      if (settled) return;
+      settled = true;
+      releaseFence();
+    },
+    rollback: async () => {
+      if (settled) return;
+      try {
+        await restoreSnapshot(snapshot, dependencies);
+      } finally {
+        settled = true;
+        releaseFence();
+      }
+    },
+  };
 }
