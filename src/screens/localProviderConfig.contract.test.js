@@ -69,6 +69,14 @@ describe('MOB-038 Local Provider configuration', () => {
     expect(source).toContain('请再次点击“删除当前配置”，按最新范围重新确认');
   });
 
+  it('surfaces incomplete rollback as a distinct recovery state', () => {
+    expect(source).toContain(
+      'error instanceof LocalProviderDeletionRollbackIncompleteError',
+    );
+    expect(source).toContain("'删除未完整回滚'");
+    expect(source).toContain('请重新打开 Local Provider 设置检查配置、API Key 和关联对话');
+  });
+
   it('delegates destructive cleanup to the Local Provider runtime transaction', () => {
     expect(source).toContain(
       'await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount)',
