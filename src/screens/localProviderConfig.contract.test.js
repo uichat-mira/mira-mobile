@@ -64,9 +64,9 @@ describe('MOB-038 Local Provider configuration', () => {
 
   it('reconfirms when the deletion scope changes before commit', () => {
     expect(source).toContain('error instanceof LocalProviderDeletionScopeChangedError');
-    expect(source).toContain('const updatedCount = error.actualSessionCount');
+    expect(source).toContain('error.actualSessionCount');
     expect(source).toContain("'删除范围已变化'");
-    expect(source).toContain('void finishProviderRemoval(providerId, updatedCount)');
+    expect(source).toContain('请再次点击“删除当前配置”，按最新范围重新确认');
   });
 
   it('delegates destructive cleanup to the Local Provider runtime transaction', () => {
