@@ -1412,7 +1412,7 @@ describe('LocalProviderRuntime personalization context', () => {
 
     await expect(
       drain(await runtime.sendMessage(session.id, '你好')),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([]);
 
     const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
