@@ -82,6 +82,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     if (!threadId.trim()) return;
     if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previousMap = get().progressByThreadId;
     const previous = previousMap[threadId];
     const nextProgress = observeThreadMessages(
@@ -103,6 +104,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     if (!threadId.trim()) return;
     if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previousMap = get().progressByThreadId;
     const previous = previousMap[threadId];
     const nextProgress = markThreadMessagesRead(
@@ -123,6 +125,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
   clearThread: async (threadId) => {
     if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
+    if (isThreadReferenceMutationFenced(threadId)) return;
     const previousMap = get().progressByThreadId;
     if (!previousMap[threadId]) return;
     const nextMap = { ...previousMap };
