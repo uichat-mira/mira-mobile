@@ -146,6 +146,13 @@ export function LocalProviderConfigScreen() {
     expectedSessionCount: number,
   ) => {
     if (deletingProvider) return;
+    if (selectedProviderIdRef.current !== providerId) {
+      Alert.alert(
+        '删除范围已变化',
+        '当前选中的 Provider 已变化。刚才的删除确认已失效，请重新发起删除并确认最新范围。',
+      );
+      return;
+    }
     setDeletingProvider(true);
     try {
       await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount);
