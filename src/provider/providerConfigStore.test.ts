@@ -21,6 +21,14 @@ const responsesConfig: LocalProviderConfig = {
   protocol: 'openai-responses',
 };
 
+const legacyPrivateConfig = {
+  id: 'legacy-private',
+  name: 'Legacy private',
+  baseUrl: 'https://provider.example.com/api/v1',
+  model: 'legacy-model',
+  protocol: 'chat-completions',
+} as const;
+
 describe('ProviderConfigStore', () => {
   it('round-trips both standard OpenAI protocols', async () => {
     const store = new ProviderConfigStore(new MemoryLocalKeyValueStore());
@@ -163,15 +171,7 @@ describe('ProviderConfigStore', () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
       LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
-      JSON.stringify([
-        {
-          id: 'legacy-private',
-          name: 'Legacy private',
-          baseUrl: 'https://provider.example.com/api/v1',
-          model: 'legacy-model',
-          protocol: 'chat-completions',
-        },
-      ]),
+      JSON.stringify([legacyPrivateConfig]),
     );
     const store = new ProviderConfigStore(storage);
     const [flagged] = await store.load();
@@ -200,15 +200,7 @@ describe('ProviderConfigStore', () => {
     const storage = new MemoryLocalKeyValueStore();
     await storage.set(
       LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
-      JSON.stringify([
-        {
-          id: 'legacy-private',
-          name: 'Legacy private',
-          baseUrl: 'https://provider.example.com/api/v1',
-          model: 'legacy-model',
-          protocol: 'chat-completions',
-        },
-      ]),
+      JSON.stringify([legacyPrivateConfig]),
     );
     const store = new ProviderConfigStore(storage);
     const [flagged] = await store.load();
