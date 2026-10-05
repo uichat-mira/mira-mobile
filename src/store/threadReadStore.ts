@@ -3,7 +3,7 @@ import type { ChatMessage, Session } from '../types';
 import { miraHostClient } from '../api/miraHostClient';
 import { RemoteHostError } from '../api/remoteHttp';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
-import { assertThreadReferenceMutationAllowed } from './threadReferenceMutationFence';
+import { isThreadReferenceMutationFenced } from './threadReferenceMutationFence';
 import {
   isThreadUnread,
   markThreadMessagesRead,
@@ -69,7 +69,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
 
   observeThread: async (threadId, messages, observedMessageCount) => {
     if (!threadId.trim()) return;
-    assertThreadReferenceMutationAllowed(threadId);
+    if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
     const previousMap = get().progressByThreadId;
     const previous = previousMap[threadId];
@@ -92,7 +92,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
 
   markThreadRead: async (threadId, messages, observedMessageCount) => {
     if (!threadId.trim()) return;
-    assertThreadReferenceMutationAllowed(threadId);
+    if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
     const previousMap = get().progressByThreadId;
     const previous = previousMap[threadId];
@@ -114,7 +114,7 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
   },
 
   clearThread: async (threadId) => {
-    assertThreadReferenceMutationAllowed(threadId);
+    if (isThreadReferenceMutationFenced(threadId)) return;
     await get().hydrate();
     const previousMap = get().progressByThreadId;
     if (!previousMap[threadId]) return;
