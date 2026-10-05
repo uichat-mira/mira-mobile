@@ -74,14 +74,14 @@ describe('LocalProviderRuntime', () => {
     const credentialStore = new MemoryProviderCredentialStore();
     await credentialStore.save(config.id, 'sk-test');
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
-    const firstClient = {
+    const makeClient = () => ({
       cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(),
-    };
-    const secondClient = {
-      cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(),
-    };
+      streamChat: jest.fn(async () => (async function* () {
+        yield { type: 'finish', reason: 'stop' as const };
+      })()),
+    });
+    const firstClient = makeClient();
+    const secondClient = makeClient();
     const clients = [firstClient, secondClient];
     const runtime = new LocalProviderRuntime({
       configStore,
@@ -96,11 +96,27 @@ describe('LocalProviderRuntime', () => {
     const firstSession = await runtime.createSession('First', config.id);
     const secondSession = await runtime.createSession('Second', config.id);
 
-    await runtime.sendMessage(firstSession.id, 'first', { agentEnabled: true });
-    await runtime.sendMessage(secondSession.id, 'second', { agentEnabled: true });
+    const firstStream = await runtime.sendMessage(
+      firstSession.id,
+      'first',
+      { agentEnabled: true },
+    );
+    const firstIterator = firstStream[Symbol.asyncIterator]();
+    await expect(firstIterator.next()).resolves.toMatchObject({ done: false });
+
+    const secondStream = await runtime.sendMessage(
+      secondSession.id,
+      'second',
+      { agentEnabled: true },
+    );
+    const secondIterator = secondStream[Symbol.asyncIterator]();
+    await expect(secondIterator.next()).resolves.toMatchObject({ done: false });
 
     expect(firstClient.cancelActiveRun).toHaveBeenCalledTimes(1);
     expect(secondClient.cancelActiveRun).not.toHaveBeenCalled();
+
+    await firstIterator.return?.();
+    await secondIterator.return?.();
   });
 
   it('derives the session title from the first non-empty user message', async () => {
@@ -547,7 +563,7 @@ describe('LocalProviderRuntime personalization context', () => {
     );
     const session = await runtime.createSession('Chat', config.id);
 
-    await runtime.sendMessage(session.id, '你好');
+    await drain(await runtime.sendMessage(session.id, '你好'));
 
     const messages = firstRequestMessages(streamChat);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
