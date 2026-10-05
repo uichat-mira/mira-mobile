@@ -270,16 +270,20 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   private cancelCurrentProviderSend(): void {
-    let latestPending: ActiveProviderSend | null = null;
-    for (const send of this.pendingProviderSends) {
-      latestPending = send;
+    const current = this.currentProviderSend;
+    if (current) {
+      current.cancelled = true;
+      return;
     }
 
-    const send = this.currentProviderSend ?? latestPending;
-    if (!send) return;
+    this.cancelPendingProviderSends();
+  }
 
-    send.cancelled = true;
-    this.pendingProviderSends.delete(send);
+  private cancelPendingProviderSends(): void {
+    for (const send of [...this.pendingProviderSends]) {
+      send.cancelled = true;
+      this.pendingProviderSends.delete(send);
+    }
   }
 
   private async cancelProviderSends(providerId: string): Promise<void> {
@@ -393,8 +397,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
       stagedSessionReferences =
         await this.stageSessionReferenceRemoval(sessionIds);
 
-      await this.credentialStore.clear(providerKey);
-      credentialCleared = true;
+      if (credentialToRestore !== null) {
+        await this.credentialStore.clear(providerKey);
+        credentialCleared = true;
+      }
 
       if (configToRestore) {
         await this.configStore.remove(providerKey);
@@ -640,14 +646,12 @@ export class LocalProviderRuntime implements ConversationRuntime {
   }
 
   setExecutionSuspended(suspended: boolean): void {
-    // Keep cancelled sends tracked until their generator finally unwinds.
-    if (suspended) {
-      this.cancelCurrentProviderSend();
-    }
     // Set the shared suspension predicate before interrupting Agent approval /
     // control flow so MobileAgentLoop reports app-suspended, not cancelled.
     this.providerExecution.setExecutionSuspended(suspended);
     if (suspended) {
+      this.cancelCurrentProviderSend();
+      this.cancelPendingProviderSends();
       this.agentRun?.interruptForSuspension();
     }
   }
