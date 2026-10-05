@@ -349,7 +349,9 @@ describe('OpenAiStandardClient Responses', () => {
     });
     await collect(secondStream);
 
-    expect(JSON.parse(secondXhr.requestBody ?? '{}').input).toEqual([
+    const secondRequest = JSON.parse(secondXhr.requestBody ?? '{}');
+    expect(secondRequest.include).toEqual(['reasoning.encrypted_content']);
+    expect(secondRequest.input).toEqual([
       { role: 'user', content: 'find' },
       reasoningItem,
       functionCallItem,
@@ -509,6 +511,7 @@ describe('OpenAiStandardClient Responses', () => {
       model: 'model-1',
       stream: true,
       store: false,
+      include: ['reasoning.encrypted_content'],
       input: [
         { role: 'system', content: 'be useful' },
         { role: 'user', content: 'question' },
