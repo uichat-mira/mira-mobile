@@ -202,6 +202,64 @@ describe('#227 boundary routing', () => {
     expect(() => harness.runtime.cancelActiveRun()).not.toThrow();
   });
 
+  it('cancels the real Provider request for an ordinary Local Chat turn', async () => {
+    const harness = await createHarness({
+      chatEvents: () => [
+        { type: 'text-delta', delta: 'still running' },
+        { type: 'finish', reason: 'stop' },
+      ],
+    });
+    const session = await harness.runtime.createSession('Chat', config.id);
+
+    await harness.runtime.sendMessage(session.id, '你好');
+    expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
+
+    harness.runtime.cancelActiveRun();
+
+    expect(harness.clients[0].cancelActiveRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels the real Provider request when ordinary Local Chat is suspended', async () => {
+    const harness = await createHarness({
+      chatEvents: () => [
+        { type: 'text-delta', delta: 'still running' },
+        { type: 'finish', reason: 'stop' },
+      ],
+    });
+    const session = await harness.runtime.createSession('Chat', config.id);
+
+    await harness.runtime.sendMessage(session.id, '你好');
+    expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
+
+    harness.runtime.setExecutionSuspended(true);
+
+    expect(harness.clients[0].cancelActiveRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retain a completed Agent Provider client for later cancel or suspend', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => [],
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const harness = await createHarness({
+      chatEvents: () => [{ type: 'finish', reason: 'stop' }],
+      toolGateway: gateway,
+    });
+    const session = await harness.runtime.createSession('Agent', config.id);
+
+    await drain(
+      await harness.runtime.sendMessage(session.id, 'done', {
+        agentEnabled: true,
+      }),
+    );
+    expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
+
+    harness.runtime.cancelActiveRun();
+    harness.runtime.setExecutionSuspended(true);
+
+    expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
+  });
+
   it('does not consolidate an ordinary Chat turn that never completes', async () => {
     const service = createMemoryService();
     const harness = await createHarness({

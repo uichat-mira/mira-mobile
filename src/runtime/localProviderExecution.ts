@@ -7,24 +7,62 @@ import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
 import type { LocalProviderConfig } from '../provider/providerConfigStore';
 import type { RuntimeEvent } from './conversationRuntime';
 
-// Ordinary conversation Provider execution for the Local Provider runtime.
+// Provider execution for the Local Provider runtime.
 //
-// This boundary owns turning a request payload into a Provider event stream and
-// applying provider compatibility normalization. It is intentionally free of
-// Agent lifecycle, canonical persistence and Memory concerns: the ordinary Chat
-// path and the Mobile Agent Loop's per-round `modelCall` both go through it so
-// provider compatibility normalization (e.g. reasoning-tag stripping) can never
-// diverge between the two paths.
+// This boundary owns the current Provider execution independently of Agent
+// lifecycle. Ordinary Chat and Agent model rounds share the same executor, and
+// cancel / app suspension always target the Provider request that is currently
+// active. Run handles are identity-scoped so a stale completion can never clear
+// a newer execution.
 
-/** Stable per-turn Provider execution handle, reusable across Agent rounds. */
 export interface LocalProviderExecutor {
-  /** The Provider client bound to this turn, used for run cancellation. */
   readonly client: OpenAiCompatibleClient;
-  /** Stream one model request with compatibility normalization applied. */
   streamMessages(
     messages: readonly OpenAiCompatibleMessage[],
     tools?: readonly OpenAiCompatibleTool[],
   ): Promise<AsyncIterable<RuntimeEvent>>;
+}
+
+export interface LocalProviderExecutionRun {
+  readonly token: symbol;
+  readonly executor: LocalProviderExecutor;
+}
+
+export class LocalProviderExecutionController {
+  private activeRun: LocalProviderExecutionRun | null = null;
+  private suspended = false;
+
+  get executionSuspended(): boolean {
+    return this.suspended;
+  }
+
+  beginRun(executor: LocalProviderExecutor): LocalProviderExecutionRun {
+    const run = {
+      token: Symbol('local-provider-execution'),
+      executor,
+    };
+    this.activeRun = run;
+    return run;
+  }
+
+  finishRun(run: LocalProviderExecutionRun): void {
+    if (this.activeRun?.token === run.token) {
+      this.activeRun = null;
+    }
+  }
+
+  cancelActiveRun(): void {
+    const active = this.activeRun;
+    this.activeRun = null;
+    active?.executor.client.cancelActiveRun();
+  }
+
+  setExecutionSuspended(suspended: boolean): void {
+    this.suspended = suspended;
+    if (suspended) {
+      this.cancelActiveRun();
+    }
+  }
 }
 
 export function createLocalProviderExecutor(

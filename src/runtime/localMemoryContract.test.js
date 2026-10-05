@@ -9,10 +9,11 @@ const read = (relativePath) =>
 // Local Memory context must never be written back into canonical transcripts.
 //
 // #227 moved these responsibilities behind `LocalProviderRuntime` into explicit
-// owners: request context assembly (`localRequestContext`), completed-turn
-// consolidation (`localTurnConsolidation`), and ordinary Provider execution
-// (`localProviderExecution`). The boundaries below are asserted on those owners
-// while the runtime entry point still drives canonical persistence.
+// owners: request context assembly (`localRequestContext`), Provider execution
+// (`localProviderExecution`), canonical turn execution
+// (`localConversationExecution`), and completed-turn consolidation
+// (`localTurnConsolidation`). The runtime entry point only resolves Local facts
+// and delegates the turn.
 
 describe('MOB-064 local memory boundary contract', () => {
   it('keeps Remote Host runtime and the host client free of any Memory import', () => {
@@ -30,10 +31,13 @@ describe('MOB-064 local memory boundary contract', () => {
     expect(requestContext).toContain('buildMemoryContext');
     expect(requestContext).toContain('content: memoryContext');
     // The compiled context is only ever spliced onto the request payload; the
-    // canonical append path stays in the runtime and writes to the local
-    // session repository only.
+    // canonical append path belongs to the conversation-execution owner.
+    const conversationExecution = read(
+      'src/runtime/localConversationExecution.ts',
+    );
+    expect(conversationExecution).toContain('repository.appendMessages');
     const localRuntime = read('src/runtime/localProviderRuntime.ts');
-    expect(localRuntime).toContain('repository.appendMessages');
+    expect(localRuntime).not.toContain('appendMessages');
   });
 
   it('consolidates with a per-turn consolidator bound to the current Local Provider', () => {
