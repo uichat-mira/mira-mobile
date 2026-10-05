@@ -63,14 +63,31 @@ const flush = async () => {
   });
 };
 
+let activeRenderer: ReactTestRenderer | null = null;
+
 const renderScreen = async (): Promise<ReactTestRenderer> => {
   let tree!: ReactTestRenderer;
   await act(async () => {
     tree = renderer.create(<MemoryScreen />);
   });
+  activeRenderer = tree;
   await flush();
   return tree;
 };
+
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+
+afterEach(() => {
+  act(() => {
+    jest.runOnlyPendingTimers();
+    activeRenderer?.unmount();
+    activeRenderer = null;
+    jest.runOnlyPendingTimers();
+  });
+  jest.useRealTimers();
+});
 
 // Joins every rendered string so interpolated Text children (e.g.
 // `{kind} · {origin}`) can be asserted as one readable string. Works off the
