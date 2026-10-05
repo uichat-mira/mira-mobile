@@ -87,7 +87,9 @@ const restoreSnapshot = async (
   );
   const lastOpenedRestored =
     snapshot.lastOpened === null ||
-    JSON.stringify(lastOpened) === JSON.stringify(snapshot.lastOpened);
+    JSON.stringify(lastOpened) === JSON.stringify(snapshot.lastOpened) ||
+    (lastOpened !== null &&
+      lastOpened.sessionId !== snapshot.lastOpened.sessionId);
 
   if (!pinsRestored || !readsRestored || !lastOpenedRestored) {
     throw new Error('本地会话引用回滚未完整完成。');
