@@ -5,6 +5,10 @@ const source = readFileSync(
   resolve(process.cwd(), 'src/screens/LocalProviderConfigScreen.tsx'),
   'utf8',
 );
+const protocolSource = readFileSync(
+  resolve(process.cwd(), 'src/provider/openAiStandardProtocol.ts'),
+  'utf8',
+);
 
 describe('MOB-038 Local Provider configuration', () => {
   it('supports multiple Provider profiles without mixing API keys into config JSON', () => {
@@ -46,12 +50,14 @@ describe('MOB-038 Local Provider configuration', () => {
 
   it('offers only standard OpenAI protocol choices', () => {
     expect(source).toContain('OPENAI_STANDARD_PROTOCOL_OPTIONS.map((option) =>');
-    expect(source).toContain('OpenAI Chat Completions');
-    expect(source).toContain('OpenAI Responses');
-    expect(source).not.toContain('OpenAI-compatible Provider');
-    expect(source).not.toContain('opencode');
-    expect(source).not.toContain('ark');
-    expect(source).not.toContain('minimax');
+    expect(protocolSource).toContain("label: 'OpenAI Chat Completions'");
+    expect(protocolSource).toContain("label: 'OpenAI Responses'");
+    expect(protocolSource).toContain("endpoint: '/v1/chat/completions'");
+    expect(protocolSource).toContain("endpoint: '/v1/responses'");
+    expect(protocolSource).not.toContain('OpenAI-compatible Provider');
+    expect(protocolSource).not.toContain('opencode');
+    expect(protocolSource).not.toContain('ark');
+    expect(protocolSource).not.toContain('minimax');
   });
 
   it('labels HTTP Provider URLs as explicit development-only plaintext connections', () => {
