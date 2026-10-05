@@ -325,6 +325,55 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(repository.get(whitespaceVariant.id)).resolves.toBeDefined();
   });
 
+  it('keeps deletion reservation scoped to the exact Provider id', async () => {
+    const { runtime, configStore, credentialStore } =
+      await createDeletionRuntime();
+    const whitespaceConfig: LocalProviderConfig = {
+      ...config,
+      id: 'provider-a ',
+      name: 'Whitespace Provider',
+    };
+    await configStore.upsert(whitespaceConfig);
+    await credentialStore.save(whitespaceConfig.id, 'key-space');
+    const whitespaceSession = await runtime.createSession(
+      'Whitespace session',
+      whitespaceConfig.id,
+    );
+
+    let releaseClear!: () => void;
+    let signalClearStarted!: () => void;
+    const clearGate = new Promise<void>((resolve) => {
+      releaseClear = resolve;
+    });
+    const clearStarted = new Promise<void>((resolve) => {
+      signalClearStarted = resolve;
+    });
+    const clearCredential = credentialStore.clear.bind(credentialStore);
+    jest.spyOn(credentialStore, 'clear').mockImplementationOnce(
+      async (providerId) => {
+        signalClearStarted();
+        await clearGate;
+        await clearCredential(providerId);
+      },
+    );
+
+    const deletion = runtime.deleteProvider(config.id, 0);
+    await clearStarted;
+
+    await expect(
+      runtime.sendMessage(whitespaceSession.id, 'still valid'),
+    ).resolves.toBeDefined();
+    await expect(
+      runtime.createSession('Another whitespace session', whitespaceConfig.id),
+    ).resolves.toBeDefined();
+
+    releaseClear();
+    await expect(deletion).resolves.toMatchObject({
+      providerId: config.id,
+      sessionCount: 0,
+    });
+  });
+
   it('deletes a Provider with zero conversations without touching another Provider', async () => {
     const { runtime, configStore, credentialStore, repository } =
       await createDeletionRuntime();
@@ -438,6 +487,36 @@ describe('LocalProviderRuntime Provider deletion', () => {
     expect(rollbackReferences).not.toHaveBeenCalled();
     await expect(configStore.load()).resolves.toContainEqual(storedConfig(config));
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+  });
+
+  it('cancels a lazy send before its first iterator step without writing messages', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Cancel before start', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+
+    runtime.cancelActiveRun();
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow(
+      'Local Provider request was cancelled',
+    );
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+  });
+
+  it('suppresses a lazy send when the app suspends before first iteration', async () => {
+    const { runtime, repository } = await createDeletionRuntime();
+    const session = await runtime.createSession('Suspend before start', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+
+    runtime.setExecutionSuspended(true);
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow(
+      'Local Provider request was cancelled',
+    );
+    await expect(repository.getMessages(session.id)).resolves.toEqual([]);
+
+    runtime.setExecutionSuspended(false);
   });
 
   it('does not acquire a Provider lease for an unconsumed send stream', async () => {
