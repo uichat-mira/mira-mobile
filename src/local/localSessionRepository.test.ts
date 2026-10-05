@@ -51,6 +51,33 @@ describe('LocalSessionRepository', () => {
     ]);
   });
 
+  it('deletes only sessions owned by the requested provider and returns their ids', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const first = await repository.create('provider-a', 'A1');
+    const second = await repository.create('provider-a', 'A2');
+    const otherProvider = await repository.create('provider-b', 'B1');
+
+    await expect(repository.deleteByProvider('provider-a')).resolves.toEqual([
+      second.id,
+      first.id,
+    ]);
+
+    await expect(repository.list('provider-a')).resolves.toEqual([]);
+    await expect(repository.list('provider-b')).resolves.toMatchObject([
+      { id: otherProvider.id, title: 'B1' },
+    ]);
+  });
+
+  it('treats provider cascade deletion with no owned sessions as a no-op', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const otherProvider = await repository.create('provider-b', 'B1');
+
+    await expect(repository.deleteByProvider('provider-a')).resolves.toEqual([]);
+    await expect(repository.list()).resolves.toMatchObject([
+      { id: otherProvider.id, title: 'B1' },
+    ]);
+  });
+
   it('rejects deleting an unknown session without changing stored sessions', async () => {
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const session = await repository.create('provider-a', 'Keep me');
