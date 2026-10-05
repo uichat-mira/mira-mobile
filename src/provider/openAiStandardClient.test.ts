@@ -875,6 +875,53 @@ describe('OpenAiStandardClient transport', () => {
   });
 
 
+  it('preempts an active Responses request before a replacement request fails transcript validation', async () => {
+    const firstXhr = new HangingXhr();
+    const xhrFactory = jest.fn(
+      () => firstXhr as unknown as XMLHttpRequest,
+    );
+    const client = new OpenAiStandardClient({
+      baseUrl: 'https://provider.example.com',
+      apiKey: 'secret',
+      protocol: 'openai-responses',
+      xhrFactory,
+    });
+
+    const firstStream = await client.streamMessages({
+      model: 'model-1',
+      messages: [{ role: 'user', content: 'first' }],
+    });
+    const firstPending = collect(firstStream);
+    await Promise.resolve();
+
+    await expect(
+      client.streamMessages({
+        model: 'model-1',
+        messages: [
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'search', arguments: '{}' },
+            }],
+          },
+          { role: 'assistant', content: 'interleaved' },
+          { role: 'tool', content: '{}', tool_call_id: 'call-1' },
+        ],
+      }),
+    ).rejects.toThrow(
+      'Responses transcript has a function call without its tool output',
+    );
+
+    expect(firstXhr.aborted).toBe(true);
+    await expect(firstPending).rejects.toMatchObject({
+      code: 'REQUEST_ABORTED',
+    });
+    expect(xhrFactory).toHaveBeenCalledTimes(1);
+  });
+
   it('reports explicit cancellation', async () => {
     const xhr = new HangingXhr();
     const client = createClient('openai-responses', xhr);
