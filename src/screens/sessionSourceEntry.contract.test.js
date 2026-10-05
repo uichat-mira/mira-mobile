@@ -7,6 +7,7 @@ describe('MOB-039 dual-entry session source flow', () => {
   const sessionList = readSource('src/screens/SessionListScreen.tsx');
   const drawer = readSource('src/components/CustomDrawer.tsx');
   const sessionRow = readSource('src/screens/SessionSwipeRow.tsx');
+  const sessionCollection = readSource('src/session/sessionCollection.ts');
 
   it('opens an explicit source picker instead of cycling filters', () => {
     expect(sessionList).toContain('ConnectionSourceDropdown');
@@ -16,11 +17,16 @@ describe('MOB-039 dual-entry session source flow', () => {
     expect(readSource('src/components/ConnectionSourceDropdown.tsx')).toContain('disabled: option.disabled');
   });
 
-  it('keeps remote and local conversations in the drawer', () => {
-    expect(drawer).toContain("runtimeRegistry.listSessions('all')");
-    expect(drawer).toContain("session.source !== 'local-provider'");
+  it('keeps remote and local conversations in the drawer through the shared session owner', () => {
+    // MOB-067 moved the collection read into the session owner; the drawer now
+    // wires it rather than assembling its own list/filter logic.
+    expect(drawer).toContain('useSessionCollection');
+    expect(drawer).toContain("filter: 'all'");
     expect(drawer).toContain('providerName: session.providerName');
     expect(drawer).toContain('providerModel: session.providerModel');
+    // The shared owner is responsible for skipping local sessions when
+    // observing Remote unread state.
+    expect(sessionCollection).toContain("session.source !== 'local-provider'");
   });
 
   it('asks for the conversation source before creating from the drawer', () => {

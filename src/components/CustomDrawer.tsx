@@ -29,13 +29,11 @@ import type { Session } from '../types';
 import { useTheme } from '../theme/ThemeContext';
 import { miraHostClient } from '../api/miraHostClient';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
-import { getSessionRoleName } from '../api/roleApi';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { useThreadPinStore } from '../store/threadPinStore';
-import { isThreadPinned, splitSessionsByLocalPin } from '../store/threadPinning';
+import { splitSessionsByLocalPin } from '../store/threadPinning';
 import {
-  selectThreadUnread,
   useThreadReadStore,
 } from '../store/threadReadStore';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../screens/generalSettings';
@@ -44,13 +42,16 @@ import {
   SessionKindIcon,
 } from './SessionKindIcon';
 import { RemoteDiagnosticNotice } from './RemoteDiagnosticNotice';
-import {
-  classifySessionLoadFailure,
-  type RemoteConnectionDiagnostic,
-  type RemoteConnectionDiagnosticAction,
+import type {
+  RemoteConnectionDiagnosticAction,
 } from '../connectivity/remoteConnectionDiagnostics';
-import { resolveSessionCollectionState } from '../screens/sessionCollectionState';
-import { resolveSessionOpenTarget } from '../screens/sessionNavigation';
+import { useSessionCollection } from '../session/useSessionCollection';
+import { resolveSessionCollectionState } from '../session/sessionCollection';
+import { resolveSessionOpenTarget } from '../session/sessionNavigation';
+import {
+  buildSessionRowAccessibilityLabel,
+  projectSessionRow,
+} from '../session/sessionProjection';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
@@ -88,33 +89,40 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const progressByThreadId = useThreadReadStore((state) => state.progressByThreadId);
   const hydrateReads = useThreadReadStore((state) => state.hydrate);
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadDiagnostic, setLoadDiagnostic] =
-    useState<RemoteConnectionDiagnostic | null>(null);
   const [creatingChat, setCreatingChat] = useState(false);
 
-  const loadSessions = useCallback(async () => {
-    setLoading(true);
-    setLoadDiagnostic(null);
-    try {
-      const list = await runtimeRegistry.listSessions('all');
-      setSessions(list);
-      void syncUnreadSessions(
-        list.filter((session) => session.source !== 'local-provider').slice(0, 20),
-      ).catch(() => undefined);
-    } catch (error) {
-      setLoadDiagnostic(await classifySessionLoadFailure(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [syncUnreadSessions]);
+  const hydrateLocalState = useCallback(
+    () =>
+      Promise.allSettled([
+        Promise.resolve().then(hydratePins),
+        Promise.resolve().then(hydrateReads),
+      ]).then(() => undefined),
+    [hydratePins, hydrateReads],
+  );
 
-  React.useEffect(() => {
-    void hydratePins().catch(() => undefined);
-    void hydrateReads().catch(() => undefined);
-    void loadSessions();
-  }, [hydratePins, hydrateReads, loadSessions]);
+  // The drawer only needs a bounded first page of unread observation; pinned
+  // threads beyond the Recent cap are observed separately below.
+  const syncCappedUnread = useCallback(
+    (items: Session[]) =>
+      syncUnreadSessions(
+        items
+          .filter((session) => session.source !== 'local-provider')
+          .slice(0, RECENT_THREAD_LIMIT),
+      ),
+    [syncUnreadSessions],
+  );
+
+  const {
+    sessions,
+    loading,
+    diagnostic: loadDiagnostic,
+    reload: loadSessions,
+  } = useSessionCollection({
+    listSessions: (filter) => runtimeRegistry.listSessions(filter),
+    syncUnreadSessions: syncCappedUnread,
+    hydrateLocalState,
+    filter: 'all',
+  });
 
   // Group by device-local pin state first, then apply the Recent display cap.
   // A pinned thread that falls outside the Recent cap must stay visible in the
@@ -237,16 +245,21 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
 
   const renderDrawerSession = useCallback(
     ({ item }: { item: Session }) => {
-      const belongsToWorkspace =
-        typeof item.workspaceId === 'string' &&
-        item.workspaceId.trim().length > 0;
-      const pinned = isThreadPinned(pinnedAtByThreadId, item.id);
-      const unread = selectThreadUnread(progressByThreadId, item.id);
-      const roleName = getSessionRoleName(item, roleNames);
+      const projection = projectSessionRow(
+        item,
+        pinnedAtByThreadId,
+        progressByThreadId,
+        roleNames,
+      );
+      const { belongsToWorkspace, unread, roleName } = projection;
       return (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${getSessionVisualKindLabel(item)}：${item.title}${roleName ? `，角色${roleName}` : ''}${belongsToWorkspace ? '，项目会话' : ''}${pinned ? '，已在本机置顶' : ''}${unread ? '，未读' : ''}`}
+          accessibilityLabel={buildSessionRowAccessibilityLabel(
+            item,
+            projection,
+            getSessionVisualKindLabel(item),
+          )}
           style={({ pressed }) => [
             styles.recentItem,
             pressed && { backgroundColor: colors.bg.soft },
