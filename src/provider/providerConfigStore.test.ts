@@ -229,6 +229,37 @@ describe('ProviderConfigStore', () => {
     ]);
   });
 
+  it('preserves a migration notice through low-level save and clears it only on explicit upsert', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      LOCAL_PROVIDER_CONFIG_STORAGE_KEYS.legacyV1,
+      JSON.stringify([{
+        id: 'legacy',
+        name: 'Legacy',
+        baseUrl: 'https://provider.example.com',
+        model: 'legacy-model',
+        protocol: 'chat-completions',
+      }]),
+    );
+    const store = new ProviderConfigStore(storage);
+    const [migrated] = await store.load();
+    expect(migrated.legacyReasoningBehaviorChanged).toBe(true);
+
+    await store.save([migrated]);
+    await expect(store.load()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'legacy',
+        legacyReasoningBehaviorChanged: true,
+      }),
+    ]);
+
+    await store.upsert(migrated);
+    const [acknowledged] = await store.load();
+    expect(acknowledged).not.toHaveProperty(
+      'legacyReasoningBehaviorChanged',
+    );
+  });
+
   it('keeps another provider migration notice when one provider is upserted', async () => {
     const storage = new MemoryLocalKeyValueStore();
     const store = new ProviderConfigStore(storage);
