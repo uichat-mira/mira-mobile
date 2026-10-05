@@ -31,6 +31,12 @@ export const normalizeOpenAiStandardBaseUrl = (value: string): string => {
   if (parsed.username || parsed.password) {
     throw new Error('Provider URL must not contain embedded credentials');
   }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Provider Base URL must use HTTP or HTTPS');
+  }
+  if (parsed.protocol === 'http:' && !__DEV__) {
+    throw new Error('Provider must use HTTPS outside development builds');
+  }
   if (parsed.search || parsed.hash) {
     throw new Error('Provider Base URL must not contain query or fragment');
   }
