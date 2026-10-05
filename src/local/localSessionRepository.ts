@@ -244,11 +244,10 @@ export class LocalSessionRepository {
         .map((item) => item.id);
 
       if (expectedSessionIds) {
-        const expected = [...expectedSessionIds].sort();
-        const actual = [...deletedSessionIds].sort();
+        const expected = new Set(expectedSessionIds);
         if (
-          expected.length !== actual.length ||
-          expected.some((sessionId, index) => sessionId !== actual[index])
+          expected.size !== deletedSessionIds.length ||
+          deletedSessionIds.some((sessionId) => !expected.has(sessionId))
         ) {
           throw new LocalProviderSessionSetChangedError(deletedSessionIds);
         }
