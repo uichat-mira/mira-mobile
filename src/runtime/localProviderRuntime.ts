@@ -584,6 +584,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
           throw new Error('Local Provider request was cancelled');
         }
 
+        // The Provider client is scoped to this outer send. Agent model rounds
+        // reuse this executor, while a later conversation turn gets a fresh client,
+        // so Responses continuation state cannot leak across user turns.
         const executor = createLocalProviderExecutor(
           runtime.clientFactory(config, apiKey),
           config,
