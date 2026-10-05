@@ -1,9 +1,8 @@
 import type {
-  OpenAiCompatibleClient,
-  OpenAiCompatibleMessage,
-  OpenAiCompatibleTool,
-} from '../provider/openAiCompatibleClient';
-import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
+  OpenAiMessage,
+  OpenAiStandardClient,
+  OpenAiTool,
+} from '../provider/openAiStandardClient';
 import type { LocalProviderConfig } from '../provider/providerConfigStore';
 import type { RuntimeEvent } from './conversationRuntime';
 
@@ -16,10 +15,10 @@ import type { RuntimeEvent } from './conversationRuntime';
 // a newer execution.
 
 export interface LocalProviderExecutor {
-  readonly client: OpenAiCompatibleClient;
+  readonly client: OpenAiStandardClient;
   streamMessages(
-    messages: readonly OpenAiCompatibleMessage[],
-    tools?: readonly OpenAiCompatibleTool[],
+    messages: readonly OpenAiMessage[],
+    tools?: readonly OpenAiTool[],
   ): Promise<AsyncIterable<RuntimeEvent>>;
 }
 
@@ -66,24 +65,17 @@ export class LocalProviderExecutionController {
 }
 
 export function createLocalProviderExecutor(
-  client: OpenAiCompatibleClient,
+  client: OpenAiStandardClient,
   config: LocalProviderConfig,
 ): LocalProviderExecutor {
-  const applyProviderCompatibility = (
-    stream: AsyncIterable<RuntimeEvent>,
-  ): AsyncIterable<RuntimeEvent> =>
-    config.compatibility?.reasoningTags === 'strip'
-      ? filterReasoningTagEvents(stream)
-      : stream;
-
   return {
     client,
     async streamMessages(messages, tools) {
-      const request =
+      return client.streamMessages(
         tools === undefined
           ? { model: config.model, messages: [...messages] }
-          : { model: config.model, messages: [...messages], tools: [...tools] };
-      return applyProviderCompatibility(await client.streamChat(request));
+          : { model: config.model, messages: [...messages], tools: [...tools] },
+      );
     },
   };
 }
