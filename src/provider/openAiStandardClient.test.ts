@@ -1077,10 +1077,12 @@ describe('OpenAiStandardClient transport', () => {
         model: 'model-1',
         messages: [{ role: 'user', content: 'hello' }],
       });
-      const pending = collect(stream);
+      const timeoutExpectation = expect(collect(stream)).rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+      });
       await jest.advanceTimersByTimeAsync(1000);
 
-      await expect(pending).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+      await timeoutExpectation;
     } finally {
       jest.useRealTimers();
     }
