@@ -9,6 +9,7 @@ import {
   removeThreadReferences,
   restoreThreadReferences,
 } from './threadReferenceMutationFence';
+import { persistOptimisticThreadReferenceMap } from './threadReferencePersistence';
 import {
   isThreadUnread,
   markThreadMessagesRead,
@@ -89,15 +90,13 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
       observedMessageCount,
     );
     const nextMap = { ...previousMap, [threadId]: nextProgress };
-    set({ progressByThreadId: nextMap });
-    try {
-      await repository.save(nextMap);
-    } catch (error) {
-      if (get().progressByThreadId === nextMap) {
-        set({ progressByThreadId: previousMap });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previousMap,
+      nextMap,
+      (value) => set({ progressByThreadId: value }),
+      () => get().progressByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   markThreadRead: async (threadId, messages, observedMessageCount) => {
@@ -112,15 +111,13 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
       observedMessageCount,
     );
     const nextMap = { ...previousMap, [threadId]: nextProgress };
-    set({ progressByThreadId: nextMap });
-    try {
-      await repository.save(nextMap);
-    } catch (error) {
-      if (get().progressByThreadId === nextMap) {
-        set({ progressByThreadId: previousMap });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previousMap,
+      nextMap,
+      (value) => set({ progressByThreadId: value }),
+      () => get().progressByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   clearThread: async (threadId) => {
@@ -130,15 +127,13 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     if (!previousMap[threadId]) return;
     const nextMap = { ...previousMap };
     delete nextMap[threadId];
-    set({ progressByThreadId: nextMap });
-    try {
-      await repository.save(nextMap);
-    } catch (error) {
-      if (get().progressByThreadId === nextMap) {
-        set({ progressByThreadId: previousMap });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previousMap,
+      nextMap,
+      (value) => set({ progressByThreadId: value }),
+      () => get().progressByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   removeThreads: async (threadIds) => {
@@ -148,16 +143,14 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
       removeThreadReferences(previousMap, threadIds);
     if (Object.keys(removed).length === 0) return removed;
 
-    set({ progressByThreadId: nextMap });
-    try {
-      await repository.save(nextMap);
-      return removed;
-    } catch (error) {
-      if (get().progressByThreadId === nextMap) {
-        set({ progressByThreadId: previousMap });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previousMap,
+      nextMap,
+      (value) => set({ progressByThreadId: value }),
+      () => get().progressByThreadId,
+      (value) => repository.save(value),
+    );
+    return removed;
   },
 
   restoreThreads: async (progress) => {
@@ -165,15 +158,13 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     await get().hydrate();
     const previousMap = get().progressByThreadId;
     const nextMap = restoreThreadReferences(previousMap, progress);
-    set({ progressByThreadId: nextMap });
-    try {
-      await repository.save(nextMap);
-    } catch (error) {
-      if (get().progressByThreadId === nextMap) {
-        set({ progressByThreadId: previousMap });
-      }
-      throw error;
-    }
+    await persistOptimisticThreadReferenceMap(
+      previousMap,
+      nextMap,
+      (value) => set({ progressByThreadId: value }),
+      () => get().progressByThreadId,
+      (value) => repository.save(value),
+    );
   },
 
   syncSessions: async (sessions) => {
