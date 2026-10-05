@@ -5,7 +5,7 @@ const readSource = (path) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('MOB-039 dual-entry session source flow', () => {
   const sessionList = readSource('src/screens/SessionListScreen.tsx');
-  const drawer = readSource('src/components/CustomDrawer.tsx');
+  const drawer = readSource('src/session/CustomDrawer.tsx');
   const sessionRow = readSource('src/screens/SessionSwipeRow.tsx');
   const sessionCollection = readSource('src/session/sessionCollection.ts');
 
@@ -14,7 +14,7 @@ describe('MOB-039 dual-entry session source flow', () => {
     expect(sessionList).toContain("value: 'all', label: '全部任务'");
     expect(sessionList).toContain("value: 'remote-host', label: '远程连接'");
     expect(sessionList).toContain("value: 'local-provider', label: '本地连接'");
-    expect(readSource('src/components/ConnectionSourceDropdown.tsx')).toContain('disabled: option.disabled');
+    expect(readSource('src/connectivity/ConnectionSourceDropdown.tsx')).toContain('disabled: option.disabled');
   });
 
   it('keeps remote and local conversations in the drawer through the shared session owner', () => {

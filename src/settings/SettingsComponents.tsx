@@ -1,8 +1,8 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ChevronRight } from 'lucide-react-native';
-import { useTheme } from '../../theme/ThemeContext';
-import { fontSize, radius, sizing, spacing } from '../../theme/tokens';
+import { useTheme } from '../theme/ThemeContext';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
 type SettingsIcon = React.ComponentType<{ size?: number; color?: string }>;
 

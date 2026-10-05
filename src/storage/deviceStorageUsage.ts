@@ -3,7 +3,7 @@
 // 这是一个纯函数模块，方便注入和测试；UI 层只负责读和呈现。
 // 真实设备字节数通过 Native 模块拿，不在本模块伪造。
 
-import type { LocalKeyValueStore } from '../storage/localKeyValueStore';
+import type { LocalKeyValueStore } from './localKeyValueStore';
 import {
   localCaptureRepository,
   type LocalCaptureMetadata,

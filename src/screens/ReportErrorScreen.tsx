@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { version } from '../../package.json';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
@@ -22,7 +22,7 @@ import {
   buildReportDiagnostics,
   buildReportMailtoUrl,
   REPORT_FEEDBACK_EMAIL,
-} from './reportDiagnostics';
+} from '../settings/reportDiagnostics';
 
 const MAX_LENGTH = 2000;
 const DRAFT_KEY = 'mira.report-error.draft.v1';

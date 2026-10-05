@@ -15,16 +15,16 @@ import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeReg
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../components/ConnectionSourceDropdown';
-import { type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../connectivity/ConnectionSourceDropdown';
+import { type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
-import { CustomDrawer } from '../components/CustomDrawer';
+import { CustomDrawer } from '../session/CustomDrawer';
 import { EmptyStateIllustration } from '../components/EmptyStateIllustration';
 import { useSessionCollection } from '../session/useSessionCollection';
 import { resolveSessionCollectionState } from '../session/sessionCollection';
 import { resolveSessionOpenTarget } from '../session/sessionNavigation';
 import { projectSessionRow } from '../session/sessionProjection';
-import { removeLastOpenedSession } from './lastOpenedSession';
+import { removeLastOpenedSession } from '../session/lastOpenedSession';
 import { SessionSwipeRow } from './SessionSwipeRow';
 
 const DRAWER_WIDTH = Math.floor(Dimensions.get('window').width * 0.82);

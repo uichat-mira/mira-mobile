@@ -1,4 +1,4 @@
-import { DEFAULT_PERSONALIZATION_SETTINGS } from '../screens/personalizationSettings';
+import { DEFAULT_PERSONALIZATION_SETTINGS } from '../settings/personalizationSettings';
 import { buildLocalPersonalizationContext } from './localPersonalizationContext';
 import { PairedRemoteMiraHostClient } from '../api/miraHostClient';
 

@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types';
-import type { PersonalizationSettings } from '../screens/personalizationSettings';
+import type { PersonalizationSettings } from '../settings/personalizationSettings';
 import type { MemoryContextSnapshot } from '../memory';
 import type { LocalMemoryService } from '../memory';
 import { assembleLocalRequestContext } from './localRequestContext';

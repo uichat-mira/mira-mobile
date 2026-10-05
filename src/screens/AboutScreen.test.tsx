@@ -22,7 +22,7 @@ jest.mock('../update/appUpdate', () => ({
   fetchLatestRelease: jest.fn(),
 }));
 
-jest.mock('../components/settings/SettingsPageHeader', () => ({
+jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
 

@@ -1,6 +1,6 @@
-import { deviceCredentialStore } from '../security/deviceCredentialStore';
-import { desktopCredentialStore } from '../security/desktopCredentialStore';
-import { providerCredentialStore } from '../security/providerCredentialStore';
+import { deviceCredentialStore } from './deviceCredentialStore';
+import { desktopCredentialStore } from './desktopCredentialStore';
+import { providerCredentialStore } from './providerCredentialStore';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import {
   loadShiyanRuntimeConfig,

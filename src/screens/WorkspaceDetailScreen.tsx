@@ -26,12 +26,12 @@ import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
-} from '../components/SessionKindIcon';
+} from '../session/SessionKindIcon';
 import {
   getSessionLoadErrorMessage,
   resolveSessionCollectionState,
 } from '../session/sessionCollection';
-import { getWorkspaceDetailContractError } from './workspaceDetailState';
+import { getWorkspaceDetailContractError } from '../session/workspaceDetailState';
 
 const PAGE_LIMIT = 50;
 const twoDigits = (value: number) => String(value).padStart(2, '0');

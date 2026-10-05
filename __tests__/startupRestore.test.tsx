@@ -5,8 +5,8 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 
-import { saveGeneralSettings } from '../src/screens/generalSettings';
-import { saveLastOpenedSession } from '../src/screens/lastOpenedSession';
+import { saveGeneralSettings } from '../src/settings/generalSettings';
+import { saveLastOpenedSession } from '../src/session/lastOpenedSession';
 
 type MockRoute = { name: string; params?: Record<string, unknown> };
 type MockNavigation = {

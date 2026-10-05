@@ -36,7 +36,7 @@ import { remoteMiraHostClient } from '../api/remoteMiraHost';
 import { useRemotePairing } from '../pairing/useRemotePairing';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { PairingScannerModal } from '../components/PairingScannerModal';
+import { PairingScannerModal } from '../pairing/PairingScannerModal';
 
 const buildPairingUriFromRoute = (
   params: RootStackParamList['HostConfig'],

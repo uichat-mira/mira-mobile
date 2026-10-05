@@ -5,7 +5,7 @@
 import React, { useEffect, useState } from 'react';
 import { AppRegistry } from 'react-native';
 import { name as appName } from './app.json';
-import { applyStartupTextScale } from './src/screens/generalSettings';
+import { applyStartupTextScale } from './src/settings/generalSettings';
 
 function StartupApp() {
   const [AppComponent, setAppComponent] = useState(null);

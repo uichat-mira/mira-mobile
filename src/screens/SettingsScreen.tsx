@@ -39,9 +39,9 @@ import {
   SettingsGroup as RowGroup,
   SettingsRow as Row,
   SettingsSectionHeader as SectionHeader,
-} from '../components/settings/SettingsComponents';
-import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
-import { ConnectionStatusDot, type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+} from '../settings/SettingsComponents';
+import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsChoiceModal';
+import { ConnectionStatusDot, type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
 

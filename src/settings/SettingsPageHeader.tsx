@@ -2,8 +2,8 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronLeft } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
-import { useTheme } from '../../theme/ThemeContext';
-import { fontSize, radius, sizing, spacing } from '../../theme/tokens';
+import { useTheme } from '../theme/ThemeContext';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
 interface SettingsPageHeaderProps {
   title: string;

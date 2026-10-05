@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type {
   RemoteConnectionDiagnostic,
   RemoteConnectionDiagnosticAction,
-} from '../connectivity/remoteConnectionDiagnostics';
+} from './remoteConnectionDiagnostics';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 

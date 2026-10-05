@@ -40,7 +40,7 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-jest.mock('../components/ConnectionSourceDropdown', () => ({
+jest.mock('../connectivity/ConnectionSourceDropdown', () => ({
   ConnectionSourceDropdown: ({
     onChange,
   }: {
@@ -58,15 +58,15 @@ jest.mock('../components/ConnectionSourceDropdown', () => ({
     );
   },
 }));
-jest.mock('../components/SessionKindIcon', () => ({
+jest.mock('../session/SessionKindIcon', () => ({
   SessionKindIcon: () => null,
   getSessionVisualKindLabel: () => '普通对话',
 }));
-jest.mock('../components/CustomDrawer', () => ({ CustomDrawer: () => null }));
+jest.mock('../session/CustomDrawer', () => ({ CustomDrawer: () => null }));
 jest.mock('../components/EmptyStateIllustration', () => ({
   EmptyStateIllustration: () => null,
 }));
-jest.mock('../components/RemoteDiagnosticNotice', () => ({
+jest.mock('../connectivity/RemoteDiagnosticNotice', () => ({
   RemoteDiagnosticNotice: () => null,
 }));
 jest.mock('./SessionSwipeRow', () => ({

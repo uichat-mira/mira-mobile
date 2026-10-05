@@ -44,17 +44,17 @@ import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, shadows, sizing, spacing } from '../theme/tokens';
-import { AssistantMarkdown } from '../components/AssistantMarkdown';
-import { ConversationMenu } from '../components/ConversationMenu';
-import { ConversationSearchBar } from '../components/ConversationSearchBar';
-import { MessageAttachments } from '../components/MessageAttachments';
+import { AssistantMarkdown } from '../chat/AssistantMarkdown';
+import { ConversationMenu } from '../chat/ConversationMenu';
+import { ConversationSearchBar } from '../chat/ConversationSearchBar';
+import { MessageAttachments } from '../chat/MessageAttachments';
 import {
   LocalAgentRunCard,
   type LocalAgentActivity,
   type LocalAgentApprovalView,
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
-} from '../components/LocalAgentRunCard';
+} from '../agent/LocalAgentRunCard';
 import { buildShareCardModel } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
 import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
@@ -63,7 +63,7 @@ import {
   getChatHistoryErrorMessage,
   readCanonicalSessionTitle,
   readLocalSessionTitle,
-} from './chatSessionState';
+} from '../chat/chatSessionState';
 
 function ThinkingIndicator({ color }: { color: string }) {
   const dots = useRef([

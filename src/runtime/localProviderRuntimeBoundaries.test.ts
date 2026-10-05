@@ -3,7 +3,7 @@ import { ProviderConfigStore, type LocalProviderConfig } from '../provider/provi
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
 import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import { LocalMemoryRepository, LocalMemoryService, LocalMemoryTurnLedger } from '../memory';
-import { DEFAULT_PERSONALIZATION_SETTINGS } from '../screens/personalizationSettings';
+import { DEFAULT_PERSONALIZATION_SETTINGS } from '../settings/personalizationSettings';
 import type { ToolGatewayClient } from '../tools/toolGatewayClient';
 import type { RuntimeEvent } from './conversationRuntime';
 import { LocalProviderRuntime } from './localProviderRuntime';

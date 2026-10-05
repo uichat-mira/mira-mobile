@@ -13,15 +13,15 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ goBack: jest.fn(), navigate: jest.fn() }),
 }));
 
-jest.mock('../components/settings/SettingsPageHeader', () => ({
+jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
 
-jest.mock('../components/settings/SettingsInputModal', () => ({
+jest.mock('../settings/SettingsInputModal', () => ({
   SettingsInputModal: () => null,
 }));
 
-jest.mock('../components/settings/SettingsChoiceModal', () => ({
+jest.mock('../settings/SettingsChoiceModal', () => ({
   SettingsChoiceModal: () => null,
 }));
 

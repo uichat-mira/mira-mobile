@@ -6,7 +6,7 @@ import {
   findConversationMatches,
   nextConversationMatchIndex,
   type ConversationMatch,
-} from '../chat/conversationTools';
+} from './conversationTools';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 

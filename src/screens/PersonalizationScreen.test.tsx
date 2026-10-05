@@ -9,8 +9,8 @@ import renderer, { act } from 'react-test-renderer';
 
 const mockLoadPersonalizationSettings = jest.fn();
 
-jest.mock('./personalizationSettings', () => {
-  const actual = jest.requireActual('./personalizationSettings');
+jest.mock('../settings/personalizationSettings', () => {
+  const actual = jest.requireActual('../settings/personalizationSettings');
   return {
     ...actual,
     loadPersonalizationSettings: (...args: unknown[]) =>
@@ -19,7 +19,7 @@ jest.mock('./personalizationSettings', () => {
 });
 
 import { PersonalizationScreen } from './PersonalizationScreen';
-import { DEFAULT_PERSONALIZATION_SETTINGS } from './personalizationSettings';
+import { DEFAULT_PERSONALIZATION_SETTINGS } from '../settings/personalizationSettings';
 
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: jest.fn(), goBack: jest.fn(), reset: jest.fn() }),
@@ -40,15 +40,15 @@ jest.mock('../theme/ThemeContext', () => ({
   }),
 }));
 
-jest.mock('../components/settings/SettingsChoiceModal', () => ({
+jest.mock('../settings/SettingsChoiceModal', () => ({
   SettingsChoiceModal: () => null,
 }));
 
-jest.mock('../components/settings/SettingsInputModal', () => ({
+jest.mock('../settings/SettingsInputModal', () => ({
   SettingsInputModal: () => null,
 }));
 
-jest.mock('../components/settings/SettingsPageHeader', () => ({
+jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
 

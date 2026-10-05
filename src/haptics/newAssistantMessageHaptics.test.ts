@@ -18,11 +18,11 @@ jest.mock('react-native', () => ({
   AppState: { currentState: 'active' },
 }));
 
-jest.mock('../screens/generalSettings', () => ({
+jest.mock('../settings/generalSettings', () => ({
   loadGeneralSettings: jest.fn(async () => ({ hapticsEnabled: true })),
 }));
 
-const { loadGeneralSettings } = jest.requireMock('../screens/generalSettings') as {
+const { loadGeneralSettings } = jest.requireMock('../settings/generalSettings') as {
   loadGeneralSettings: jest.Mock;
 };
 

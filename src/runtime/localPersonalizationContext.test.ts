@@ -1,7 +1,7 @@
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import { buildLocalPersonalizationContext } from './localPersonalizationContext';
 
 const settings = (

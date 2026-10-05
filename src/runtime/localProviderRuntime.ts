@@ -12,7 +12,7 @@ import { LocalSessionRepository } from '../local/localSessionRepository';
 import {
   loadPersonalizationSettings,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { getLocalMemoryService, type LocalMemoryService } from '../memory';
 import { assembleLocalRequestContext } from './localRequestContext';

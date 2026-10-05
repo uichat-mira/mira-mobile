@@ -1,4 +1,4 @@
-import type { BaseStyleTone, PersonalizationSettings } from '../screens/personalizationSettings';
+import type { BaseStyleTone, PersonalizationSettings } from '../settings/personalizationSettings';
 
 // This compiler turns the persisted Personalization settings into a single
 // Local-AI-only system context. It is deliberately pure: no storage, no
