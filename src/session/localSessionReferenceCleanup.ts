@@ -119,17 +119,12 @@ export async function stageLocalSessionReferenceRemoval(
     snapshot.lastOpened = await dependencies.removeLastOpened(normalizedIds);
     lastOpenedRemoved = snapshot.lastOpened !== null;
   } catch (error) {
-    const rollback: Promise<void>[] = [];
-    if (pinsRemoved) rollback.push(dependencies.restorePins(snapshot.pins));
-    if (readProgressRemoved) {
-      rollback.push(dependencies.restoreReadProgress(snapshot.readProgress));
-    }
-    if (lastOpenedRemoved && snapshot.lastOpened) {
-      rollback.push(dependencies.restoreLastOpened(snapshot.lastOpened));
-    }
-    const rollbackResults = await Promise.allSettled(rollback);
-    if (rollbackResults.some((result) => result.status === 'rejected')) {
-      throw new Error('无法安全清理本地会话引用，且回滚未完整完成。');
+    if (pinsRemoved || readProgressRemoved || lastOpenedRemoved) {
+      try {
+        await restoreSnapshot(snapshot, dependencies);
+      } catch {
+        throw new Error('无法安全清理本地会话引用，且回滚未完整完成。');
+      }
     }
     throw error;
   }
