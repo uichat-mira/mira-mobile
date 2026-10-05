@@ -233,7 +233,6 @@ export function SettingsScreen() {
           <Row
             icon={MessageCircle}
             title="本地连接"
-            subtitle="管理手机直连的 OpenAI-compatible Provider"
             actionId="local-provider"
             isFirst
             isLast={false}
@@ -243,7 +242,6 @@ export function SettingsScreen() {
           <Row
             icon={Monitor}
             title="远程连接"
-            subtitle="管理 Mira Host 连接"
             actionId="host-config"
             isLast
             right={<ConnectionStatusDot status={remoteVisualStatus} />}
@@ -254,13 +252,7 @@ export function SettingsScreen() {
         <SectionHeader>我的 Mira</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
           <Row icon={Smile} title="个性化" actionId="personalization" isFirst isLast={false} />
-          <Row
-            icon={BookOpen}
-            title="记忆"
-            subtitle="本机长期记忆"
-            actionId="memory"
-            isLast={false}
-          />
+          <Row icon={BookOpen} title="记忆" actionId="memory" isLast={false} />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
         </RowGroup>
 
@@ -307,12 +299,11 @@ export function SettingsScreen() {
           <Row
             icon={GearIcon}
             title="常规"
-            subtitle="启动 · 显示 · 更新"
             actionId="general"
             isFirst
             isLast={false}
           />
-          <Row icon={Bell} title="通知" subtitle="权限 · 测试通知" actionId="notifications" isLast={false} />
+          <Row icon={Bell} title="通知" actionId="notifications" isLast={false} />
           <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
           <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
