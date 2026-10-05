@@ -17,6 +17,11 @@ const config: LocalProviderConfig = {
   protocol: 'chat-completions',
 };
 
+const storedConfig = (value: LocalProviderConfig): LocalProviderConfig => ({
+  ...value,
+  compatibility: value.compatibility ?? { reasoningTags: 'strip' },
+});
+
 const createSendReadyRuntime = async () => {
   const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
   await configStore.save([config]);
@@ -162,7 +167,9 @@ describe('LocalProviderRuntime Provider deletion', () => {
     model: 'model-b',
   };
 
-  const createDeletionRuntime = async () => {
+  const createDeletionRuntime = async (
+    stageSessionReferenceRemoval = jest.fn(async () => jest.fn(async () => undefined)),
+  ) => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
     await configStore.save([config, otherConfig]);
     const credentialStore = new MemoryProviderCredentialStore();
@@ -173,6 +180,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
       configStore,
       credentialStore,
       sessionRepository: repository,
+      stageSessionReferenceRemoval,
       clientFactory: () => ({
         cancelActiveRun: jest.fn(),
         streamChat: jest.fn(async () => (async function* () {
@@ -180,12 +188,23 @@ describe('LocalProviderRuntime Provider deletion', () => {
         })()),
       } as unknown as OpenAiCompatibleClient),
     });
-    return { runtime, configStore, credentialStore, repository };
+    return {
+      runtime,
+      configStore,
+      credentialStore,
+      repository,
+      stageSessionReferenceRemoval,
+    };
   };
 
   it('deletes only the selected Provider, its credential, and its owned sessions', async () => {
-    const { runtime, configStore, credentialStore, repository } =
-      await createDeletionRuntime();
+    const {
+      runtime,
+      configStore,
+      credentialStore,
+      repository,
+      stageSessionReferenceRemoval,
+    } = await createDeletionRuntime();
     const first = await runtime.createSession('A1', config.id);
     const second = await runtime.createSession('A2', config.id);
     const other = await runtime.createSession('B1', otherConfig.id);
@@ -200,8 +219,12 @@ describe('LocalProviderRuntime Provider deletion', () => {
       sessionCount: 2,
       deletedSessionIds: [second.id, first.id],
     });
+    expect(stageSessionReferenceRemoval).toHaveBeenCalledWith([
+      second.id,
+      first.id,
+    ]);
 
-    await expect(configStore.load()).resolves.toEqual([otherConfig]);
+    await expect(configStore.load()).resolves.toEqual([storedConfig(otherConfig)]);
     await expect(credentialStore.load(config.id)).resolves.toBeNull();
     await expect(credentialStore.load(otherConfig.id)).resolves.toBe('key-b');
     await expect(repository.list(config.id)).resolves.toEqual([]);
@@ -228,7 +251,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
       deletedSessionIds: [],
     });
 
-    await expect(configStore.load()).resolves.toEqual([otherConfig]);
+    await expect(configStore.load()).resolves.toEqual([storedConfig(otherConfig)]);
     await expect(credentialStore.load(config.id)).resolves.toBeNull();
     await expect(credentialStore.load(otherConfig.id)).resolves.toBe('key-b');
     await expect(repository.list()).resolves.toMatchObject([
@@ -245,11 +268,58 @@ describe('LocalProviderRuntime Provider deletion', () => {
 
     await expect(
       runtime.deleteProvider(config.id, impact.sessionCount),
-    ).rejects.toThrow('数量已变化');
+    ).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_DELETION_SCOPE_CHANGED',
+      actualSessionCount: 2,
+    });
 
-    await expect(configStore.load()).resolves.toEqual([config, otherConfig]);
+    await expect(configStore.load()).resolves.toEqual([storedConfig(config), storedConfig(otherConfig)]);
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
     await expect(repository.list(config.id)).resolves.toHaveLength(2);
+  });
+
+  it('does not mutate Provider data when reference staging fails', async () => {
+    const stageSessionReferenceRemoval = jest.fn(async () => {
+      throw new Error('reference cleanup failed');
+    });
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime(stageSessionReferenceRemoval);
+    const session = await runtime.createSession('Keep me', config.id);
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      'reference cleanup failed',
+    );
+
+    await expect(configStore.load()).resolves.toEqual([
+      storedConfig(config),
+      storedConfig(otherConfig),
+    ]);
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+    await expect(repository.get(session.id)).resolves.toBeDefined();
+  });
+
+  it('restores staged references when the canonical session cascade fails', async () => {
+    const restoreReferences = jest.fn(async () => undefined);
+    const stageSessionReferenceRemoval = jest.fn(async () => restoreReferences);
+    const { runtime, configStore, credentialStore, repository } =
+      await createDeletionRuntime(stageSessionReferenceRemoval);
+    const session = await runtime.createSession('Keep me', config.id);
+    jest.spyOn(repository, 'deleteByProvider').mockRejectedValueOnce(
+      new Error('session persistence failed'),
+    );
+
+    await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
+      'session persistence failed',
+    );
+
+    expect(stageSessionReferenceRemoval).toHaveBeenCalledWith([session.id]);
+    expect(restoreReferences).toHaveBeenCalledTimes(1);
+    await expect(configStore.load()).resolves.toEqual([
+      storedConfig(otherConfig),
+      storedConfig(config),
+    ]);
+    await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
+    await expect(repository.get(session.id)).resolves.toBeDefined();
   });
 
   it('refuses deletion while the selected Provider still owns an active run', async () => {
@@ -261,7 +331,7 @@ describe('LocalProviderRuntime Provider deletion', () => {
     await expect(runtime.deleteProvider(config.id, 1)).rejects.toThrow(
       '正在执行本地请求',
     );
-    await expect(configStore.load()).resolves.toEqual([config, otherConfig]);
+    await expect(configStore.load()).resolves.toEqual([storedConfig(config), storedConfig(otherConfig)]);
     await expect(credentialStore.load(config.id)).resolves.toBe('key-a');
     await expect(repository.get(session.id)).resolves.toBeDefined();
 
