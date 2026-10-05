@@ -698,16 +698,12 @@ describe('MOB-064 Local Memory runtime integration', () => {
     expect((await service.getOverview()).records).toHaveLength(0);
   });
 
-  it('strips reasoning tags before parsing consolidation JSON', async () => {
+  it('does not apply vendor-specific reasoning-tag cleanup to consolidation output', async () => {
     const service = createMemoryService();
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    const stripConfig: LocalProviderConfig = {
-      ...config,
-      compatibility: { reasoningTags: 'strip' },
-    };
-    await configStore.save([stripConfig]);
+    await configStore.save([config]);
     const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(stripConfig.id, 'sk-test');
+    await credentialStore.save(config.id, 'sk-test');
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
 
     let perClientCalls = 0;
@@ -721,12 +717,11 @@ describe('MOB-064 Local Memory runtime integration', () => {
           streamMessages: async () => {
             perClientCalls += 1;
             if (perClientCalls === 1) return streaming(chatReply('记住了。'));
-            // The Provider prefixes the JSON with a reasoning tag; only after
-            // the same compatibility normalization as chat can this parse.
             return streaming([
-              { type: 'text-delta', delta: '<thi' },
-              { type: 'text-delta', delta: 'nk>internal reasoning</thi' },
-              { type: 'text-delta', delta: 'nk>' },
+              {
+                type: 'text-delta',
+                delta: '<think>vendor-private reasoning</think>',
+              },
               { type: 'text-delta', delta: PROPOSAL_JSON },
             ]);
           },
@@ -734,16 +729,14 @@ describe('MOB-064 Local Memory runtime integration', () => {
       memoryService: service,
       loadPersonalization: async () => DEFAULT_PERSONALIZATION_SETTINGS,
     });
-    const session = await runtime.createSession('Chat', stripConfig.id);
+    const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '以后技术问题先给我结论。'));
     await settleConsolidation(
-      async () => (await service.getOverview()).records.length === 1,
+      async () => perClientCalls >= 2,
     );
 
-    const overview = await service.getOverview();
-    expect(overview.records).toHaveLength(1);
-    expect(overview.records[0]?.content).toContain('用户偏好技术问题先给结论。');
+    expect((await service.getOverview()).records).toHaveLength(0);
   });
 
   it('does not let a hung consolidation block chat stream completion', async () => {
