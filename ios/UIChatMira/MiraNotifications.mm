@@ -12,6 +12,7 @@ static NSString * const MiraPushProviderTokenChangedEvent = @"pushProviderTokenC
 @property(nonatomic, copy, nullable) RCTPromiseResolveBlock pushTokenResolve;
 @property(nonatomic, copy, nullable) RCTPromiseRejectBlock pushTokenReject;
 @property(nonatomic, assign) BOOL observingPushEvents;
+@property(nonatomic, assign) NSUInteger pushTokenRequestId;
 @end
 
 @implementation MiraNotifications
@@ -100,9 +101,30 @@ RCT_REMAP_METHOD(getPushProviderToken,
 
   self.pushTokenResolve = resolve;
   self.pushTokenReject = reject;
+  self.pushTokenRequestId += 1;
+  NSUInteger requestId = self.pushTokenRequestId;
   dispatch_async(dispatch_get_main_queue(), ^{
     [[UIApplication sharedApplication] registerForRemoteNotifications];
   });
+  dispatch_after(
+    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)),
+    dispatch_get_main_queue(),
+    ^{
+      if (
+        self.pushTokenRequestId == requestId &&
+        self.pushTokenResolve != nil &&
+        self.pushTokenReject != nil
+      ) {
+        self.pushTokenReject(
+          @"PUSH_PROVIDER_REGISTRATION_TIMEOUT",
+          @"APNs registration timed out",
+          nil
+        );
+        self.pushTokenResolve = nil;
+        self.pushTokenReject = nil;
+      }
+    }
+  );
 }
 
 RCT_REMAP_METHOD(requestPermission,
