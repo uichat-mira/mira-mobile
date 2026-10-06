@@ -7,6 +7,8 @@
 static NSString * const MiraPushProviderTokenDidChange = @"MiraPushProviderTokenDidChange";
 static NSString * const MiraPushProviderTokenDidFail = @"MiraPushProviderTokenDidFail";
 static NSString * const MiraPushProviderTokenChangedEvent = @"pushProviderTokenChanged";
+static NSString * const MiraRemotePushDedupeKey = @"mira.remote.push.presentation.canonical-ids.v1";
+static NSUInteger const MiraRemotePushDedupeLimit = 128;
 
 @interface MiraNoRedirectSessionDelegate : NSObject <NSURLSessionTaskDelegate>
 @end
@@ -314,15 +316,99 @@ RCT_REMAP_METHOD(showTestNotification,
   }
 }
 
+- (NSString * _Nullable)validatedRemoteCanonicalMessageId:(NSDictionary *)userInfo
+{
+  id miraValue = userInfo[@"mira"];
+  if (![miraValue isKindOfClass:[NSDictionary class]]) {
+    return nil;
+  }
+  NSDictionary *mira = (NSDictionary *)miraValue;
+  id schemaVersion = mira[@"schemaVersion"];
+  BOOL validSchema =
+    ([schemaVersion isKindOfClass:[NSNumber class]] && [schemaVersion integerValue] == 1) ||
+    ([schemaVersion isKindOfClass:[NSString class]] && [(NSString *)schemaVersion isEqualToString:@"1"]);
+  if (!validSchema ||
+      ![mira[@"eventType"] isEqual:@"assistant-message"] ||
+      ![mira[@"eligibilityEvent"] isEqual:@"final_transition_first_seen"]) {
+    return nil;
+  }
+
+  NSArray<NSString *> *identityKeys = @[
+    @"installationId",
+    @"eventId",
+    @"sourceId",
+    @"canonicalMessageId",
+  ];
+  for (NSString *key in identityKeys) {
+    id value = mira[key];
+    if (![value isKindOfClass:[NSString class]]) {
+      return nil;
+    }
+    NSString *stringValue = [(NSString *)value stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (stringValue.length == 0 || stringValue.length > 512 ||
+        [stringValue rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound) {
+      return nil;
+    }
+  }
+  return mira[@"canonicalMessageId"];
+}
+
+- (BOOL)recordRemoteCanonicalMessageIfNew:(NSString *)canonicalMessageId
+{
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  NSArray<NSString *> *stored = [defaults stringArrayForKey:MiraRemotePushDedupeKey] ?: @[];
+  if ([stored containsObject:canonicalMessageId]) {
+    return NO;
+  }
+
+  NSMutableArray<NSString *> *next = [stored mutableCopy];
+  [next addObject:canonicalMessageId];
+  if (next.count > MiraRemotePushDedupeLimit) {
+    NSRange overflow = NSMakeRange(0, next.count - MiraRemotePushDedupeLimit);
+    [next removeObjectsInRange:overflow];
+  }
+  [defaults setObject:next forKey:MiraRemotePushDedupeKey];
+  return YES;
+}
+
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
 {
+  NSString *canonicalMessageId =
+    [self validatedRemoteCanonicalMessageId:notification.request.content.userInfo];
+  if (canonicalMessageId != nil) {
+    [self recordRemoteCanonicalMessageIfNew:canonicalMessageId];
+
+    // APNs alert pushes may be shown directly by iOS in background/killed
+    // states. When Mira is foreground this delegate is executing, so suppress
+    // the system banner/sound and leave the foreground reminder to MOB-056B.
+    completionHandler(UNNotificationPresentationOptionNone);
+    return;
+  }
+
+  // Keep the existing local test-notification behavior unchanged.
   completionHandler(
     UNNotificationPresentationOptionBanner |
     UNNotificationPresentationOptionList |
     UNNotificationPresentationOptionSound
   );
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+ didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler
+{
+  NSString *canonicalMessageId =
+    [self validatedRemoteCanonicalMessageId:response.notification.request.content.userInfo];
+  if (canonicalMessageId != nil) {
+    [self recordRemoteCanonicalMessageIfNew:canonicalMessageId];
+  }
+
+  // Tapping a normal alert already brings the application to the foreground.
+  // v1 intentionally does not invent a conversation deep-link contract.
+  completionHandler();
 }
 
 @end
