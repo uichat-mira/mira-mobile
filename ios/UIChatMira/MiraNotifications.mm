@@ -1,8 +1,17 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <UserNotifications/UserNotifications.h>
 #import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
 
-@interface MiraNotifications : NSObject <RCTBridgeModule, UNUserNotificationCenterDelegate>
+static NSString * const MiraPushProviderTokenDidChange = @"MiraPushProviderTokenDidChange";
+static NSString * const MiraPushProviderTokenDidFail = @"MiraPushProviderTokenDidFail";
+static NSString * const MiraPushProviderTokenChangedEvent = @"pushProviderTokenChanged";
+
+@interface MiraNotifications : RCTEventEmitter <RCTBridgeModule, UNUserNotificationCenterDelegate>
+@property(nonatomic, copy, nullable) RCTPromiseResolveBlock pushTokenResolve;
+@property(nonatomic, copy, nullable) RCTPromiseRejectBlock pushTokenReject;
+@property(nonatomic, assign) BOOL observingPushEvents;
 @end
 
 @implementation MiraNotifications
@@ -19,8 +28,37 @@ RCT_EXPORT_MODULE(MiraNotifications)
   self = [super init];
   if (self) {
     [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(handlePushProviderToken:)
+                   name:MiraPushProviderTokenDidChange
+                 object:nil];
+    [center addObserver:self
+               selector:@selector(handlePushProviderFailure:)
+                   name:MiraPushProviderTokenDidFail
+                 object:nil];
   }
   return self;
+}
+
+- (void)dealloc
+{
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (NSArray<NSString *> *)supportedEvents
+{
+  return @[MiraPushProviderTokenChangedEvent];
+}
+
+- (void)startObserving
+{
+  self.observingPushEvents = YES;
+}
+
+- (void)stopObserving
+{
+  self.observingPushEvents = NO;
 }
 
 - (NSString *)statusString:(UNAuthorizationStatus)status
@@ -47,6 +85,24 @@ RCT_REMAP_METHOD(getPermissionStatus,
     getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
       resolve([self statusString:settings.authorizationStatus]);
     }];
+}
+
+RCT_REMAP_METHOD(getPushProviderToken,
+                 getPushProviderTokenWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  if (self.pushTokenResolve != nil) {
+    reject(@"PUSH_PROVIDER_REGISTRATION_IN_PROGRESS",
+           @"APNs registration is already in progress",
+           nil);
+    return;
+  }
+
+  self.pushTokenResolve = resolve;
+  self.pushTokenReject = reject;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[UIApplication sharedApplication] registerForRemoteNotifications];
+  });
 }
 
 RCT_REMAP_METHOD(requestPermission,
@@ -102,6 +158,41 @@ RCT_REMAP_METHOD(showTestNotification,
       resolve(nil);
     }];
   }];
+}
+
+- (void)handlePushProviderToken:(NSNotification *)notification
+{
+  NSString *token = notification.userInfo[@"token"];
+  if (![token isKindOfClass:[NSString class]] || token.length == 0) {
+    return;
+  }
+
+  NSDictionary *payload = @{
+    @"platform": @"ios",
+    @"token": token,
+  };
+  if (self.pushTokenResolve != nil) {
+    self.pushTokenResolve(payload);
+    self.pushTokenResolve = nil;
+    self.pushTokenReject = nil;
+  }
+  if (self.observingPushEvents) {
+    [self sendEventWithName:MiraPushProviderTokenChangedEvent body:payload];
+  }
+}
+
+- (void)handlePushProviderFailure:(NSNotification *)notification
+{
+  NSString *message = notification.userInfo[@"message"];
+  if (self.pushTokenReject != nil) {
+    self.pushTokenReject(
+      @"PUSH_PROVIDER_REGISTRATION_FAILED",
+      [message isKindOfClass:[NSString class]] ? message : @"Unable to register with APNs",
+      nil
+    );
+    self.pushTokenResolve = nil;
+    self.pushTokenReject = nil;
+  }
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
