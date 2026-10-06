@@ -173,17 +173,18 @@ export class PushBindingService {
     return activeBinding;
   }
 
-  async refreshProviderRegistrationIfBound(): Promise<
-    'unbound' | 'refreshed' | 'failed'
-  > {
-    const binding = await this.state.getActiveBinding();
-    if (!binding) {
-      this.lastRefreshError = null;
-      return 'unbound';
-    }
-
+  async refreshProviderRegistrationIfBound(
+    providerRegistration?: PushProviderRegistration,
+  ): Promise<'unbound' | 'refreshed' | 'failed'> {
     try {
-      const provider = await this.readProviderRegistration();
+      const binding = await this.state.getActiveBinding();
+      if (!binding) {
+        this.lastRefreshError = null;
+        return 'unbound';
+      }
+
+      const provider =
+        providerRegistration ?? (await this.readProviderRegistration());
       const broker = this.createBroker(binding.brokerBaseUrl);
       await broker.refreshProviderToken(provider.platform, provider.token);
       this.lastRefreshError = null;

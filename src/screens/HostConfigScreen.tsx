@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -33,6 +34,7 @@ import {
   type PairingDescriptorV1,
 } from '../protocol/remotePairingV1';
 import { remoteMiraHostClient } from '../api/remoteMiraHost';
+import { pushBindingService } from '../push/pushBindingService';
 import { useRemotePairing } from '../pairing/useRemotePairing';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
@@ -277,7 +279,19 @@ export function HostConfigScreen() {
   }, [pairingBusy, resetPairing, restoreCurrentConnectivityTarget]);
 
   const handleDisconnect = async () => {
-    if (secureStorageAvailable) await remoteMiraHostClient.disconnect();
+    try {
+      await pushBindingService.revokeCurrentBinding();
+      if (secureStorageAvailable) await remoteMiraHostClient.disconnect();
+    } catch (error) {
+      Alert.alert(
+        '无法安全断开',
+        error instanceof Error
+          ? `后台通知授权撤销失败：${error.message}`
+          : '后台通知授权撤销失败。为避免留下仍有效的 Broker 权限，本机不会清除配对凭据。',
+      );
+      return;
+    }
+
     clearConfig();
     resetConnectivity();
     resetPairing();
