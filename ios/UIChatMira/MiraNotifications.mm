@@ -339,6 +339,7 @@ RCT_REMAP_METHOD(showTestNotification,
     @"sourceId",
     @"canonicalMessageId",
   ];
+  NSString *normalizedCanonicalMessageId = nil;
   for (NSString *key in identityKeys) {
     id value = mira[key];
     if (![value isKindOfClass:[NSString class]]) {
@@ -350,8 +351,11 @@ RCT_REMAP_METHOD(showTestNotification,
         [stringValue rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound) {
       return nil;
     }
+    if ([key isEqualToString:@"canonicalMessageId"]) {
+      normalizedCanonicalMessageId = stringValue;
+    }
   }
-  return mira[@"canonicalMessageId"];
+  return normalizedCanonicalMessageId;
 }
 
 - (BOOL)recordRemoteCanonicalMessageIfNew:(NSString *)canonicalMessageId
