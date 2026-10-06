@@ -8,6 +8,22 @@ static NSString * const MiraPushProviderTokenDidChange = @"MiraPushProviderToken
 static NSString * const MiraPushProviderTokenDidFail = @"MiraPushProviderTokenDidFail";
 static NSString * const MiraPushProviderTokenChangedEvent = @"pushProviderTokenChanged";
 
+@interface MiraNoRedirectSessionDelegate : NSObject <NSURLSessionTaskDelegate>
+@end
+
+@implementation MiraNoRedirectSessionDelegate
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+willPerformHTTPRedirection:(NSHTTPURLResponse *)response
+        newRequest:(NSURLRequest *)request
+ completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler
+{
+  completionHandler(nil);
+}
+
+@end
+
 @interface MiraNotifications : RCTEventEmitter <RCTBridgeModule, UNUserNotificationCenterDelegate>
 @property(nonatomic, copy, nullable) RCTPromiseResolveBlock pushTokenResolve;
 @property(nonatomic, copy, nullable) RCTPromiseRejectBlock pushTokenReject;
@@ -125,6 +141,87 @@ RCT_REMAP_METHOD(getPushProviderToken,
       }
     }
   );
+}
+
+RCT_REMAP_METHOD(postPushBrokerJson,
+                 postPushBrokerJson:(NSString *)urlString
+                 body:(NSString *)body
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSURLComponents *components = [NSURLComponents componentsWithString:urlString];
+  NSURL *url = components.URL;
+  NSString *scheme = components.scheme.lowercaseString;
+  NSString *host = components.host.lowercaseString;
+  BOOL local =
+    [host isEqualToString:@"localhost"] ||
+    [host isEqualToString:@"127.0.0.1"] ||
+    [host isEqualToString:@"::1"];
+  BOOL allowInsecureLocal = NO;
+#if DEBUG
+  allowInsecureLocal = local && [scheme isEqualToString:@"http"];
+#endif
+
+  if (url == nil || (![scheme isEqualToString:@"https"] && !allowInsecureLocal)) {
+    reject(
+      @"PUSH_BROKER_URL_REJECTED",
+      @"Push Broker requires HTTPS outside local development",
+      nil
+    );
+    return;
+  }
+
+  NSURLSessionConfiguration *configuration =
+    [NSURLSessionConfiguration ephemeralSessionConfiguration];
+  configuration.timeoutIntervalForRequest = 10;
+  configuration.timeoutIntervalForResource = 10;
+  MiraNoRedirectSessionDelegate *delegate =
+    [[MiraNoRedirectSessionDelegate alloc] init];
+  NSURLSession *session =
+    [NSURLSession sessionWithConfiguration:configuration
+                                  delegate:delegate
+                             delegateQueue:nil];
+
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = @"POST";
+  [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+
+  NSURLSessionDataTask *task =
+    [session dataTaskWithRequest:request
+              completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      if (error != nil) {
+        reject(
+          @"PUSH_BROKER_NETWORK_ERROR",
+          @"Unable to reach Push Broker",
+          error
+        );
+        [session invalidateAndCancel];
+        return;
+      }
+      if (![response isKindOfClass:[NSHTTPURLResponse class]]) {
+        reject(
+          @"PUSH_BROKER_INVALID_RESPONSE",
+          @"Push Broker returned an invalid response",
+          nil
+        );
+        [session invalidateAndCancel];
+        return;
+      }
+
+      NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+      NSString *responseBody =
+        data != nil
+          ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+          : @"";
+      resolve(@{
+        @"status": @(httpResponse.statusCode),
+        @"body": responseBody ?: @"",
+      });
+      [session finishTasksAndInvalidate];
+    }];
+  [task resume];
 }
 
 RCT_REMAP_METHOD(requestPermission,
