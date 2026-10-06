@@ -361,18 +361,30 @@ RCT_REMAP_METHOD(showTestNotification,
 - (BOOL)recordRemoteCanonicalMessageIfNew:(NSString *)canonicalMessageId
 {
   NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  NSArray<NSString *> *stored = [defaults stringArrayForKey:MiraRemotePushDedupeKey] ?: @[];
+  id storedValue = [defaults objectForKey:MiraRemotePushDedupeKey];
+  NSMutableArray<NSString *> *stored = [NSMutableArray array];
+
+  if ([storedValue isKindOfClass:[NSArray class]]) {
+    for (id value in (NSArray *)storedValue) {
+      if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) {
+        [stored addObject:value];
+      }
+    }
+  }
+
   if ([stored containsObject:canonicalMessageId]) {
     return NO;
   }
 
-  NSMutableArray<NSString *> *next = [stored mutableCopy];
-  [next addObject:canonicalMessageId];
-  if (next.count > MiraRemotePushDedupeLimit) {
-    NSRange overflow = NSMakeRange(0, next.count - MiraRemotePushDedupeLimit);
-    [next removeObjectsInRange:overflow];
+  [stored addObject:canonicalMessageId];
+  if (stored.count > MiraRemotePushDedupeLimit) {
+    NSRange overflow = NSMakeRange(0, stored.count - MiraRemotePushDedupeLimit);
+    [stored removeObjectsInRange:overflow];
   }
-  [defaults setObject:next forKey:MiraRemotePushDedupeKey];
+
+  // Always rewrite a validated array. A malformed value from an older build
+  // cannot leave this versioned best-effort dedupe key permanently unusable.
+  [defaults setObject:stored forKey:MiraRemotePushDedupeKey];
   return YES;
 }
 
@@ -392,19 +404,20 @@ RCT_REMAP_METHOD(showTestNotification,
     return;
   }
 
-  if ([notification.request.identifier isEqualToString:@"mira.test.notification"]) {
-    // Keep the explicit local test-notification behavior unchanged.
-    completionHandler(
-      UNNotificationPresentationOptionBanner |
-      UNNotificationPresentationOptionList |
-      UNNotificationPresentationOptionSound
-    );
+  if (notification.request.content.userInfo[@"mira"] != nil) {
+    // A payload claiming the Mira Remote Push namespace but failing the frozen
+    // identity contract must not become a foreground Mira notification.
+    completionHandler(UNNotificationPresentationOptionNone);
     return;
   }
 
-  // Unknown or malformed notification payloads must not become Mira foreground
-  // message notifications merely because they reached UserNotifications.
-  completionHandler(UNNotificationPresentationOptionNone);
+  // Preserve the pre-existing foreground behavior for local/other notification
+  // surfaces. This card only changes Remote Assistant Push presentation.
+  completionHandler(
+    UNNotificationPresentationOptionBanner |
+    UNNotificationPresentationOptionList |
+    UNNotificationPresentationOptionSound
+  );
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
