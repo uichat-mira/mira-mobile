@@ -22,6 +22,7 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
 import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
@@ -306,8 +307,51 @@ class MiraNotificationsModule(
   }
 }
 
+private object MiraRemotePushPresentationDedupe {
+  private const val PREFS_NAME = "mira.remote.push.presentation.v1"
+  private const val KEY_CANONICAL_IDS = "canonical_message_ids"
+  private const val MAX_CANONICAL_IDS = 128
+
+  @Synchronized
+  fun recordIfNew(context: Context, canonicalMessageId: String): Boolean {
+    val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val ids = preferences
+      .getString(KEY_CANONICAL_IDS, "")
+      .orEmpty()
+      .lineSequence()
+      .filter { it.isNotBlank() }
+      .toList()
+
+    val dedupe = appendCanonicalMessageId(
+      existing = ids,
+      canonicalMessageId = canonicalMessageId,
+      limit = MAX_CANONICAL_IDS,
+    )
+    if (!dedupe.isNew) return false
+
+    preferences
+      .edit()
+      .putString(KEY_CANONICAL_IDS, dedupe.ids.joinToString("\n"))
+      .apply()
+    return true
+  }
+}
+
 class MiraFirebaseMessagingService : FirebaseMessagingService() {
   override fun onRegistered(installationId: String) {
     MiraNotificationsModule.publishAndroidProviderIdentifier(installationId)
+  }
+
+  override fun onMessageReceived(message: RemoteMessage) {
+    super.onMessageReceived(message)
+    val envelope = MiraRemotePushContract.parse(message.data) ?: return
+    MiraRemotePushPresentationDedupe.recordIfNew(this, envelope.canonicalMessageId)
+
+    // Broker v1 sends a normal FCM notification + data envelope. Android shows
+    // that notification itself in background/killed states; those deliveries
+    // bypass onMessageReceived, so this foreground receipt record is never
+    // consulted to suppress an OS-owned background notification. Foreground
+    // messages arrive here and deliberately produce no system notification:
+    // MOB-056B owns the foreground reminder.
   }
 }

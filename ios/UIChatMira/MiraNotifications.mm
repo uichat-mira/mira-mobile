@@ -7,6 +7,8 @@
 static NSString * const MiraPushProviderTokenDidChange = @"MiraPushProviderTokenDidChange";
 static NSString * const MiraPushProviderTokenDidFail = @"MiraPushProviderTokenDidFail";
 static NSString * const MiraPushProviderTokenChangedEvent = @"pushProviderTokenChanged";
+static NSString * const MiraRemotePushDedupeKey = @"mira.remote.push.presentation.canonical-ids.v1";
+static NSUInteger const MiraRemotePushDedupeLimit = 128;
 
 @interface MiraNoRedirectSessionDelegate : NSObject <NSURLSessionTaskDelegate>
 @end
@@ -314,15 +316,123 @@ RCT_REMAP_METHOD(showTestNotification,
   }
 }
 
+- (NSString * _Nullable)validatedRemoteCanonicalMessageId:(NSDictionary *)userInfo
+{
+  id miraValue = userInfo[@"mira"];
+  if (![miraValue isKindOfClass:[NSDictionary class]]) {
+    return nil;
+  }
+  NSDictionary *mira = (NSDictionary *)miraValue;
+  id schemaVersion = mira[@"schemaVersion"];
+  BOOL validSchema =
+    ([schemaVersion isKindOfClass:[NSNumber class]] && [schemaVersion integerValue] == 1) ||
+    ([schemaVersion isKindOfClass:[NSString class]] && [(NSString *)schemaVersion isEqualToString:@"1"]);
+  if (!validSchema ||
+      ![mira[@"eventType"] isEqual:@"assistant-message"] ||
+      ![mira[@"eligibilityEvent"] isEqual:@"final_transition_first_seen"]) {
+    return nil;
+  }
+
+  NSArray<NSString *> *identityKeys = @[
+    @"installationId",
+    @"eventId",
+    @"sourceId",
+    @"canonicalMessageId",
+  ];
+  NSString *normalizedCanonicalMessageId = nil;
+  for (NSString *key in identityKeys) {
+    id value = mira[key];
+    if (![value isKindOfClass:[NSString class]]) {
+      return nil;
+    }
+    NSString *stringValue = [(NSString *)value stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (stringValue.length == 0 || stringValue.length > 512 ||
+        [stringValue rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound) {
+      return nil;
+    }
+    if ([key isEqualToString:@"canonicalMessageId"]) {
+      normalizedCanonicalMessageId = stringValue;
+    }
+  }
+  return normalizedCanonicalMessageId;
+}
+
+- (BOOL)recordRemoteCanonicalMessageIfNew:(NSString *)canonicalMessageId
+{
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  id storedValue = [defaults objectForKey:MiraRemotePushDedupeKey];
+  NSMutableArray<NSString *> *stored = [NSMutableArray array];
+
+  if ([storedValue isKindOfClass:[NSArray class]]) {
+    for (id value in (NSArray *)storedValue) {
+      if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) {
+        [stored addObject:value];
+      }
+    }
+  }
+
+  if ([stored containsObject:canonicalMessageId]) {
+    return NO;
+  }
+
+  [stored addObject:canonicalMessageId];
+  if (stored.count > MiraRemotePushDedupeLimit) {
+    NSRange overflow = NSMakeRange(0, stored.count - MiraRemotePushDedupeLimit);
+    [stored removeObjectsInRange:overflow];
+  }
+
+  // Always rewrite a validated array. A malformed value from an older build
+  // cannot leave this versioned best-effort dedupe key permanently unusable.
+  [defaults setObject:stored forKey:MiraRemotePushDedupeKey];
+  return YES;
+}
+
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
 {
+  NSString *canonicalMessageId =
+    [self validatedRemoteCanonicalMessageId:notification.request.content.userInfo];
+  if (canonicalMessageId != nil) {
+    [self recordRemoteCanonicalMessageIfNew:canonicalMessageId];
+
+    // APNs alert pushes may be shown directly by iOS in background/killed
+    // states. When Mira is foreground this delegate is executing, so suppress
+    // the system banner/sound and leave the foreground reminder to MOB-056B.
+    completionHandler(UNNotificationPresentationOptionNone);
+    return;
+  }
+
+  if (notification.request.content.userInfo[@"mira"] != nil) {
+    // A payload claiming the Mira Remote Push namespace but failing the frozen
+    // identity contract must not become a foreground Mira notification.
+    completionHandler(UNNotificationPresentationOptionNone);
+    return;
+  }
+
+  // Preserve the pre-existing foreground behavior for local/other notification
+  // surfaces. This card only changes Remote Assistant Push presentation.
   completionHandler(
     UNNotificationPresentationOptionBanner |
     UNNotificationPresentationOptionList |
     UNNotificationPresentationOptionSound
   );
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+ didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler
+{
+  NSString *canonicalMessageId =
+    [self validatedRemoteCanonicalMessageId:response.notification.request.content.userInfo];
+  if (canonicalMessageId != nil) {
+    [self recordRemoteCanonicalMessageIfNew:canonicalMessageId];
+  }
+
+  // Tapping a normal alert already brings the application to the foreground.
+  // v1 intentionally does not invent a conversation deep-link contract.
+  completionHandler();
 }
 
 @end
