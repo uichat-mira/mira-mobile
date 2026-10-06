@@ -6,7 +6,7 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import { LocalSessionRepository } from '../local/localSessionRepository';
 import { LocalProviderRuntime } from '../runtime/localProviderRuntime';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
-import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
 import {
   AssistantMessageHapticsObserver,
@@ -18,11 +18,11 @@ jest.mock('react-native', () => ({
   AppState: { currentState: 'active' },
 }));
 
-jest.mock('../screens/generalSettings', () => ({
+jest.mock('../settings/generalSettings', () => ({
   loadGeneralSettings: jest.fn(async () => ({ hapticsEnabled: true })),
 }));
 
-const { loadGeneralSettings } = jest.requireMock('../screens/generalSettings') as {
+const { loadGeneralSettings } = jest.requireMock('../settings/generalSettings') as {
   loadGeneralSettings: jest.Mock;
 };
 
@@ -40,7 +40,7 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 /**
@@ -62,13 +62,13 @@ const createLocalRuntime = async (replyText: string) => {
     clientFactory: () =>
       ({
         cancelActiveRun: jest.fn(),
-        streamChat: jest.fn(async () =>
+        streamMessages: jest.fn(async () =>
           (async function* () {
             yield { type: 'text-delta' as const, delta: replyText };
             yield { type: 'finish' as const, reason: 'stop' };
           })(),
         ),
-      } as unknown as OpenAiCompatibleClient),
+      } as unknown as OpenAiStandardClient),
   });
   return { runtime, repository };
 };

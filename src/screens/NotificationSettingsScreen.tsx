@@ -3,12 +3,12 @@ import { Alert, AppState, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Bell, BellRing, Settings2 } from 'lucide-react-native';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import {
   SettingsGroup,
   SettingsRow,
   SettingsSectionHeader,
-} from '../components/settings/SettingsComponents';
+} from '../settings/SettingsComponents';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, spacing } from '../theme/tokens';
 import {
@@ -17,7 +17,7 @@ import {
   requestNotificationPermission,
   showTestNotification,
   type NotificationPermissionStatus,
-} from './notificationSettings';
+} from '../settings/notificationSettings';
 
 const statusLabel = (status: NotificationPermissionStatus | 'loading') => {
   switch (status) {

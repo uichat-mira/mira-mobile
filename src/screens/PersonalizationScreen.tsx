@@ -1,26 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChevronDown, X } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
-import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
-import { SettingsInputModal } from '../components/settings/SettingsInputModal';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
+import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsChoiceModal';
+import { SettingsInputModal } from '../settings/SettingsInputModal';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   MAX_INSTRUCTIONS_LENGTH,
   MAX_TRAITS,
   MAX_TRAIT_LENGTH,
   addTrait,
+  getTraitSemanticError,
   loadPersonalizationSettings,
   normalizeTrait,
   removeTrait,
   savePersonalizationSettings,
   type BaseStyleTone,
   type PersonalizationSettings,
-} from './personalizationSettings';
+} from '../settings/personalizationSettings';
 
 const toneOptions: readonly SettingsChoice<BaseStyleTone>[] = [
   { value: 'default', label: '默认（不指定）' },
@@ -188,28 +189,13 @@ export function PersonalizationScreen() {
           <ChevronDown size={20} color={colors.text.muted} />
         </Pressable>
         <Text style={[styles.help, { color: colors.text.muted }]}>
-          设置 Mira 在对话中使用的主要语气，不会改变功能行为。
+          先选择一个基础风格；下面的额外特征只在其上增量调整。
         </Text>
 
-        <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>特征</Text>
-        <View style={[styles.surface, { backgroundColor: colors.bg.card }]}>
-          <View style={styles.flex}>
-            <Text style={[styles.title, { color: colors.text.ink }]}>提高亲和度</Text>
-            <Text style={[styles.subtitle, { color: colors.text.muted }]}>更友好、更亲近</Text>
-          </View>
-          <Switch
-            value={settings.characteristics.warmth}
-            onValueChange={(value) =>
-              applySettings({
-                ...settings,
-                characteristics: { ...settings.characteristics, warmth: value },
-              })
-            }
-            disabled={controlsLocked}
-            trackColor={{ false: colors.border.default, true: colors.primary }}
-            thumbColor={colors.bg.elevated}
-          />
-        </View>
+        <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>额外特征</Text>
+        <Text style={[styles.help, { color: colors.text.muted }]}>
+          在基础风格上补充具体偏好，例如“多用类比”“给出反例”。亲和、专业、简洁请在基础风格中选择。
+        </Text>
         {settings.characteristics.traits.map((trait, index) => (
           <View key={trait} style={[styles.surface, { backgroundColor: colors.bg.card }]}>
             <Text style={[styles.title, styles.flex, { color: colors.text.ink }]}>{trait}</Text>
@@ -248,7 +234,7 @@ export function PersonalizationScreen() {
           onPress={() => setTraitModalOpen(true)}
           disabled={controlsLocked || traitsAtCap}
           accessibilityRole="button"
-          accessibilityLabel="添加特征"
+          accessibilityLabel="添加额外特征"
           accessibilityState={{ disabled: controlsLocked || traitsAtCap }}
         >
           <View style={styles.flex}>
@@ -260,25 +246,6 @@ export function PersonalizationScreen() {
             </Text>
           </View>
         </Pressable>
-
-        <View style={[styles.surface, { backgroundColor: colors.bg.card }]}>
-          <Text style={[styles.title, styles.flex, { color: colors.text.ink }]}>快速回答</Text>
-          <Switch
-            value={settings.characteristics.conciseFirst}
-            onValueChange={(value) =>
-              applySettings({
-                ...settings,
-                characteristics: { ...settings.characteristics, conciseFirst: value },
-              })
-            }
-            disabled={controlsLocked}
-            trackColor={{ false: colors.border.default, true: colors.primary }}
-            thumbColor={colors.bg.elevated}
-          />
-        </View>
-        <Text style={[styles.help, { color: colors.text.muted }]}>
-          优先生成简洁答案；需要时仍会提供完整说明。
-        </Text>
 
         <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>自定义指令</Text>
         <TextInput
@@ -302,11 +269,13 @@ export function PersonalizationScreen() {
       />
       <SettingsInputModal
         visible={traitModalOpen}
-        title="添加特征"
-        placeholder="例如：讲话简短"
+        title="添加额外特征"
+        placeholder="例如：多用类比"
         confirmLabel="添加"
         maxLength={MAX_TRAIT_LENGTH}
         validate={(value) => {
+          const semanticError = getTraitSemanticError(value);
+          if (semanticError) return semanticError;
           if (settings.characteristics.traits.length >= MAX_TRAITS) {
             return `最多添加 ${MAX_TRAITS} 条特征。`;
           }

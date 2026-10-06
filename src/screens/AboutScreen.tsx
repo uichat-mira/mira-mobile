@@ -16,8 +16,8 @@ import { version } from '../../package.json';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
-import { SettingsGroup, SettingsRow } from '../components/settings/SettingsComponents';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
+import { SettingsGroup, SettingsRow } from '../settings/SettingsComponents';
 import {
   classifyAvailableUpdate,
   fetchLatestRelease,

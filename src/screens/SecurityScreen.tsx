@@ -7,17 +7,17 @@ import { CheckCircle2, AlertCircle, KeyRound, Server } from 'lucide-react-native
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import {
   SettingsGroup as RowGroup,
   SettingsRow as Row,
   SettingsSectionHeader as SectionHeader,
-} from '../components/settings/SettingsComponents';
+} from '../settings/SettingsComponents';
 import {
   formatSavedAt,
   loadSecurityStatus,
   type SecurityStatus,
-} from './securityStatus';
+} from '../security/securityStatus';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -257,17 +257,6 @@ export function SecurityScreen() {
               />
             </RowGroup>
 
-            <SectionHeader>其它</SectionHeader>
-            <RowGroup onAction={(actionId) => navigation.navigate(actionId as never)}>
-              <Row
-                icon={AlertCircle}
-                title="关于设备安全存储"
-                subtitle="说明各类凭据的存储方式与边界"
-                actionId="About"
-                isFirst
-                isLast
-              />
-            </RowGroup>
           </>
         ) : null}
       </ScrollView>

@@ -1,5 +1,5 @@
 import { LocalSessionRepository } from '../local/localSessionRepository';
-import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
   ProviderConfigStore,
   type LocalProviderConfig,
@@ -9,7 +9,7 @@ import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import {
   LocalMemoryRepository,
   LocalMemoryService,
@@ -32,7 +32,7 @@ const config: LocalProviderConfig = {
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const streaming = (events: RuntimeEvent[]): AsyncIterable<RuntimeEvent> => ({
@@ -114,7 +114,7 @@ interface ScriptedRuntimeOptions {
 /**
  * Build a runtime whose Provider client script distinguishes the chat request
  * from the follow-up consolidation request per turn: within each `sendMessage`
- * the factory hands out a fresh client, and the client's FIRST `streamChat`
+ * the factory hands out a fresh client, and the client's FIRST `streamMessages`
  * call is the chat request while the second is the consolidation request. This
  * mirrors production, where each `sendMessage` builds a new client.
  */
@@ -134,7 +134,7 @@ const createScriptedRuntime = async (options: ScriptedRuntimeOptions) => {
     let perClientCalls = 0;
     return {
       cancelActiveRun: jest.fn(),
-      streamChat: async (request: {
+      streamMessages: async (request: {
         model: string;
         messages: Array<{ role: string; content: string | null }>;
       }) => {
@@ -149,7 +149,7 @@ const createScriptedRuntime = async (options: ScriptedRuntimeOptions) => {
         }
         return streaming(options.consolidationEvents);
       },
-    } as unknown as OpenAiCompatibleClient;
+    } as unknown as OpenAiStandardClient;
   };
 
   const runtime = new LocalProviderRuntime({
@@ -477,7 +477,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       consolidationEvents: [{ type: 'text-delta', delta: PROPOSAL_JSON }],
       personalization: async () => ({
         baseStyle: { tone: 'professional' },
-        characteristics: { warmth: false, traits: [], conciseFirst: false },
+        characteristics: { traits: [] },
         instructions: '',
       }),
     });
@@ -536,7 +536,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       let perClientCalls = 0;
       return {
         cancelActiveRun: jest.fn(),
-        streamChat: async (request: { model: string }) => {
+        streamMessages: async (request: { model: string }) => {
           perClientCalls += 1;
           if (perClientCalls === 1) {
             return streaming(chatReply(`reply-${providerId}`));
@@ -544,7 +544,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
           consolidationModels.push(request.model);
           return streaming([{ type: 'text-delta', delta: '{"patches":[]}' }]);
         },
-      } as unknown as OpenAiCompatibleClient;
+      } as unknown as OpenAiStandardClient;
     };
 
     const runtime = new LocalProviderRuntime({
@@ -664,7 +664,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
       clientFactory: () =>
         ({
           cancelActiveRun: jest.fn(),
-          streamChat: async () => {
+          streamMessages: async () => {
             modelCalls += 1;
             return streaming([
               { type: 'text-delta', delta: '继续调用工具…' },
@@ -672,7 +672,7 @@ describe('MOB-064 Local Memory runtime integration', () => {
               { type: 'finish', reason: 'tool_calls' },
             ]);
           },
-        } as unknown as OpenAiCompatibleClient),
+        } as unknown as OpenAiStandardClient),
       toolGateway: {
         listTools: async () => [
           { name: 'remote_tool', parameters: { type: 'object' } },
@@ -698,16 +698,12 @@ describe('MOB-064 Local Memory runtime integration', () => {
     expect((await service.getOverview()).records).toHaveLength(0);
   });
 
-  it('strips reasoning tags before parsing consolidation JSON', async () => {
+  it('does not apply vendor-specific reasoning-tag cleanup to consolidation output', async () => {
     const service = createMemoryService();
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
-    const stripConfig: LocalProviderConfig = {
-      ...config,
-      compatibility: { reasoningTags: 'strip' },
-    };
-    await configStore.save([stripConfig]);
+    await configStore.save([config]);
     const credentialStore = new MemoryProviderCredentialStore();
-    await credentialStore.save(stripConfig.id, 'sk-test');
+    await credentialStore.save(config.id, 'sk-test');
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
 
     let perClientCalls = 0;
@@ -718,32 +714,29 @@ describe('MOB-064 Local Memory runtime integration', () => {
       clientFactory: () =>
         ({
           cancelActiveRun: jest.fn(),
-          streamChat: async () => {
+          streamMessages: async () => {
             perClientCalls += 1;
             if (perClientCalls === 1) return streaming(chatReply('记住了。'));
-            // The Provider prefixes the JSON with a reasoning tag; only after
-            // the same compatibility normalization as chat can this parse.
             return streaming([
-              { type: 'text-delta', delta: '<thi' },
-              { type: 'text-delta', delta: 'nk>internal reasoning</thi' },
-              { type: 'text-delta', delta: 'nk>' },
+              {
+                type: 'text-delta',
+                delta: '<think>vendor-private reasoning</think>',
+              },
               { type: 'text-delta', delta: PROPOSAL_JSON },
             ]);
           },
-        } as unknown as OpenAiCompatibleClient),
+        } as unknown as OpenAiStandardClient),
       memoryService: service,
       loadPersonalization: async () => DEFAULT_PERSONALIZATION_SETTINGS,
     });
-    const session = await runtime.createSession('Chat', stripConfig.id);
+    const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '以后技术问题先给我结论。'));
     await settleConsolidation(
-      async () => (await service.getOverview()).records.length === 1,
+      async () => perClientCalls >= 2,
     );
 
-    const overview = await service.getOverview();
-    expect(overview.records).toHaveLength(1);
-    expect(overview.records[0]?.content).toContain('用户偏好技术问题先给结论。');
+    expect((await service.getOverview()).records).toHaveLength(0);
   });
 
   it('does not let a hung consolidation block chat stream completion', async () => {

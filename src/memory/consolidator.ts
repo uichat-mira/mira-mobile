@@ -1,4 +1,4 @@
-import type { OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
+import type { OpenAiMessage } from '../provider/openAiStandardClient';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
 import type {
   ConsolidationInput,
@@ -21,7 +21,7 @@ import type {
 
 export type ConsolidatorChat = (request: {
   model: string;
-  messages: OpenAiCompatibleMessage[];
+  messages: OpenAiMessage[];
 }) => Promise<AsyncIterable<RuntimeEvent>>;
 
 const MAX_EXISTING_IN_PROMPT = 40;
@@ -172,7 +172,7 @@ export const createLocalProviderConsolidator = (
   propose(input: ConsolidationInput): Promise<MemoryPatchProposal[] | null>;
 } => ({
   async propose(input) {
-    const messages: OpenAiCompatibleMessage[] = [
+    const messages: OpenAiMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',

@@ -6,7 +6,7 @@ jest.mock('react-native', () => ({
   },
 }));
 
-jest.mock('../src/screens/generalSettings', () => ({
+jest.mock('../src/settings/generalSettings', () => ({
   applyStartupTextScale: jest.fn(() => new Promise(() => {})),
 }));
 

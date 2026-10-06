@@ -40,26 +40,11 @@ import {
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { shiyanClient, ShiyanClientError } from './client/ShiyanClient';
-import type {
-  ShiyanAdjustmentCandidate,
-  ShiyanCaptureTaskView,
-  ShiyanTaskContentView,
-  ShiyanTranscriptView,
-} from './client/contracts';
-import { getShiyanContentDataSource } from './content';
 import { ShiyanActionSheet, type ShiyanActionSheetItem } from './ShiyanActionSheet';
 import { ShiyanStageRecoveryNotice } from './ShiyanStageRecoveryNotice';
 import { AudioPlayer } from './playback/AudioPlayer';
-import {
-  localCaptureRepository,
-  type LocalCaptureMetadata,
-} from './recording/localCaptureRepository';
 import { shiyanSceneNameForId } from './scenes';
-import {
-  selectShiyanFinalEditorSeed,
-  selectShiyanReviewResult,
-} from './taskReviewPresentation';
+import { selectShiyanReviewResult } from './taskReviewPresentation';
 import {
   currentShiyanStage,
   retryActionForStage,
@@ -69,13 +54,9 @@ import {
   shiyanTaskStatusText,
   stageFailureText,
 } from './taskPresentation';
+import { useShiyanTaskDetailOrchestration } from './useShiyanTaskDetailOrchestration';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
-type TranscriptState =
-  | { status: 'not_ready'; value: null; message: null }
-  | { status: 'ready'; value: ShiyanTranscriptView; message: null }
-  | { status: 'error'; value: ShiyanTranscriptView | null; message: string };
-type TaskStage = ShiyanCaptureTaskView['stages'][number];
 
 export interface ShiyanFinalEditorState {
   open: boolean;
@@ -99,12 +80,6 @@ interface ShiyanTaskDetailScreenProps {
   deliveryActions?: ShiyanTaskDeliveryActions;
 }
 
-const EMPTY_TRANSCRIPT: TranscriptState = {
-  status: 'not_ready',
-  value: null,
-  message: null,
-};
-
 export function ShiyanTaskDetailScreen({
   onFinalEditorStateChange,
   deliveryActions,
@@ -113,38 +88,42 @@ export function ShiyanTaskDetailScreen({
   const route = useRoute<RouteProp<RootStackParamList, 'ShiyanTaskDetail'>>();
   const { colors } = useTheme();
   const taskId = route.params.taskId;
-  const [task, setTask] = useState<ShiyanCaptureTaskView | null>(null);
-  const [taskError, setTaskError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [transcript, setTranscript] = useState<TranscriptState>(EMPTY_TRANSCRIPT);
+
+  const orchestration = useShiyanTaskDetailOrchestration(taskId);
+  const {
+    task,
+    taskError,
+    loading,
+    transcript,
+    content,
+    contentUnavailable,
+    localCapture,
+    candidate,
+    retentionChoice,
+    busyAction,
+    finalEditorOpen,
+    finalMarkdown,
+    finalDraftDirty,
+    finalDraftSaving,
+    savedFinalMarkdown,
+    refreshAll,
+    loadTranscript,
+    retryStage,
+    adjustDraft: requestAiAdjustment,
+    openFinalEditor,
+    saveFinalDraft,
+    setFinalMarkdown,
+    setRetention: runSetRetention,
+  } = orchestration;
+
   const [contentTab, setContentTab] = useState<'organized' | 'transcript'>('organized');
   const [processingOpen, setProcessingOpen] = useState(false);
-  const [content, setContent] = useState<ShiyanTaskContentView | null>(null);
-  const [contentUnavailable, setContentUnavailable] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjustInstruction, setAdjustInstruction] = useState('');
-  const [candidate, setCandidate] = useState<ShiyanAdjustmentCandidate | null>(null);
-  const [finalEditorOpen, setFinalEditorOpen] = useState(false);
-  const [finalMarkdown, setFinalMarkdown] = useState('');
-  const [editorBaselineMarkdown, setEditorBaselineMarkdown] = useState('');
-  const [finalBaseVersion, setFinalBaseVersion] = useState<number | null>(null);
-  const [savedFinalMarkdown, setSavedFinalMarkdown] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [retentionChoice, setRetentionChoice] = useState<boolean | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [editActionsOpen, setEditActionsOpen] = useState(false);
-  const [localCapture, setLocalCapture] = useState<LocalCaptureMetadata | null>(null);
   const allowNavigation = useRef(false);
-  const contentGeneration = useRef(0);
-  const finalSaveInFlight = useRef(false);
 
-  const finalDraftDirty = useMemo(
-    () =>
-      finalEditorOpen &&
-      finalMarkdown.trim() !== editorBaselineMarkdown.trim(),
-    [editorBaselineMarkdown, finalEditorOpen, finalMarkdown],
-  );
-  const finalDraftSaving = busyAction === 'save-final';
   const shareBlocked = finalDraftDirty || finalDraftSaving;
 
   const reviewResult = useMemo(
@@ -186,69 +165,6 @@ export function ShiyanTaskDetailScreen({
     return unsubscribe;
   }, [finalDraftDirty, finalDraftSaving, navigation]);
 
-  const loadTask = useCallback(
-    async (silent = false) => {
-      if (!silent) setLoading(true);
-      try {
-        const result = await shiyanClient.getCaptureTask(taskId);
-        setTask(result.task);
-        setTaskError('');
-      } catch (error) {
-        if (!silent) {
-          setTaskError(error instanceof Error ? error.message : '无法读取拾言任务。');
-        }
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [taskId],
-  );
-
-  const loadTranscript = useCallback(async () => {
-    try {
-      const result = await shiyanClient.getTranscript(taskId);
-      setTranscript({ status: 'ready', value: result.transcript, message: null });
-    } catch (error) {
-      if (error instanceof ShiyanClientError && error.code === 'transcript_not_ready') {
-        setTranscript((previous) =>
-          previous.value
-            ? { status: 'ready', value: previous.value, message: null }
-            : EMPTY_TRANSCRIPT,
-        );
-        return;
-      }
-      setTranscript((previous) => ({
-        status: 'error',
-        value: previous.value,
-        message: error instanceof Error ? error.message : '原文读取失败。',
-      }));
-    }
-  }, [taskId]);
-
-  const loadContent = useCallback(async () => {
-    if (finalSaveInFlight.current) return;
-    const generation = ++contentGeneration.current;
-    try {
-      const next = await getShiyanContentDataSource().getTaskContent(taskId);
-      if (generation !== contentGeneration.current || finalSaveInFlight.current) return;
-      setContent(next);
-      setSavedFinalMarkdown(next.finalDraftMarkdown);
-      setContentUnavailable(false);
-    } catch {
-      if (generation === contentGeneration.current && !finalSaveInFlight.current) {
-        setContentUnavailable(true);
-      }
-    }
-  }, [taskId]);
-
-  const loadLocalCapture = useCallback(async () => {
-    setLocalCapture(await localCaptureRepository.get(taskId));
-  }, [taskId]);
-
-  const refreshAll = useCallback(async () => {
-    await Promise.all([loadTask(), loadTranscript(), loadContent(), loadLocalCapture()]);
-  }, [loadContent, loadLocalCapture, loadTask, loadTranscript]);
-
   useFocusEffect(
     useCallback(() => {
       void refreshAll();
@@ -260,101 +176,17 @@ export function ShiyanTaskDetailScreen({
     () => (currentStage ? shiyanStageRecoveryPresentation(currentStage) : null),
     [currentStage],
   );
-  const shouldPoll =
-    task?.lifecycle === 'active' && currentStage !== null && currentStage.status !== 'failed';
-
-  useEffect(() => {
-    if (!shouldPoll) return undefined;
-    const timer = setInterval(() => {
-      void loadTask(true);
-      void loadTranscript();
-      void loadContent();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [loadContent, loadTask, loadTranscript, shouldPoll]);
-
-  useEffect(() => {
-    if (task?.lifecycle === 'ready' || task?.lifecycle === 'completed') {
-      void loadContent();
-    }
-  }, [loadContent, task?.lifecycle]);
-
-  const retryStage = async (stage: TaskStage) => {
-    const action = retryActionForStage(stage);
-    if (action !== 'transcribe' && action !== 'organize') return;
-    setBusyAction('retry');
-    try {
-      if (action === 'transcribe') {
-        await shiyanClient.retryStt(taskId);
-        await loadTranscript();
-      } else {
-        await shiyanClient.retryOrganize(taskId);
-      }
-      await loadTask();
-    } catch (error) {
-      Alert.alert(
-        action === 'transcribe' ? '无法重试转写' : '无法重试整理',
-        error instanceof Error ? error.message : '请稍后重试。',
-      );
-    } finally {
-      setBusyAction(null);
-    }
-  };
 
   const setRetention = useCallback(
-    async (retained: boolean) => {
-      setBusyAction('retention');
-      try {
-        const result = await shiyanClient.setAudioRetention(taskId, retained);
-        setRetentionChoice(result.retained);
-        Alert.alert(
-          result.retained ? '会保留原始录音' : '使用默认清理策略',
-          result.retained
-            ? '已记录保留选择。'
-            : result.deleteAfter
-              ? `原始录音预计在 ${new Date(result.deleteAfter).toLocaleString()} 后清理。`
-              : '将按默认保留策略处理原始录音。',
-        );
-      } catch (error) {
-        Alert.alert(
-          '无法更新录音保留设置',
-          error instanceof Error ? error.message : '请稍后重试。',
-        );
-      } finally {
-        setBusyAction(null);
-      }
+    (retained: boolean) => {
+      void runSetRetention(retained);
     },
-    [taskId],
+    [runSetRetention],
   );
-
-  const adjustDraft = async () => {
-    const instruction = adjustInstruction.trim();
-    if (!instruction) return;
-    setBusyAction('adjust');
-    try {
-      const nextCandidate = await getShiyanContentDataSource().adjustAiDraft(taskId, instruction);
-      setCandidate(nextCandidate);
-      setAdjustInstruction('');
-      setAdjustOpen(false);
-    } catch (error) {
-      Alert.alert('AI 调整暂不可用', error instanceof Error ? error.message : '请稍后重试。');
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const openFinalEditor = useCallback((preferCandidate = false) => {
-    if (finalEditorOpen) return;
-    const seed = selectShiyanFinalEditorSeed(content, candidate, preferCandidate);
-    setFinalMarkdown(seed.markdown);
-    setEditorBaselineMarkdown(seed.markdown);
-    setFinalBaseVersion(seed.baseVersion);
-    setFinalEditorOpen(true);
-  }, [candidate, content, finalEditorOpen]);
 
   const closeFinalEditor = () => {
     if (!finalDraftDirty) {
-      setFinalEditorOpen(false);
+      orchestration.closeFinalEditor();
       return;
     }
     Alert.alert('放弃未保存修改？', '关闭编辑后，本次未保存修改会丢失。', [
@@ -362,42 +194,18 @@ export function ShiyanTaskDetailScreen({
       {
         text: '放弃修改',
         style: 'destructive',
-        onPress: () => {
-          setFinalMarkdown(editorBaselineMarkdown);
-          setFinalEditorOpen(false);
-        },
+        onPress: () => orchestration.discardFinalEditor(),
       },
     ]);
   };
 
-  const saveFinalDraft = async () => {
-    const markdown = finalMarkdown.trim();
-    if (!markdown) {
-      Alert.alert('最终稿不能为空', '请先完成内容编辑。');
-      return;
-    }
-    finalSaveInFlight.current = true;
-    contentGeneration.current += 1;
-    setBusyAction('save-final');
-    try {
-      const next = await getShiyanContentDataSource().saveFinalDraft(taskId, markdown, {
-        ...(task?.title ? { title: task.title } : {}),
-        ...(finalBaseVersion ? { baseVersion: finalBaseVersion } : {}),
-      });
-      const saved = next.finalDraftMarkdown ?? markdown;
-      setContent(next);
-      setSavedFinalMarkdown(saved);
-      setFinalMarkdown(saved);
-      setEditorBaselineMarkdown(saved);
-      setFinalBaseVersion(next.finalDraftBaseVersion);
-      setCandidate(null);
-      setContentUnavailable(false);
-      Alert.alert('最终稿已保存', '新的 AI 调整只会生成候选，不会覆盖这份内容。');
-    } catch (error) {
-      Alert.alert('无法保存最终稿', error instanceof Error ? error.message : '请稍后重试。');
-    } finally {
-      finalSaveInFlight.current = false;
-      setBusyAction(null);
+  const adjustDraft = async () => {
+    const instruction = adjustInstruction.trim();
+    if (!instruction) return;
+    const applied = await requestAiAdjustment(instruction);
+    if (applied) {
+      setAdjustInstruction('');
+      setAdjustOpen(false);
     }
   };
 

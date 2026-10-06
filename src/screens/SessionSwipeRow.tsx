@@ -11,10 +11,10 @@ import {
 } from 'react-native';
 import { Pin, Trash2 } from 'lucide-react-native';
 import type { Session } from '../types';
-import { getSessionVisualKindLabel, SessionKindIcon } from '../components/SessionKindIcon';
+import { getSessionVisualKindLabel, SessionKindIcon } from '../session/SessionKindIcon';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
-import { resolveSessionSwipeOpen } from './sessionSwipe';
+import { resolveSessionSwipeOpen } from '../session/sessionSwipe';
 
 const SWIPE_ACTION_WIDTH = 64;
 const SWIPE_ACTION_GAP = spacing.xs;
