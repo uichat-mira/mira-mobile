@@ -5,9 +5,9 @@ import { Pencil, X } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { SettingsPageHeader } from '../components/settings/SettingsPageHeader';
-import { SettingsInputModal } from '../components/settings/SettingsInputModal';
-import { SettingsChoiceModal, type SettingsChoice } from '../components/settings/SettingsChoiceModal';
+import { SettingsPageHeader } from '../settings/SettingsPageHeader';
+import { SettingsInputModal } from '../settings/SettingsInputModal';
+import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsChoiceModal';
 import {
   MAX_CONTENT_LENGTH,
   MIN_CONTENT_LENGTH,

@@ -34,7 +34,7 @@ jest.mock('../api/miraHostClient', () => ({
   miraHostClient: { disconnect: jest.fn(async () => undefined) },
 }));
 
-jest.mock('../components/settings/SettingsChoiceModal', () => ({
+jest.mock('../settings/SettingsChoiceModal', () => ({
   SettingsChoiceModal: () => null,
 }));
 
@@ -140,5 +140,26 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     expect(titles.indexOf('本地连接')).toBeGreaterThan(-1);
     expect(titles.indexOf('远程连接')).toBeGreaterThan(titles.indexOf('本地连接'));
     expect(titles.indexOf('个性化')).toBeGreaterThan(titles.indexOf('远程连接'));
+  });
+
+  it('keeps simplified rows single-line instead of repeating their titles in subtitles', async () => {
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+
+    for (const redundantSubtitle of [
+      '管理手机直连的 OpenAI-compatible Provider',
+      '管理 Mira Host 连接',
+      '本机长期记忆',
+      '启动 · 显示 · 更新',
+      '权限 · 测试通知',
+    ]) {
+      expect(strings).not.toContain(redundantSubtitle);
+    }
+
+    const titles = rowTitles(tree);
+    for (const title of ['本地连接', '远程连接', '记忆', '常规', '通知']) {
+      expect(titles).toContain(title);
+    }
+    expect(strings).toContain('语音');
   });
 });

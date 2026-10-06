@@ -2,10 +2,10 @@ const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 
 const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
-const source = readSource('src/shiyan/ShiyanRecordingScreens.tsx');
+const source = readSource('src/shiyan/ShiyanHomeScreen.tsx');
 const homeSource = source.slice(
   source.indexOf('export function ShiyanHomeScreen()'),
-  source.indexOf('export function ShiyanSceneSelectScreen()'),
+  source.indexOf('const styles = StyleSheet.create'),
 );
 
 describe('MOB-030 Shiyan home interaction contract', () => {

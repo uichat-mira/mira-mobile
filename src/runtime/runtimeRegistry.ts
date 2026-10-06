@@ -49,6 +49,14 @@ export class RuntimeRegistry {
   createLocalSession(title?: string, providerId?: string): Promise<Session> {
     return this.local.createSession(title, providerId);
   }
+
+  getLocalProviderDeletionImpact(providerId: string) {
+    return this.local.getProviderDeletionImpact(providerId);
+  }
+
+  deleteLocalProvider(providerId: string, expectedSessionCount?: number) {
+    return this.local.deleteProvider(providerId, expectedSessionCount);
+  }
 }
 
 export const runtimeRegistry = new RuntimeRegistry();

@@ -9,14 +9,14 @@ import {
   type AgentRunAction,
 } from '../agent/remoteAgentApproval';
 import { miraHostClient } from '../api/miraHostClient';
-import { AgentRunApprovalCard } from '../components/AgentRunApprovalCard';
+import { AgentRunApprovalCard } from '../agent/AgentRunApprovalCard';
 import type { RemoteAgentRun } from '../protocol/remoteHostV1';
 import { durableHostAgentRuntime } from '../runtime/durableHostAgentRuntime';
 import { spacing } from '../theme/tokens';
 import type { ChatMessage } from '../types';
 import type { RootStackParamList } from '../types/navigation';
 import { ChatScreen } from './ChatScreen';
-import { saveLastOpenedSession } from './lastOpenedSession';
+import { saveLastOpenedSession } from '../session/lastOpenedSession';
 
 const DISCOVERY_POLL_MS = 1_500;
 export function AgentChatScreen() {

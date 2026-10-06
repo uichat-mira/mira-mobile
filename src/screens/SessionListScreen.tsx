@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -9,25 +9,22 @@ import type { Session } from '../types';
 import { useHostStore } from '../store/hostStore';
 import { useThreadPinStore } from '../store/threadPinStore';
 import { isThreadPinned, sortSessionsByLocalPin } from '../store/threadPinning';
-import { selectThreadUnread, useThreadReadStore } from '../store/threadReadStore';
+import { useThreadReadStore } from '../store/threadReadStore';
 import { miraHostClient } from '../api/miraHostClient';
 import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
-import { getSessionRoleName } from '../api/roleApi';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../components/ConnectionSourceDropdown';
-import { type ConnectionVisualStatus } from '../components/ConnectionStatusDot';
+import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../connectivity/ConnectionSourceDropdown';
+import { type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
-import { CustomDrawer } from '../components/CustomDrawer';
+import { CustomDrawer } from '../session/CustomDrawer';
 import { EmptyStateIllustration } from '../components/EmptyStateIllustration';
-import {
-  classifySessionLoadFailure,
-  type RemoteConnectionDiagnostic,
-} from '../connectivity/remoteConnectionDiagnostics';
-import { resolveSessionCollectionState } from './sessionCollectionState';
-import { resolveSessionOpenTarget } from './sessionNavigation';
-import { removeLastOpenedSession } from './lastOpenedSession';
+import { useSessionCollection } from '../session/useSessionCollection';
+import { resolveSessionCollectionState } from '../session/sessionCollection';
+import { resolveSessionOpenTarget } from '../session/sessionNavigation';
+import { projectSessionRow } from '../session/sessionProjection';
+import { removeLastOpenedSession } from '../session/lastOpenedSession';
 import { SessionSwipeRow } from './SessionSwipeRow';
 
 const DRAWER_WIDTH = Math.floor(Dimensions.get('window').width * 0.82);
@@ -53,13 +50,8 @@ export function SessionListScreen() {
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
   const clearThreadRead = useThreadReadStore((state) => state.clearThread);
   const insets = useSafeAreaInsets();
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [sourceFilter, setSourceFilter] = useState<SessionSourceFilter>('all');
   const [localConfigured, setLocalConfigured] = useState(false);
-  const [canDeleteSessions, setCanDeleteSessions] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadDiagnostic, setLoadDiagnostic] =
-    useState<RemoteConnectionDiagnostic | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openSwipeRowId, setOpenSwipeRowId] = useState<string | null>(null);
   const drawerAnim = useState(new Animated.Value(-DRAWER_WIDTH))[0];
@@ -74,6 +66,31 @@ export function SessionListScreen() {
     });
     return () => { cancelled = true; };
   }, []);
+
+  const hydrateLocalState = useCallback(
+    () =>
+      Promise.allSettled([
+        Promise.resolve().then(hydratePins),
+        Promise.resolve().then(hydrateReads),
+      ]).then(() => undefined),
+    [hydratePins, hydrateReads],
+  );
+
+  const {
+    sessions,
+    loading: isLoading,
+    diagnostic: loadDiagnostic,
+    canDeleteSessions,
+    reload: loadSessions,
+    removeSession,
+  } = useSessionCollection({
+    listSessions: (filter) => runtimeRegistry.listSessions(filter),
+    canDeleteRemoteSessions: () => miraHostClient.canDeleteSession(),
+    syncUnreadSessions,
+    hydrateLocalState,
+    autoLoad: false,
+    filter: sourceFilter,
+  });
 
   const remoteStatus: ConnectionVisualStatus = loadDiagnostic
     ? 'error'
@@ -128,34 +145,14 @@ export function SessionListScreen() {
     ]).start(() => setDrawerOpen(false));
   }, [drawerAnim, backdropAnim]);
 
-  const loadSessions = useCallback(async () => {
-    setIsLoading(true);
-    setLoadDiagnostic(null);
-    try {
-      const [list, canDelete] = await Promise.all([
-        runtimeRegistry.listSessions(sourceFilter),
-        sourceFilter === 'local-provider' ? Promise.resolve(false) : miraHostClient.canDeleteSession().catch(() => false),
-      ]);
-      setSessions(list);
-      setCanDeleteSessions(canDelete);
-      void syncUnreadSessions(
-        list.filter((session) => session.source !== 'local-provider'),
-      ).catch(() => undefined);
-    } catch (error) {
-      setCanDeleteSessions(false);
-      setLoadDiagnostic(await classifySessionLoadFailure(error));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [sourceFilter, syncUnreadSessions]);
-
+  const loadSessionsRef = useRef(loadSessions);
+  loadSessionsRef.current = loadSessions;
   useFocusEffect(
     useCallback(() => {
-      void Promise.allSettled([
-        Promise.resolve().then(hydratePins),
-        Promise.resolve().then(hydrateReads),
-      ]).then(() => loadSessions());
-    }, [hydratePins, hydrateReads, loadSessions]),
+      hydrateLocalState()
+        .then(() => loadSessionsRef.current())
+        .catch(() => undefined);
+    }, [hydrateLocalState]),
   );
 
   const orderedSessions = useMemo(
@@ -216,7 +213,7 @@ export function SessionListScreen() {
     try {
       await runtimeRegistry.deleteSession(session.id, session.source);
       void removeLastOpenedSession(session.id).catch(() => undefined);
-      setSessions((current) => current.filter((item) => item.id !== session.id));
+      removeSession(session.id);
       const cleanupResults = await Promise.allSettled([
         unpinThread(session.id),
         clearThreadRead(session.id),
@@ -293,34 +290,42 @@ export function SessionListScreen() {
         ListHeaderComponent={
           null
         }
-        renderItem={({ item, index }) => (
-          <>
-            {index === 0 && pinnedCount > 0 ? (
-              <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>置顶</Text>
-            ) : null}
-            {index === pinnedCount && pinnedCount > 0 && pinnedCount < orderedSessions.length ? (
-              <Text style={[styles.recentSectionLabel, { color: colors.text.soft }]}>最近对话</Text>
-            ) : null}
-            <SessionSwipeRow
-              item={item}
-              roleName={getSessionRoleName(item, roleNames)}
-              connectionStatus={connectionStatus}
-              colors={colors}
-              isPinned={isThreadPinned(pinnedAtByThreadId, item.id)}
-              isUnread={selectThreadUnread(progressByThreadId, item.id)}
-              canDelete={item.source === 'local-provider' || canDeleteSessions}
-              isOpen={openSwipeRowId === item.id}
-              onSwipeStateChange={(open) =>
-                setOpenSwipeRowId(open ? item.id : (current) =>
-                  current === item.id ? null : current,
-                )
-              }
-              onOpen={() => openSession(item)}
-              onTogglePin={() => void togglePin(item)}
-              onDelete={() => confirmDelete(item)}
-            />
-          </>
-        )}
+        renderItem={({ item, index }) => {
+          const projection = projectSessionRow(
+            item,
+            pinnedAtByThreadId,
+            progressByThreadId,
+            roleNames,
+          );
+          return (
+            <>
+              {index === 0 && pinnedCount > 0 ? (
+                <Text style={[styles.sectionLabel, { color: colors.text.soft }]}>置顶</Text>
+              ) : null}
+              {index === pinnedCount && pinnedCount > 0 && pinnedCount < orderedSessions.length ? (
+                <Text style={[styles.recentSectionLabel, { color: colors.text.soft }]}>最近对话</Text>
+              ) : null}
+              <SessionSwipeRow
+                item={item}
+                roleName={projection.roleName}
+                connectionStatus={connectionStatus}
+                colors={colors}
+                isPinned={projection.pinned}
+                isUnread={projection.unread}
+                canDelete={item.source === 'local-provider' || canDeleteSessions}
+                isOpen={openSwipeRowId === item.id}
+                onSwipeStateChange={(open) =>
+                  setOpenSwipeRowId(open ? item.id : (current) =>
+                    current === item.id ? null : current,
+                  )
+                }
+                onOpen={() => openSession(item)}
+                onTogglePin={() => void togglePin(item)}
+                onDelete={() => confirmDelete(item)}
+              />
+            </>
+          );
+        }}
         ListEmptyComponent={() => {
           if (collectionState === 'loading') {
             return (

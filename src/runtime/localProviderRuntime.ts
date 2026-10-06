@@ -1,97 +1,323 @@
 import type { ChatMessage, Session } from '../types';
-import { OpenAiCompatibleClient, type OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
-import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
-import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
-import { providerCredentialStore, type ProviderCredentialStore } from '../security/providerCredentialStore';
-import { LocalSessionRepository, DEFAULT_LOCAL_SESSION_TITLE } from '../local/localSessionRepository';
+import { OpenAiStandardClient } from '../provider/openAiStandardClient';
+import {
+  ProviderConfigStore,
+  type LocalProviderConfig,
+} from '../provider/providerConfigStore';
+import {
+  providerCredentialStore,
+  type ProviderCredentialStore,
+} from '../security/providerCredentialStore';
+import {
+  LocalProviderSessionRollbackIncompleteError,
+  LocalProviderSessionSetChangedError,
+  LocalSessionRepository,
+} from '../local/localSessionRepository';
 import {
   loadPersonalizationSettings,
   type PersonalizationSettings,
-} from '../screens/personalizationSettings';
+} from '../settings/personalizationSettings';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
-import { MobileAgentLoop } from './mobileAgentLoop';
-import { buildLocalPersonalizationContext } from './localPersonalizationContext';
+import { getLocalMemoryService, type LocalMemoryService } from '../memory';
+import { assembleLocalRequestContext } from './localRequestContext';
 import {
-  buildMemoryContext,
-  createLocalProviderConsolidator,
-  getLocalMemoryService,
-  type LocalMemoryService,
-} from '../memory';
+  createLocalProviderExecutor,
+  LocalProviderExecutionController,
+} from './localProviderExecution';
+import { LocalAgentRunController } from './localAgentRunController';
+import { executeLocalConversationTurn } from './localConversationExecution';
 import type {
   ToolApprovalDecision,
-  ToolApprovalRequest,
   ToolGatewayClient,
 } from '../tools/toolGatewayClient';
+import {
+  stageLocalSessionReferenceRemoval,
+  type StagedLocalSessionReferenceRemoval,
+} from '../session/localSessionReferenceCleanup';
 
-let localMessageIdSequence = 0;
-const createMessageId = () => {
-  localMessageIdSequence += 1;
-  return `local-message-${Date.now()}-${localMessageIdSequence.toString(36)}`;
-};
-const MAX_SESSION_TITLE_LENGTH = 30;
+export interface LocalProviderDeletionImpact {
+  providerId: string;
+  sessionCount: number;
+}
 
-const deriveSessionTitle = (input: string): string => {
-  const normalized = input.replace(/\s+/gu, ' ').trim();
-  if (!normalized) return DEFAULT_LOCAL_SESSION_TITLE;
-  return normalized.length > MAX_SESSION_TITLE_LENGTH
-    ? `${normalized.slice(0, MAX_SESSION_TITLE_LENGTH)}…`
-    : normalized;
-};
+export interface LocalProviderDeletionResult extends LocalProviderDeletionImpact {
+  deletedSessionIds: string[];
+}
 
-const applyProviderCompatibility = (
-  stream: AsyncIterable<RuntimeEvent>,
-  config: LocalProviderConfig,
-): AsyncIterable<RuntimeEvent> =>
-  config.compatibility?.reasoningTags === 'strip'
-    ? filterReasoningTagEvents(stream)
-    : stream;
+export class LocalProviderDeletionScopeChangedError extends Error {
+  readonly code = 'LOCAL_PROVIDER_DELETION_SCOPE_CHANGED';
 
-const isCompletedAssistantFinishReason = (reason: string | null): boolean =>
-  reason === 'stop' || reason === null;
+  constructor(readonly actualSessionCount: number) {
+    super('关联本地对话数量已变化，请重新确认删除范围。');
+    this.name = 'LocalProviderDeletionScopeChangedError';
+  }
+}
+
+export class LocalProviderDeletionRollbackIncompleteError extends Error {
+  readonly code = 'LOCAL_PROVIDER_DELETION_ROLLBACK_INCOMPLETE';
+
+  constructor(
+    readonly originalError: unknown,
+    readonly reason: 'canonical-sessions' | 'rollback' = 'rollback',
+  ) {
+    super(
+      reason === 'canonical-sessions'
+        ? '本地对话存储未能完整恢复；关联会话引用已保持清理状态。'
+        : '删除 Local Provider 失败，且本地回滚未完整完成；请重新打开设置检查当前状态。',
+    );
+    this.name = 'LocalProviderDeletionRollbackIncompleteError';
+  }
+}
+
+export class LocalProviderConfigReviewRequiredError extends Error {
+  readonly code = 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED';
+
+  constructor() {
+    super(
+      '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
+    );
+    this.name = 'LocalProviderConfigReviewRequiredError';
+  }
+}
+
+export class LocalProviderSendUnavailableError extends Error {
+  readonly code = 'LOCAL_PROVIDER_SEND_UNAVAILABLE';
+
+  constructor(
+    readonly reason: 'provider-deleting' | 'provider-missing',
+  ) {
+    super(
+      reason === 'provider-deleting'
+        ? '当前 Provider 正在删除，请稍后重试。'
+        : 'Local Provider configuration was not found',
+    );
+    this.name = 'LocalProviderSendUnavailableError';
+  }
+}
+
+export type StageLocalSessionReferenceRemoval = (
+  sessionIds: readonly string[],
+) => Promise<StagedLocalSessionReferenceRemoval>;
+
+interface ActiveProviderSend {
+  providerId: string;
+  cancelled: boolean;
+  cancelProviderRun: (() => void) | null;
+  close: (() => Promise<void>) | null;
+}
 
 export interface LocalProviderRuntimeOptions {
   configStore?: ProviderConfigStore;
   credentialStore?: ProviderCredentialStore;
   sessionRepository?: LocalSessionRepository;
-  clientFactory?: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
+  clientFactory?: (
+    config: LocalProviderConfig,
+    apiKey: string,
+  ) => OpenAiStandardClient;
   toolGateway?: ToolGatewayClient;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
+  stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
 }
 
+/**
+ * Stable ConversationRuntime facade for Local Provider.
+ *
+ * This class resolves Local session / Provider / credential facts and delegates
+ * the actual turn to explicit internal owners:
+ * - localRequestContext: Local-only request context;
+ * - localProviderExecution: Provider IO + current execution cancellation;
+ * - localConversationExecution: canonical user/Assistant turn lifecycle;
+ * - localAgentRunController: Agent-specific token / approval / abort lifecycle;
+ * - localTurnConsolidation: completed-turn Memory side effect.
+ */
 export class LocalProviderRuntime implements ConversationRuntime {
   readonly kind = 'local-provider' as const;
   readonly supportsAgent: boolean;
+
   private readonly configStore: ProviderConfigStore;
   private readonly credentialStore: ProviderCredentialStore;
   private readonly sessionRepository: LocalSessionRepository;
-  private readonly clientFactory: (config: LocalProviderConfig, apiKey: string) => OpenAiCompatibleClient;
-  private readonly toolGateway?: ToolGatewayClient;
+  private readonly clientFactory: (
+    config: LocalProviderConfig,
+    apiKey: string,
+  ) => OpenAiStandardClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
   private readonly memoryService: LocalMemoryService;
-  private activeClient: OpenAiCompatibleClient | null = null;
-  private activeAbortController: AbortController | null = null;
-  private activeRunToken: symbol | null = null;
-  private pendingApproval:
-    | {
-        runToken: symbol;
-        invocationId: string;
-        resolve: (decision: ToolApprovalDecision) => void;
-        reject: (error: Error) => void;
-      }
-    | null = null;
-  private executionSuspended = false;
+  private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
+  private readonly providerExecution = new LocalProviderExecutionController();
+  private readonly agentRun: LocalAgentRunController | null;
+  private readonly activeProviderMutations = new Map<string, number>();
+  private readonly providerMutationWaiters = new Map<string, Set<() => void>>();
+  private readonly providerSendWaiters = new Map<string, Set<() => void>>();
+  private readonly deletingProviderIds = new Set<string>();
+  private readonly activeProviderSends = new Set<ActiveProviderSend>();
+  private readonly pendingProviderSends = new Set<ActiveProviderSend>();
+  private currentProviderSend: ActiveProviderSend | null = null;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
     this.configStore = options.configStore ?? new ProviderConfigStore();
-    this.credentialStore = options.credentialStore ?? providerCredentialStore;
-    this.sessionRepository = options.sessionRepository ?? new LocalSessionRepository();
+    this.credentialStore =
+      options.credentialStore ?? providerCredentialStore;
+    this.sessionRepository =
+      options.sessionRepository ?? new LocalSessionRepository();
     this.clientFactory =
-      options.clientFactory ?? ((config, apiKey) => new OpenAiCompatibleClient({ baseUrl: config.baseUrl, apiKey }));
-    this.toolGateway = options.toolGateway;
-    this.loadPersonalization = options.loadPersonalization ?? loadPersonalizationSettings;
+      options.clientFactory ??
+      ((config, apiKey) =>
+        new OpenAiStandardClient({
+          baseUrl: config.baseUrl,
+          apiKey,
+          protocol: config.protocol,
+        }));
+    this.loadPersonalization =
+      options.loadPersonalization ?? loadPersonalizationSettings;
     this.memoryService = options.memoryService ?? getLocalMemoryService();
-    this.supportsAgent = Boolean(this.toolGateway);
+    this.stageSessionReferenceRemoval =
+      options.stageSessionReferenceRemoval ?? stageLocalSessionReferenceRemoval;
+    this.agentRun = options.toolGateway
+      ? new LocalAgentRunController(options.toolGateway)
+      : null;
+    this.supportsAgent = Boolean(options.toolGateway);
+  }
+
+  private requireProviderId(providerId: string): string {
+    if (!providerId.trim()) {
+      throw new Error('Local Provider id is required');
+    }
+    return providerId;
+  }
+
+  private acquireProviderMutation(providerId: string): () => void {
+    const providerKey = this.requireProviderId(providerId);
+    if (this.deletingProviderIds.has(providerKey)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
+
+    this.activeProviderMutations.set(
+      providerKey,
+      (this.activeProviderMutations.get(providerKey) ?? 0) + 1,
+    );
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next =
+        (this.activeProviderMutations.get(providerKey) ?? 1) - 1;
+      if (next <= 0) {
+        this.activeProviderMutations.delete(providerKey);
+        const waiters = this.providerMutationWaiters.get(providerKey);
+        this.providerMutationWaiters.delete(providerKey);
+        waiters?.forEach((resolve) => resolve());
+      } else {
+        this.activeProviderMutations.set(providerKey, next);
+      }
+    };
+  }
+
+  private waitForProviderMutations(providerId: string): Promise<void> {
+    if ((this.activeProviderMutations.get(providerId) ?? 0) === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const waiters =
+        this.providerMutationWaiters.get(providerId) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.providerMutationWaiters.set(providerId, waiters);
+    });
+  }
+
+  private hasProviderSend(providerId: string): boolean {
+    return [...this.activeProviderSends].some(
+      (send) => send.providerId === providerId,
+    );
+  }
+
+  private waitForProviderSends(providerId: string): Promise<void> {
+    if (!this.hasProviderSend(providerId)) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const waiters =
+        this.providerSendWaiters.get(providerId) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.providerSendWaiters.set(providerId, waiters);
+    });
+  }
+
+  private prepareProviderSend(providerId: string): ActiveProviderSend {
+    const send: ActiveProviderSend = {
+      providerId: this.requireProviderId(providerId),
+      cancelled: false,
+      cancelProviderRun: null,
+      close: null,
+    };
+    this.pendingProviderSends.add(send);
+    return send;
+  }
+
+  private activateProviderSend(send: ActiveProviderSend): void {
+    this.pendingProviderSends.delete(send);
+    if (send.cancelled) {
+      throw new Error('Local Provider request was cancelled');
+    }
+    if (this.deletingProviderIds.has(send.providerId)) {
+      throw new LocalProviderSendUnavailableError('provider-deleting');
+    }
+
+    this.activeProviderSends.add(send);
+    this.currentProviderSend = send;
+  }
+
+  private finishProviderSend(send: ActiveProviderSend): void {
+    if (this.currentProviderSend === send) {
+      this.currentProviderSend = null;
+    }
+    if (!this.activeProviderSends.delete(send)) return;
+    if (!this.hasProviderSend(send.providerId)) {
+      const waiters = this.providerSendWaiters.get(send.providerId);
+      this.providerSendWaiters.delete(send.providerId);
+      waiters?.forEach((resolve) => resolve());
+    }
+  }
+
+  private cancelCurrentProviderSend(): void {
+    const current = this.currentProviderSend;
+    if (current) {
+      current.cancelled = true;
+      return;
+    }
+
+    this.cancelPendingProviderSends();
+  }
+
+  private cancelPendingProviderSends(): void {
+    for (const send of [...this.pendingProviderSends]) {
+      send.cancelled = true;
+      this.pendingProviderSends.delete(send);
+    }
+  }
+
+  private async cancelProviderSends(providerId: string): Promise<void> {
+    const providerKey = this.requireProviderId(providerId);
+    const closes: Promise<void>[] = [];
+
+    for (const send of [...this.pendingProviderSends]) {
+      if (send.providerId !== providerKey) continue;
+      send.cancelled = true;
+      this.pendingProviderSends.delete(send);
+    }
+
+    for (const send of [...this.activeProviderSends]) {
+      if (send.providerId !== providerKey) continue;
+      send.cancelled = true;
+      send.cancelProviderRun?.();
+      if (send.close) {
+        closes.push(send.close());
+      }
+    }
+
+    await Promise.allSettled(closes);
   }
 
   async listSessions(): Promise<Session[]> {
@@ -105,18 +331,177 @@ export class LocalProviderRuntime implements ConversationRuntime {
         })),
       ),
     );
-    return sessions.flat().sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+    return sessions
+      .flat()
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
   }
 
   async createSession(title?: string, providerId?: string): Promise<Session> {
     const configs = await this.configStore.load();
-    const config = providerId ? configs.find((item) => item.id === providerId) : configs[0];
+    const config = providerId
+      ? configs.find((item) => item.id === providerId)
+      : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
-    return this.sessionRepository.create(config.id, title);
+    if (config.requiresStandardProtocolReview) {
+      throw new LocalProviderConfigReviewRequiredError();
+    }
+
+    const release = this.acquireProviderMutation(config.id);
+    try {
+      return await this.sessionRepository.create(config.id, title);
+    } finally {
+      release();
+    }
   }
 
-  deleteSession(sessionId: string): Promise<void> {
-    return this.sessionRepository.delete(sessionId);
+  private providerConfigsEqual(
+    left: LocalProviderConfig,
+    right: LocalProviderConfig,
+  ): boolean {
+    return (
+      left.id === right.id &&
+      left.name === right.name &&
+      left.baseUrl === right.baseUrl &&
+      left.model === right.model &&
+      left.protocol === right.protocol &&
+      left.toolGatewayId === right.toolGatewayId &&
+      left.requiresStandardProtocolReview ===
+        right.requiresStandardProtocolReview &&
+      left.legacyReasoningBehaviorChanged ===
+        right.legacyReasoningBehaviorChanged
+    );
+  }
+
+  async getProviderDeletionImpact(providerId: string): Promise<LocalProviderDeletionImpact> {
+    const providerKey = this.requireProviderId(providerId);
+    const sessions = await this.sessionRepository.list(providerKey);
+    return { providerId: providerKey, sessionCount: sessions.length };
+  }
+
+  async deleteProvider(
+    providerId: string,
+    expectedSessionCount?: number,
+  ): Promise<LocalProviderDeletionResult> {
+    const providerKey = this.requireProviderId(providerId);
+    if (this.deletingProviderIds.has(providerKey)) {
+      throw new Error('当前 Provider 正在删除，请稍后重试。');
+    }
+    this.deletingProviderIds.add(providerKey);
+    let configToRestore: LocalProviderConfig | null = null;
+    let credentialToRestore: string | null = null;
+    let stagedSessionReferences: StagedLocalSessionReferenceRemoval | null = null;
+    let credentialCleared = false;
+    let configRemoved = false;
+
+    try {
+      await this.cancelProviderSends(providerKey);
+      await this.waitForProviderSends(providerKey);
+      await this.waitForProviderMutations(providerKey);
+      const configs = await this.configStore.load();
+      configToRestore =
+        configs.find((item) => item.id === providerKey) ?? null;
+
+      const sessions = await this.sessionRepository.list(providerKey);
+      if (
+        expectedSessionCount !== undefined &&
+        sessions.length !== expectedSessionCount
+      ) {
+        throw new LocalProviderDeletionScopeChangedError(sessions.length);
+      }
+
+      credentialToRestore =
+        await this.credentialStore.load(providerKey);
+      const sessionIds = sessions.map((session) => session.id);
+      stagedSessionReferences =
+        await this.stageSessionReferenceRemoval(sessionIds);
+
+      if (credentialToRestore !== null) {
+        await this.credentialStore.clear(providerKey);
+        credentialCleared = true;
+      }
+
+      if (configToRestore) {
+        await this.configStore.remove(providerKey);
+        configRemoved = true;
+      }
+
+      const deletedSessionIds =
+        await this.sessionRepository.deleteByProvider(
+          providerKey,
+          sessionIds,
+        );
+      const result: LocalProviderDeletionResult = {
+        providerId: providerKey,
+        sessionCount: deletedSessionIds.length,
+        deletedSessionIds,
+      };
+      stagedSessionReferences.commit();
+      return result;
+    } catch (error) {
+      const rollback: Promise<unknown>[] = [];
+      if (configRemoved && configToRestore) {
+        rollback.push(this.configStore.upsert(configToRestore));
+      }
+      if (credentialCleared && credentialToRestore) {
+        rollback.push(
+          this.credentialStore.save(providerKey, credentialToRestore),
+        );
+      }
+      const canonicalSessionsIncomplete =
+        error instanceof LocalProviderSessionRollbackIncompleteError;
+      if (stagedSessionReferences) {
+        if (canonicalSessionsIncomplete) {
+          stagedSessionReferences.commit();
+        } else {
+          rollback.push(stagedSessionReferences.rollback());
+        }
+      }
+
+      const rollbackResults = await Promise.allSettled(rollback);
+      let rollbackComplete =
+        !rollbackResults.some((result) => result.status === 'rejected');
+
+      if (rollbackComplete && configRemoved && configToRestore) {
+        const restoredConfig = (await this.configStore.load())
+          .find((item) => item.id === providerKey);
+        rollbackComplete =
+          restoredConfig !== undefined &&
+          this.providerConfigsEqual(restoredConfig, configToRestore);
+      }
+      if (rollbackComplete && credentialCleared) {
+        const restoredCredential =
+          await this.credentialStore.load(providerKey);
+        rollbackComplete = restoredCredential === credentialToRestore;
+      }
+
+      if (!rollbackComplete) {
+        throw new LocalProviderDeletionRollbackIncompleteError(error);
+      }
+      if (error instanceof LocalProviderSessionRollbackIncompleteError) {
+        throw new LocalProviderDeletionRollbackIncompleteError(
+          error,
+          'canonical-sessions',
+        );
+      }
+      if (error instanceof LocalProviderSessionSetChangedError) {
+        throw new LocalProviderDeletionScopeChangedError(
+          error.actualSessionIds.length,
+        );
+      }
+      throw error;
+    } finally {
+      this.deletingProviderIds.delete(providerKey);
+    }
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderMutation(providerId);
+    try {
+      await this.sessionRepository.delete(sessionId);
+    } finally {
+      release();
+    }
   }
 
   getSession(sessionId: string): Promise<Session> {
@@ -132,343 +517,166 @@ export class LocalProviderRuntime implements ConversationRuntime {
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    const sessions = await this.listSessions();
-    const session = sessions.find((item) => item.id === sessionId);
-    if (!session) throw new Error('Local session was not found');
-    const configs = await this.configStore.load();
     const providerId = await this.sessionRepository.getProviderId(sessionId);
-    const config = configs.find((item) => item.id === providerId);
-    if (!config) throw new Error('Local Provider configuration was not found');
-    const apiKey = await this.credentialStore.load(config.id);
-    if (!apiKey) throw new Error('Local Provider API key is not configured');
+    if (this.deletingProviderIds.has(providerId)) {
+      throw new LocalProviderSendUnavailableError('provider-deleting');
+    }
 
-    const userMessage: ChatMessage = {
-      id: options?.messageId?.trim() || createMessageId(),
-      role: 'user',
-      content: input,
-      timestamp: new Date(),
-    };
-    const previous = await this.sessionRepository.getMessages(sessionId);
-    const alreadyRecorded = previous.some((message) => message.id === userMessage.id);
-    if (!alreadyRecorded) {
-      await this.sessionRepository.appendMessages(sessionId, [userMessage]);
-    }
-    const canonicalMessages = alreadyRecorded ? previous : [...previous, userMessage];
-    if (session.title === DEFAULT_LOCAL_SESSION_TITLE) {
-      const firstUserMessage = canonicalMessages.find(
-        (message) => message.role === 'user' && message.content.trim().length > 0,
-      );
-      if (firstUserMessage) {
-        await this.sessionRepository.rename(
-          sessionId,
-          deriveSessionTitle(firstUserMessage.content),
-        );
-      }
-    }
-    const client = this.clientFactory(config, apiKey);
-    const requestMessages = canonicalMessages.map<OpenAiCompatibleMessage>(
-      (message) => ({
-        role: message.role,
-        content: message.content,
-      }),
+    // Preserve the established call-time error surface for clearly invalid
+    // Local sends. The stream body re-reads these facts before any write so a
+    // later Provider deletion/config change cannot reuse this preflight state.
+    const preflightConfigs = await this.configStore.load();
+    const preflightConfig = preflightConfigs.find(
+      (item) => item.id === providerId,
     );
-    // Personalization is a Local-only request context. It is compiled here,
-    // after canonical storage reads, so persisted history stays untouched and
-    // the Remote Host path (which never enters this runtime) cannot receive it.
-    // A read failure degrades to no personalization rather than failing the
-    // send, and must never overwrite the persisted settings.
-    let personalizationContext: string | null = null;
-    try {
-      personalizationContext = buildLocalPersonalizationContext(
-        await this.loadPersonalization(),
-      );
-    } catch {
-      personalizationContext = null;
+    if (!preflightConfig) {
+      throw new LocalProviderSendUnavailableError('provider-missing');
     }
-    if (personalizationContext) {
-      requestMessages.unshift({ role: 'system', content: personalizationContext });
+    const preflightApiKey = await this.credentialStore.load(providerId);
+    if (!preflightApiKey) {
+      throw new Error('Local Provider API key is not configured');
     }
-    // Local Memory is another Local-only request context, layered after
-    // Personalization so request order stays:
-    //   system / agent context -> Personalization -> Local Memory -> conversation
-    // A memory read failure (or disabled / empty memory) degrades to no memory
-    // context rather than failing the send, and never touches persisted history.
-    try {
-      const snapshot = await this.memoryService.buildContext();
-      const memoryContext = buildMemoryContext(snapshot);
-      if (memoryContext) {
-        const insertAt = personalizationContext ? 1 : 0;
-        requestMessages.splice(insertAt, 0, {
-          role: 'system',
-          content: memoryContext,
-        });
-      }
-    } catch {
-      // Safe degradation: this turn simply runs without memory context.
-    }
-    if (options?.agentEnabled && this.activeRunToken) {
-      const replacedClient = this.activeClient;
-      this.activeAbortController?.abort();
-      replacedClient?.cancelActiveRun();
-      this.rejectPendingApproval(
-        new Error('A newer local Agent run replaced the previous run'),
-      );
-      this.activeAbortController = null;
-      this.activeRunToken = null;
-    }
-    this.activeClient = client;
-
-    const abortController =
-      options?.agentEnabled && this.toolGateway
-        ? new AbortController()
-        : null;
-    const runToken = abortController ? Symbol('local-agent-run') : null;
-    if (abortController && runToken) {
-      this.activeAbortController = abortController;
-      this.activeRunToken = runToken;
+    if (this.deletingProviderIds.has(providerId)) {
+      throw new LocalProviderSendUnavailableError('provider-deleting');
     }
 
-    let stream: AsyncIterable<RuntimeEvent>;
-    try {
-      stream =
-        options?.agentEnabled && this.toolGateway
-          ? await new MobileAgentLoop(this.toolGateway).run(
-              requestMessages,
-              async (messages, tools) =>
-                applyProviderCompatibility(
-                  await client.streamChat({
-                    model: config.model,
-                    messages: [...messages],
-                    tools: [...tools],
-                  }),
-                  config,
-                ),
-              {
-                shouldPause: () => this.executionSuspended,
-                signal: abortController?.signal,
-                requestApproval: (approval) =>
-                  this.waitForApprovalDecision(runToken!, approval),
-              },
-            )
-          : applyProviderCompatibility(
-              await client.streamChat({
-                model: config.model,
-                messages: requestMessages,
-              }),
-              config,
-            );
-    } catch (error) {
-      if (this.activeClient === client) this.activeClient = null;
-      if (
-        this.activeAbortController === abortController &&
-        this.activeRunToken === runToken
-      ) {
-        this.activeAbortController = null;
-        this.activeRunToken = null;
+    const runtime = this;
+    const preparedSend = this.prepareProviderSend(providerId);
+    let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
+
+    generator = (async function* () {
+      if (runtime.providerExecution.executionSuspended || preparedSend.cancelled) {
+        throw new Error('Local Provider request was cancelled');
       }
-      abortController?.abort();
-      if (runToken) {
-        this.rejectPendingApproval(
-          new Error('Local Agent setup failed before the run started'),
-          runToken,
+      runtime.activateProviderSend(preparedSend);
+      const activeSend = preparedSend;
+      let closeRequested = false;
+      activeSend.close = async () => {
+        if (closeRequested) return;
+        closeRequested = true;
+        await generator.return(undefined).then(
+          () => undefined,
+          () => undefined,
         );
-      }
-      throw error;
-    }
-    const repository = this.sessionRepository;
-    const that = this;
-    const assistantId = createMessageId();
-    const threadId = sessionId;
-    const canonicalUserMessageId = userMessage.id;
-    const userText = input;
-    return (async function* () {
-      let content = '';
-      let sawError = false;
-      let paused = false;
-      let finished = false;
-      let finishReason: string | null = null;
+      };
+
       try {
+        const configs = await runtime.configStore.load();
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
+        }
+        const config = configs.find((item) => item.id === providerId);
+        if (!config) {
+          throw new LocalProviderSendUnavailableError('provider-missing');
+        }
+        if (config.requiresStandardProtocolReview) {
+          throw new LocalProviderConfigReviewRequiredError();
+        }
+
+        const session = await runtime.sessionRepository.get(sessionId);
+        const currentProviderId =
+          await runtime.sessionRepository.getProviderId(sessionId);
+        if (currentProviderId !== providerId) {
+          throw new Error('Local Provider session ownership changed');
+        }
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
+        }
+
+        const apiKey = await runtime.credentialStore.load(config.id);
+        if (!apiKey) {
+          throw new Error('Local Provider API key is not configured');
+        }
+        if (activeSend.cancelled) {
+          throw new Error('Local Provider request was cancelled');
+        }
+
+        // The Provider client is scoped to this outer send. Agent model rounds
+        // reuse this executor, while a later conversation turn gets a fresh client,
+        // so Responses continuation state cannot leak across user turns.
+        const executor = createLocalProviderExecutor(
+          runtime.clientFactory(config, apiKey),
+          config,
+        );
+        activeSend.cancelProviderRun = () => executor.client.cancelActiveRun();
+        if (activeSend.cancelled) {
+          activeSend.cancelProviderRun();
+          throw new Error('Local Provider request was cancelled');
+        }
+
+        const stream = await executeLocalConversationTurn(
+          {
+            session,
+            input,
+            messageId: options?.messageId,
+            agentEnabled: options?.agentEnabled,
+          },
+          {
+            repository: runtime.sessionRepository,
+            executor,
+            providerExecution: runtime.providerExecution,
+            agentRun: runtime.agentRun,
+            assembleRequest: (canonicalMessages) =>
+              assembleLocalRequestContext(canonicalMessages, {
+                loadPersonalization: runtime.loadPersonalization,
+                memoryService: runtime.memoryService,
+              }),
+            memoryService: runtime.memoryService,
+            config,
+          },
+        );
+
         for await (const event of stream) {
-          if (event.type === 'text-delta') content += event.delta;
-          if (event.type === 'error') sawError = true;
-          if (event.type === 'run-paused') paused = true;
-          if (event.type === 'finish') {
-            finished = true;
-            finishReason = event.reason;
-          }
           yield event;
         }
-        if (content) {
-          await repository.appendMessages(sessionId, [
-            { id: assistantId, role: 'assistant', content, timestamp: new Date() },
-          ]);
-        }
-        // Memory consolidation runs only for a genuinely completed turn whose
-        // canonical Assistant reply was just persisted.
-        //
-        // "Completed" means the run reached a real final Assistant reply, not
-        // merely that some text arrived. An Agent run that errored, paused
-        // (app-suspended / timeout / cancelled / approval-rejected) or stopped
-        // on a non-final reason (tool_calls / tool-round limit) is not a
-        // completed turn: tool intermediate messages are not Memory evidence.
-        const completedTurn =
-          content.length > 0 &&
-          !sawError &&
-          !paused &&
-          finished &&
-          isCompletedAssistantFinishReason(finishReason);
-        if (completedTurn) {
-          // Detached, best-effort side effect: the canonical reply is already
-          // durable, so the Chat stream / UI must complete without waiting for
-          // the extra Provider consolidation call.
-          that.consolidateTurn({
-            threadId,
-            userMessageId: canonicalUserMessageId,
-            assistantMessageId: assistantId,
-            userText,
-            assistantText: content,
-            model: config.model,
-            client,
-            config,
-          }).catch(() => undefined);
-        }
       } finally {
-        if (that.activeClient === client) that.activeClient = null;
-        if (
-          that.activeAbortController === abortController &&
-          that.activeRunToken === runToken
-        ) {
-          that.activeAbortController = null;
-          that.activeRunToken = null;
-        }
-        if (runToken) {
-          that.rejectPendingApproval(
-            new Error('Local Agent run ended before approval was resolved'),
-            runToken,
-          );
-        }
+        activeSend.cancelProviderRun = null;
+        activeSend.close = null;
+        runtime.finishProviderSend(activeSend);
       }
     })();
-  }
 
-  /**
-   * Consolidate one completed local turn into Memory.
-   *
-   * This is a best-effort, detached, Local-only side effect that runs after the
-   * canonical Assistant reply is already durable. Every failure path (provider
-   * error, invalid JSON, policy reject, repository failure, disabled memory) is
-   * swallowed here so a Memory problem can never turn a successful chat reply
-   * into a failed one. The Memory Service owns idempotency and marks the turn
-   * processed only on a successful consolidation.
-   *
-   * The Provider-backed consolidator is built per turn from the exact Local
-   * Provider client / model that produced this turn and passed explicitly into
-   * `commitTurn`, so concurrent sessions can never share or overwrite each
-   * other's Provider.
-   */
-  private async consolidateTurn(input: {
-    threadId: string;
-    userMessageId: string;
-    assistantMessageId: string;
-    userText: string;
-    assistantText: string;
-    model: string;
-    client: OpenAiCompatibleClient;
-    config: LocalProviderConfig;
-  }): Promise<void> {
-    try {
-      const source = {
-        type: 'conversation' as const,
-        threadId: input.threadId,
-        userMessageId: input.userMessageId,
-        assistantMessageId: input.assistantMessageId,
-      };
-      if (await this.memoryService.isProcessed(source)) return;
-      // The consolidator uses the exact same Local Provider client / model and
-      // secure credential boundary as the chat request, and goes through the
-      // same provider compatibility normalization (e.g. reasoning-tag stripping)
-      // so a reasoning-tag-prefixed JSON payload is still parsed correctly.
-      const consolidator = createLocalProviderConsolidator({
-        model: input.model,
-        chat: async request =>
-          applyProviderCompatibility(
-            await input.client.streamChat(request),
-            input.config,
-          ),
-      });
-      await this.memoryService.commitTurn({
-        source,
-        userText: input.userText,
-        assistantText: input.assistantText,
-        consolidator,
-      });
-    } catch {
-      // Memory is an additive capability; it must never fail the chat reply.
-    }
+    return generator;
   }
 
   getAgentEnabled(sessionId: string): Promise<boolean> {
     return this.sessionRepository.getAgentEnabled(sessionId);
   }
 
-  setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
-    return this.sessionRepository.setAgentEnabled(sessionId, enabled);
+  async setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderMutation(providerId);
+    try {
+      await this.sessionRepository.setAgentEnabled(sessionId, enabled);
+    } finally {
+      release();
+    }
   }
 
   resolveToolApproval(
     invocationId: string,
     decision: ToolApprovalDecision,
-  ) {
-    const pending = this.pendingApproval;
-    if (!pending || pending.invocationId !== invocationId) return;
-    this.pendingApproval = null;
-    pending.resolve(decision);
+  ): void {
+    this.agentRun?.resolveToolApproval(invocationId, decision);
   }
 
-  cancelActiveRun() {
-    this.activeAbortController?.abort();
-    this.activeAbortController = null;
-    this.activeRunToken = null;
-    this.activeClient?.cancelActiveRun();
-    this.activeClient = null;
-    this.rejectPendingApproval(new Error('Local Agent run was cancelled'));
+  cancelActiveRun(): void {
+    // Mark the send cancelled first, but keep it tracked until its generator
+    // really unwinds. Agent cancellation still precedes the Provider abort so
+    // the stream classifies this as intentional cancellation.
+    this.cancelCurrentProviderSend();
+    this.agentRun?.cancelActiveRun();
+    this.providerExecution.cancelActiveRun();
   }
 
-  setExecutionSuspended(suspended: boolean) {
-    this.executionSuspended = suspended;
-    if (!suspended) return;
-    this.activeAbortController?.abort();
-    this.activeClient?.cancelActiveRun();
-    this.rejectPendingApproval(new Error('Local Agent run was suspended'));
-  }
-
-  private waitForApprovalDecision(
-    runToken: symbol,
-    approval: ToolApprovalRequest,
-  ): Promise<ToolApprovalDecision> {
-    if (this.activeRunToken !== runToken) {
-      return Promise.reject(
-        new Error('Local Agent run is no longer active'),
-      );
+  setExecutionSuspended(suspended: boolean): void {
+    // Set the shared suspension predicate before interrupting Agent approval /
+    // control flow so MobileAgentLoop reports app-suspended, not cancelled.
+    this.providerExecution.setExecutionSuspended(suspended);
+    if (suspended) {
+      this.cancelCurrentProviderSend();
+      this.cancelPendingProviderSends();
+      this.agentRun?.interruptForSuspension();
     }
-    this.rejectPendingApproval(
-      new Error('A newer tool approval replaced the previous request'),
-    );
-
-    return new Promise<ToolApprovalDecision>((resolve, reject) => {
-      this.pendingApproval = {
-        runToken,
-        invocationId: approval.invocationId,
-        resolve,
-        reject,
-      };
-    });
-  }
-
-  private rejectPendingApproval(error: Error, runToken?: symbol) {
-    const pending = this.pendingApproval;
-    if (!pending || (runToken && pending.runToken !== runToken)) return;
-    this.pendingApproval = null;
-    pending.reject(error);
   }
 }

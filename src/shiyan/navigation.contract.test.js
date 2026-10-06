@@ -5,7 +5,7 @@ const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('Shiyan navigation contract', () => {
   it('keeps Drawer -> Plugins -> Shiyan wired to the real stack routes', () => {
-    const drawer = readSource('src/components/CustomDrawer.tsx');
+    const drawer = readSource('src/session/CustomDrawer.tsx');
     const shiyan = readSource('src/shiyan/ShiyanScreens.tsx');
     const app = readSource('App.tsx');
 

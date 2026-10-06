@@ -16,28 +16,28 @@ import { FolderOpen, Pin, Search, X } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
 import { miraHostClient } from '../api/miraHostClient';
-import { getSessionRoleName } from '../api/roleApi';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { useThreadPinStore } from '../store/threadPinStore';
-import { isThreadPinned } from '../store/threadPinning';
-import {
-  selectThreadUnread,
-  useThreadReadStore,
-} from '../store/threadReadStore';
+import { useThreadReadStore } from '../store/threadReadStore';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
-} from '../components/SessionKindIcon';
-import { RemoteDiagnosticNotice } from '../components/RemoteDiagnosticNotice';
+} from '../session/SessionKindIcon';
+import { RemoteDiagnosticNotice } from '../connectivity/RemoteDiagnosticNotice';
 import {
   classifySessionLoadFailure,
   type RemoteConnectionDiagnostic,
   type RemoteConnectionDiagnosticAction,
 } from '../connectivity/remoteConnectionDiagnostics';
-import { resolveSessionCollectionState } from './sessionCollectionState';
-import { resolveSessionOpenTarget } from './sessionNavigation';
+import { useSessionCollection } from '../session/useSessionCollection';
+import { resolveSessionCollectionState } from '../session/sessionCollection';
+import { resolveSessionOpenTarget } from '../session/sessionNavigation';
+import {
+  buildSessionRowAccessibilityLabel,
+  projectSessionRow,
+} from '../session/sessionProjection';
 import {
   GlobalSearchController,
   SEARCH_DEBOUNCE_MS,
@@ -65,10 +65,6 @@ export function SearchScreen() {
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState<SearchTab>('all');
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadDiagnostic, setLoadDiagnostic] =
-    useState<RemoteConnectionDiagnostic | null>(null);
   const [searchDiagnostic, setSearchDiagnostic] =
     useState<RemoteConnectionDiagnostic | null>(null);
   const [searchState, setSearchState] = useState<GlobalSearchState>({
@@ -79,25 +75,26 @@ export function SearchScreen() {
   });
   const searchControllerRef = useRef<GlobalSearchController | null>(null);
 
-  const loadSessions = useCallback(async () => {
-    setLoading(true);
-    setLoadDiagnostic(null);
-    try {
-      const list = await miraHostClient.listSessions();
-      setSessions(list);
-      void syncUnreadSessions(list).catch(() => undefined);
-    } catch (error) {
-      setLoadDiagnostic(await classifySessionLoadFailure(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [syncUnreadSessions]);
+  const hydrateLocalState = useCallback(
+    () =>
+      Promise.allSettled([
+        Promise.resolve().then(hydratePins),
+        Promise.resolve().then(hydrateReads),
+      ]).then(() => undefined),
+    [hydratePins, hydrateReads],
+  );
 
-  useEffect(() => {
-    void hydratePins().catch(() => undefined);
-    void hydrateReads().catch(() => undefined);
-    void loadSessions();
-  }, [hydratePins, hydrateReads, loadSessions]);
+  const {
+    sessions,
+    loading,
+    diagnostic: loadDiagnostic,
+    reload: loadSessions,
+  } = useSessionCollection({
+    listSessions: () => miraHostClient.listSessions(),
+    syncUnreadSessions,
+    hydrateLocalState,
+    filter: 'remote-host',
+  });
 
   useEffect(() => {
     const controller = new GlobalSearchController({
@@ -270,17 +267,22 @@ export function SearchScreen() {
               <Text style={[styles.resultSectionLabel, { color: colors.text.soft }]}>对话</Text>
             ) : null}
             {threadResults.map((session) => {
-            const belongsToWorkspace =
-              typeof session.workspaceId === 'string' &&
-              session.workspaceId.trim().length > 0;
-            const pinned = isThreadPinned(pinnedAtByThreadId, session.id);
-            const unread = selectThreadUnread(progressByThreadId, session.id);
-            const roleName = getSessionRoleName(session, roleNames);
+            const projection = projectSessionRow(
+              session,
+              pinnedAtByThreadId,
+              progressByThreadId,
+              roleNames,
+            );
+            const { belongsToWorkspace, pinned, unread, roleName } = projection;
             return (
               <Pressable
                 key={session.id}
                 accessibilityRole="button"
-                accessibilityLabel={`${getSessionVisualKindLabel(session)}：${session.title}${roleName ? `，角色${roleName}` : ''}${belongsToWorkspace ? '，项目会话' : ''}${pinned ? '，已在本机置顶' : ''}${unread ? '，未读' : ''}`}
+                accessibilityLabel={buildSessionRowAccessibilityLabel(
+                  session,
+                  projection,
+                  getSessionVisualKindLabel(session),
+                )}
                 style={styles.result}
                 onPress={() => openSession(session)}
               >

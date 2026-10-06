@@ -18,7 +18,7 @@ import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import {
   getWorkspaceLoadErrorMessage,
   resolveWorkspaceCollectionState,
-} from './workspaceListState';
+} from '../session/workspaceListState';
 
 const formatUpdatedAt = (value: string) => {
   const date = new Date(value);

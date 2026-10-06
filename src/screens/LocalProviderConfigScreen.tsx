@@ -6,13 +6,28 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ChevronLeft, Plus, Save, Trash2 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
+import {
+  OPENAI_STANDARD_PROTOCOL_OPTIONS,
+  normalizeOpenAiStandardBaseUrl,
+} from '../provider/openAiStandardProtocol';
 import { providerCredentialStore } from '../security/providerCredentialStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
-import { LocalSessionRepository } from '../local/localSessionRepository';
+import {
+  LocalProviderDeletionRollbackIncompleteError,
+  LocalProviderDeletionScopeChangedError,
+} from '../runtime/localProviderRuntime';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
+
+const createDraftProvider = (name: string): LocalProviderConfig => ({
+  id: `provider-${Date.now()}`,
+  name,
+  baseUrl: '',
+  model: '',
+  protocol: 'openai-chat-completions',
+});
 
 export function LocalProviderConfigScreen() {
   const navigation = useNavigation<NavProp>();
@@ -22,7 +37,7 @@ export function LocalProviderConfigScreen() {
     name: 'Local Provider',
     baseUrl: '',
     model: '',
-    protocol: 'chat-completions',
+    protocol: 'openai-chat-completions',
   });
   const [configs, setConfigs] = useState<LocalProviderConfig[]>([]);
   const [apiKeyDraft, setApiKeyDraft] = useState('');
@@ -31,6 +46,8 @@ export function LocalProviderConfigScreen() {
   const selectedProviderIdRef = useRef(config.id);
   const [saving, setSaving] = useState(false);
   const [clearingKey, setClearingKey] = useState(false);
+  const [deletingProvider, setDeletingProvider] = useState(false);
+  const deletingProviderRef = useRef(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -61,17 +78,32 @@ export function LocalProviderConfigScreen() {
 
   const save = useCallback(async () => {
     if (saving) return;
-    const next = {
-      ...config,
-      id: config.id.trim() || 'default-provider',
-      name: config.name.trim() || 'Local Provider',
-      baseUrl: config.baseUrl.trim(),
-      model: config.model.trim(),
-    };
-    if (!next.baseUrl || !next.model) {
+    if (!config.baseUrl.trim() || !config.model.trim()) {
       Alert.alert('配置不完整', '请填写 Provider 地址和模型名称。');
       return;
     }
+
+    let standardBaseUrl: string;
+    try {
+      standardBaseUrl = normalizeOpenAiStandardBaseUrl(config.baseUrl);
+    } catch (error) {
+      Alert.alert(
+        'Base URL 不是标准 OpenAI 地址',
+        error instanceof Error
+          ? `${error.message}。请填写 API 根地址，例如 https://api.openai.com 或标准 /v1 根地址。`
+          : '请填写 API 根地址或标准 /v1 根地址。',
+      );
+      return;
+    }
+
+    const next: LocalProviderConfig = {
+      id: config.id.trim() || 'default-provider',
+      name: config.name.trim() || 'Local Provider',
+      baseUrl: standardBaseUrl,
+      model: config.model.trim(),
+      protocol: config.protocol,
+      ...(config.toolGatewayId ? { toolGatewayId: config.toolGatewayId } : {}),
+    };
     setSaving(true);
     try {
       await new ProviderConfigStore().upsert(next);
@@ -114,53 +146,128 @@ export function LocalProviderConfigScreen() {
     }
   }, []);
 
-  const addProvider = useCallback(() => {
+  const activateDraftProvider = useCallback((name: string) => {
+    const next = createDraftProvider(name);
     credentialLoadRequestRef.current += 1;
-    const id = `provider-${Date.now()}`;
-    const next: LocalProviderConfig = {
-      id,
-      name: 'New Provider',
-      baseUrl: '',
-      model: '',
-      protocol: 'chat-completions',
-    };
-    setConfigs((current) => [...current, next]);
     selectedProviderIdRef.current = next.id;
     setConfig(next);
     setApiKeyDraft('');
     setHasStoredKey(false);
+    return next;
   }, []);
 
-  const removeProvider = useCallback(async () => {
-    const sessions = await new LocalSessionRepository().list(config.id).catch(() => []);
-    if (sessions.length > 0) {
-      Alert.alert('无法删除', '当前 Provider 仍有本地对话，请先保留此配置。');
+  const addProvider = useCallback(() => {
+    const next = activateDraftProvider('New Provider');
+    setConfigs((current) => [...current, next]);
+  }, [activateDraftProvider]);
+
+  const finishProviderRemoval = useCallback(async (
+    providerId: string,
+    expectedSessionCount: number,
+  ) => {
+    if (deletingProviderRef.current) return;
+    if (selectedProviderIdRef.current !== providerId) {
+      Alert.alert(
+        '删除范围已变化',
+        '当前选中的 Provider 已变化。刚才的删除确认已失效，请重新发起删除并确认最新范围。',
+      );
       return;
     }
-    await new ProviderConfigStore().remove(config.id);
-    await providerCredentialStore.clear(config.id).catch(() => undefined);
-    const nextConfigs = configs.filter((item) => item.id !== config.id);
-    setConfigs(nextConfigs);
-    if (nextConfigs[0]) {
-      await selectProvider(nextConfigs[0]);
-    } else {
-      const empty: LocalProviderConfig = {
-        id: `provider-${Date.now()}`,
-        name: 'Local Provider',
-        baseUrl: '',
-        model: '',
-        protocol: 'chat-completions',
-      };
-      credentialLoadRequestRef.current += 1;
-      selectedProviderIdRef.current = empty.id;
-      setConfig(empty);
-      setApiKeyDraft('');
-      setHasStoredKey(false);
+    deletingProviderRef.current = true;
+    setDeletingProvider(true);
+    try {
+      await runtimeRegistry.deleteLocalProvider(providerId, expectedSessionCount);
+
+      const nextConfigs = await new ProviderConfigStore().load().catch(() => null);
+      if (!nextConfigs) {
+        Alert.alert(
+          'Provider 已删除',
+          'Provider 已删除，但当前页面无法重新读取配置。请返回后重新打开 Local Provider 设置。',
+        );
+        navigation.goBack();
+        return;
+      }
+
+      setConfigs(nextConfigs);
+      if (selectedProviderIdRef.current === providerId) {
+        if (nextConfigs[0]) {
+          await selectProvider(nextConfigs[0]);
+        } else {
+          activateDraftProvider('Local Provider');
+        }
+      }
+    } catch (error) {
+      if (error instanceof LocalProviderDeletionScopeChangedError) {
+        Alert.alert(
+          '删除范围已变化',
+          `此 Provider 当前关联 ${error.actualSessionCount} 个本地对话。刚才的确认已失效；请再次点击“删除当前配置”，按最新范围重新确认。`,
+        );
+        return;
+      }
+      if (error instanceof LocalProviderDeletionRollbackIncompleteError) {
+        if (error.reason === 'canonical-sessions') {
+          Alert.alert(
+            '本地对话恢复不完整',
+            '本地对话存储未能完整恢复。为避免幽灵引用，相关置顶、未读和启动恢复引用保持清理状态；Provider 配置和 API Key 已尝试恢复。请返回对话列表检查当前状态。',
+          );
+        } else {
+          Alert.alert(
+            '删除未完整回滚',
+            '部分本地状态可能已经变化。请重新打开 Local Provider 设置检查配置、API Key 和关联对话后，再决定是否继续操作。',
+          );
+        }
+        return;
+      }
+      Alert.alert(
+        '删除失败',
+        error instanceof Error && error.message
+          ? error.message
+          : '无法删除当前 Local Provider，请稍后重试。',
+      );
+    } finally {
+      deletingProviderRef.current = false;
+      setDeletingProvider(false);
     }
-  }, [config.id, configs, selectProvider]);
+  }, [
+    activateDraftProvider,
+    navigation,
+    selectProvider,
+  ]);
+
+  const removeProvider = useCallback(async () => {
+    if (deletingProviderRef.current) return;
+    try {
+      const impact = await runtimeRegistry.getLocalProviderDeletionImpact(config.id);
+      const conversationText =
+        impact.sessionCount === 0
+          ? '当前没有关联本地对话。'
+          : `将同时删除此 Provider 关联的 ${impact.sessionCount} 个本地对话。`;
+
+      Alert.alert(
+        '删除 Local Provider？',
+        `删除“${config.name || config.id}”的配置和 API Key。\n\n${conversationText}\n\n如该 Provider 正在生成内容，将先停止这些请求再删除。\n\n不会影响其他 Provider、Remote Host、记忆或个性化设置。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: () =>
+              void finishProviderRemoval(config.id, impact.sessionCount),
+          },
+        ],
+      );
+    } catch (error) {
+      Alert.alert(
+        '无法检查删除范围',
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取当前 Provider 的本地对话，请稍后重试。',
+      );
+    }
+  }, [config.id, config.name, finishProviderRemoval]);
 
   const clearApiKey = useCallback(() => {
-    if (!hasStoredKey || saving || clearingKey) return;
+    if (!hasStoredKey || saving || clearingKey || deletingProvider) return;
     const providerId = config.id;
     Alert.alert(
       '清除 API Key？',
@@ -194,7 +301,7 @@ export function LocalProviderConfigScreen() {
         },
       ],
     );
-  }, [clearingKey, config.id, hasStoredKey, saving]);
+  }, [clearingKey, config.id, deletingProvider, hasStoredKey, saving]);
 
   const createSession = useCallback(async () => {
     try {
@@ -223,21 +330,85 @@ export function LocalProviderConfigScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.providerHeader}>
           <Text style={[styles.sectionTitle, { color: colors.text.ink }]}>Provider 配置</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="新增 Provider" disabled={saving || clearingKey} onPress={addProvider} style={[styles.iconAction, (saving || clearingKey) && styles.disabledButton]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="新增 Provider" disabled={saving || clearingKey || deletingProvider} onPress={addProvider} style={[styles.iconAction, (saving || clearingKey || deletingProvider) && styles.disabledButton]}>
             <Plus size={18} color={colors.primary} />
           </Pressable>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.providerTabs}>
           {configs.map((item) => (
-            <Pressable key={item.id} accessibilityRole="button" disabled={saving || clearingKey} onPress={() => void selectProvider(item)} style={[styles.providerTab, { borderColor: item.id === config.id ? colors.primary : colors.border.default, backgroundColor: item.id === config.id ? colors.bg.soft : colors.bg.card }, (saving || clearingKey) && styles.disabledButton]}>
+            <Pressable key={item.id} accessibilityRole="button" disabled={saving || clearingKey || deletingProvider} onPress={() => void selectProvider(item)} style={[styles.providerTab, { borderColor: item.id === config.id ? colors.primary : colors.border.default, backgroundColor: item.id === config.id ? colors.bg.soft : colors.bg.card }, (saving || clearingKey || deletingProvider) && styles.disabledButton]}>
               <Text numberOfLines={1} style={[styles.providerTabText, { color: item.id === config.id ? colors.primary : colors.text.base }]}>{item.name || item.id}</Text>
             </Pressable>
           ))}
         </ScrollView>
-        <Text style={[styles.help, { color: colors.text.soft }]}>手机直连 OpenAI-compatible Provider。API Key 只保存在设备安全存储中。</Text>
-        <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey} />
-        <Field label="Provider 地址" value={config.baseUrl} onChangeText={(baseUrl) => setConfig((current) => ({ ...current, baseUrl }))} placeholder="https://example.com" colors={colors} autoCapitalize="none" editable={!saving && !clearingKey} />
-        <Field label="模型" value={config.model} onChangeText={(model) => setConfig((current) => ({ ...current, model }))} colors={colors} autoCapitalize="none" editable={!saving && !clearingKey} />
+        <Text style={[styles.help, { color: colors.text.soft }]}>
+          手机直连标准 OpenAI 协议。API Key 只保存在设备安全存储中。
+        </Text>
+        {config.requiresStandardProtocolReview ? (
+          <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
+            此配置由旧版本迁移而来，Base URL 不是可确认的标准 OpenAI 根地址。请检查 Base URL、协议和模型后重新保存。
+          </Text>
+        ) : null}
+        {config.legacyReasoningBehaviorChanged ? (
+          <Text style={[styles.reviewWarning, { color: colors.text.soft }]}>
+            旧版 reasoning-tag 过滤兼容已移除；此标准协议配置仍可继续使用。请确认模型输出符合标准协议，重新保存后不再提示。
+          </Text>
+        ) : null}
+        {__DEV__ && /^http:\/\//iu.test(config.baseUrl.trim()) ? (
+          <Text style={[styles.reviewWarning, { color: colors.status.warning }]}>
+            开发模式 · HTTP 明文连接，仅用于受信任的局域网调试。
+          </Text>
+        ) : null}
+        <Field label="名称" value={config.name} onChangeText={(name) => setConfig((current) => ({ ...current, name }))} colors={colors} editable={!saving && !clearingKey && !deletingProvider} />
+        <Field label="Provider 地址" value={config.baseUrl} onChangeText={(baseUrl) => setConfig((current) => ({ ...current, baseUrl }))} placeholder="https://example.com" colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
+        <Field label="模型" value={config.model} onChangeText={(model) => setConfig((current) => ({ ...current, model }))} colors={colors} autoCapitalize="none" editable={!saving && !clearingKey && !deletingProvider} />
+        <View style={styles.field}>
+          <Text style={[styles.label, { color: colors.text.ink }]}>协议</Text>
+          <View style={styles.protocolOptions}>
+            {OPENAI_STANDARD_PROTOCOL_OPTIONS.map((option) => {
+              const selected = config.protocol === option.value;
+              return (
+                <Pressable
+                  key={option.value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  disabled={saving || clearingKey || deletingProvider}
+                  onPress={() =>
+                    setConfig((current) => ({
+                      ...current,
+                      protocol: option.value,
+                    }))
+                  }
+                  style={[
+                    styles.protocolOption,
+                    {
+                      borderColor: selected
+                        ? colors.primary
+                        : colors.border.default,
+                      backgroundColor: selected
+                        ? colors.bg.soft
+                        : colors.bg.card,
+                    },
+                    (saving || clearingKey || deletingProvider) &&
+                      styles.disabledButton,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.protocolLabel,
+                      { color: selected ? colors.primary : colors.text.base },
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                  <Text style={[styles.protocolEndpoint, { color: colors.text.soft }]}>
+                    {option.endpoint}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
         <Field
           label="API Key"
           value={apiKeyDraft}
@@ -246,27 +417,27 @@ export function LocalProviderConfigScreen() {
           colors={colors}
           secureTextEntry
           autoCapitalize="none"
-          editable={!saving && !clearingKey}
+          editable={!saving && !clearingKey && !deletingProvider}
         />
         <Text style={[styles.credentialHelp, { color: colors.text.soft }]}>
           {hasStoredKey ? '已在设备安全存储中保存。留空并保存配置会继续使用原 Key。' : '尚未保存 API Key。'}
         </Text>
         {hasStoredKey ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="清除 API Key" disabled={saving || clearingKey} onPress={clearApiKey} style={[styles.credentialClearButton, (saving || clearingKey) && styles.disabledButton]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="清除 API Key" disabled={saving || clearingKey || deletingProvider} onPress={clearApiKey} style={[styles.credentialClearButton, (saving || clearingKey || deletingProvider) && styles.disabledButton]}>
             <Text style={[styles.buttonText, { color: colors.status.error }]}>清除 API Key</Text>
           </Pressable>
         ) : null}
-        <Pressable accessibilityRole="button" disabled={saving || loading || clearingKey} onPress={() => void save()} style={[styles.primaryButton, { backgroundColor: colors.primary }, (saving || loading || clearingKey) && styles.disabledButton]}>
+        <Pressable accessibilityRole="button" disabled={saving || loading || clearingKey || deletingProvider} onPress={() => void save()} style={[styles.primaryButton, { backgroundColor: colors.primary }, (saving || loading || clearingKey || deletingProvider) && styles.disabledButton]}>
           <Save size={18} color={colors.onPrimary} />
           <Text style={[styles.buttonText, { color: colors.onPrimary }]}>{saving ? '保存中' : '保存配置'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => void createSession()} style={[styles.secondaryButton, { borderColor: colors.border.default }]}>
+        <Pressable accessibilityRole="button" disabled={saving || clearingKey || deletingProvider || config.requiresStandardProtocolReview === true} onPress={() => void createSession()} style={[styles.secondaryButton, { borderColor: colors.border.default }, (saving || clearingKey || deletingProvider || config.requiresStandardProtocolReview === true) && styles.disabledButton]}>
           <Plus size={18} color={colors.primary} />
           <Text style={[styles.buttonText, { color: colors.primary }]}>新建本地对话</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={saving || clearingKey} onPress={() => void removeProvider()} style={[styles.removeButton, (saving || clearingKey) && styles.disabledButton]}>
+        <Pressable accessibilityRole="button" disabled={saving || clearingKey || deletingProvider} onPress={() => void removeProvider()} style={[styles.removeButton, (saving || clearingKey || deletingProvider) && styles.disabledButton]}>
           <Trash2 size={17} color={colors.status.error} />
-          <Text style={[styles.buttonText, { color: colors.status.error }]}>删除当前配置</Text>
+          <Text style={[styles.buttonText, { color: colors.status.error }]}>{deletingProvider ? '删除中…' : '删除当前配置'}</Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -296,7 +467,20 @@ const styles = StyleSheet.create({
   providerTab: { maxWidth: 180, minHeight: 38, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.full, paddingHorizontal: spacing.md, justifyContent: 'center' },
   providerTabText: { fontSize: fontSize.button, fontWeight: '600' },
   help: { fontSize: fontSize.button, lineHeight: 21, marginBottom: spacing.sm },
+  reviewWarning: { fontSize: fontSize.button, lineHeight: 21 },
   field: { gap: spacing.xs },
+  protocolOptions: { gap: spacing.sm },
+  protocolOption: {
+    minHeight: sizing.touchTarget,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  protocolLabel: { fontSize: fontSize.button, fontWeight: '600' },
+  protocolEndpoint: { fontSize: fontSize.button },
   label: { fontSize: fontSize.button, fontWeight: '600' },
   input: { minHeight: sizing.touchTarget, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: spacing.md, fontSize: fontSize.button },
   credentialHelp: { marginTop: -spacing.xs, fontSize: fontSize.button, lineHeight: 20 },
