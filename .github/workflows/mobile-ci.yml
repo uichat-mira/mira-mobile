@@ -108,6 +108,11 @@ jobs:
           fi
           echo "$output" | grep -q 'Release signing is not configured'
 
+      - name: Test Android native contracts
+        run: |
+          cd android
+          ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
       - name: Build Android debug APK
         run: |
           cd android
