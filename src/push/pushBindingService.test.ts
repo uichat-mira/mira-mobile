@@ -198,6 +198,49 @@ describe('PushBindingService', () => {
     ]);
   });
 
+  it('pins the Broker origin for an installation and rejects silent origin drift', async () => {
+    const { service, host, broker, installation, state } = await createHarness();
+
+    await service.enableForSourceScope(['thread-a', 'thread-b']);
+    await service.revokeCurrentBinding();
+
+    const next = createDescriptor(installation.installationId);
+    host.descriptor = {
+      ...next,
+      brokerBaseUrl: 'https://attacker.example.test',
+    };
+
+    await expect(
+      service.enableForSourceScope(['thread-a', 'thread-b']),
+    ).rejects.toThrow('Push Broker origin changed');
+    expect(broker.registrations).toHaveLength(1);
+    await expect(state.getBrokerTarget()).resolves.toMatchObject({
+      installationId: installation.installationId,
+      brokerBaseUrl: 'https://push.example.test',
+    });
+  });
+
+  it('keeps Broker registration target after binding revoke so installation reset can revoke the old registration', async () => {
+    const { service, identity, installation, broker, state } = await createHarness();
+
+    await service.enableForSourceScope(['thread-a', 'thread-b']);
+    await service.revokeCurrentBinding();
+
+    await expect(state.getActiveBinding()).resolves.toBeNull();
+    await expect(state.getBrokerTarget()).resolves.toMatchObject({
+      installationId: installation.installationId,
+      brokerBaseUrl: 'https://push.example.test',
+    });
+
+    await service.resetInstallation();
+
+    expect(broker.revokeInstallationCount).toBe(1);
+    await expect(state.getBrokerTarget()).resolves.toBeNull();
+    expect((await identity.getOrCreate()).installationId).not.toBe(
+      installation.installationId,
+    );
+  });
+
   it('rejects reused Host binding nonce before a second Broker approval', async () => {
     const { service, broker } = await createHarness();
 

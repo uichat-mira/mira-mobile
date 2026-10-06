@@ -26,6 +26,7 @@ import {
   pushBindingStateStore,
   type PushBindingStateStore,
   type StoredPushBinding,
+  type StoredPushBrokerTarget,
 } from './pushBindingState';
 
 interface HostPushClient {
@@ -113,6 +114,11 @@ export class PushBindingService {
       requestedSourceScope: requestedScope,
       now: this.now().getTime(),
     });
+    await this.state.pinBrokerTarget({
+      installationId: installation.installationId,
+      brokerBaseUrl: validated.brokerBaseUrl,
+      pinnedAt: this.now().toISOString(),
+    });
     await this.state.claimBindingNonce(validated.descriptor.bindingNonce);
 
     const provider = await this.readProviderRegistration();
@@ -177,15 +183,15 @@ export class PushBindingService {
     providerRegistration?: PushProviderRegistration,
   ): Promise<'unbound' | 'refreshed' | 'failed'> {
     try {
-      const binding = await this.state.getActiveBinding();
-      if (!binding) {
+      const target = await this.resolveBrokerTarget();
+      if (!target) {
         this.lastRefreshError = null;
         return 'unbound';
       }
 
       const provider =
         providerRegistration ?? (await this.readProviderRegistration());
-      const broker = this.createBroker(binding.brokerBaseUrl);
+      const broker = this.createBroker(target.brokerBaseUrl);
       await broker.refreshProviderToken(provider.platform, provider.token);
       this.lastRefreshError = null;
       return 'refreshed';
@@ -241,15 +247,43 @@ export class PushBindingService {
   }
 
   async resetInstallation(): Promise<void> {
-    const binding = await this.state.getActiveBinding();
-    if (binding) {
-      const broker = this.createBroker(binding.brokerBaseUrl);
-      await broker.revokeInstallation();
-    } else {
-      await this.identity.reset();
+    const target = await this.resolveBrokerTarget();
+    if (target) {
+      const broker = this.createBroker(target.brokerBaseUrl);
+      try {
+        await broker.revokeInstallation();
+      } catch (error) {
+        if (
+          !(
+            error instanceof PushBrokerError &&
+            ['not_registered', 'installation_revoked'].includes(error.code)
+          )
+        ) {
+          throw error;
+        }
+      }
     }
+
+    // Commit local reset only after Broker authority is known revoked (or absent).
+    // Keep the old key and target intact on network failure so reset is retryable.
     await this.state.clearAll();
+    await this.identity.reset();
     this.lastRefreshError = null;
+  }
+
+  private async resolveBrokerTarget(): Promise<StoredPushBrokerTarget | null> {
+    const target = await this.state.getBrokerTarget();
+    if (target) return target;
+
+    // Backward-compatible migration for an older local registry that had an
+    // active binding before Broker target pinning was introduced.
+    const binding = await this.state.getActiveBinding();
+    if (!binding) return null;
+    return this.state.pinBrokerTarget({
+      installationId: binding.installationId,
+      brokerBaseUrl: binding.brokerBaseUrl,
+      pinnedAt: binding.updatedAt,
+    });
   }
 
   private async registerOrRefresh(

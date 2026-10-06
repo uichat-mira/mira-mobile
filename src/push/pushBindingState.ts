@@ -7,6 +7,12 @@ const MAX_CONSUMED_BINDING_NONCES = 64;
 
 export type PushBindingStatus = 'pending-handoff' | 'active';
 
+export interface StoredPushBrokerTarget {
+  installationId: string;
+  brokerBaseUrl: string;
+  pinnedAt: string;
+}
+
 export interface StoredPushBinding {
   installationId: string;
   hostId: string;
@@ -19,6 +25,7 @@ export interface StoredPushBinding {
 
 interface PushBindingRegistry {
   schemaVersion: 1;
+  brokerTarget: StoredPushBrokerTarget | null;
   activeBinding: StoredPushBinding | null;
   consumedBindingNonces: string[];
 }
@@ -30,6 +37,8 @@ interface NativeSecureCredentialModule {
 }
 
 export interface PushBindingStateStore {
+  getBrokerTarget(): Promise<StoredPushBrokerTarget | null>;
+  pinBrokerTarget(target: StoredPushBrokerTarget): Promise<StoredPushBrokerTarget>;
   getActiveBinding(): Promise<StoredPushBinding | null>;
   claimBindingNonce(nonce: string): Promise<void>;
   saveBinding(binding: StoredPushBinding): Promise<void>;
@@ -39,6 +48,7 @@ export interface PushBindingStateStore {
 
 const emptyRegistry = (): PushBindingRegistry => ({
   schemaVersion: 1,
+  brokerTarget: null,
   activeBinding: null,
   consumedBindingNonces: [],
 });
@@ -56,6 +66,31 @@ const requireNativeModule = (): NativeSecureCredentialModule => {
     throw new Error('Secure Push binding storage is unavailable');
   }
   return module;
+};
+
+const normalizeBrokerBaseUrl = (value: string) =>
+  value.trim().replace(/\/+$/u, '');
+
+const parseBrokerTarget = (value: unknown): StoredPushBrokerTarget => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Stored Push Broker target is invalid');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.installationId !== 'string' ||
+    !record.installationId.trim() ||
+    typeof record.brokerBaseUrl !== 'string' ||
+    !record.brokerBaseUrl.trim() ||
+    typeof record.pinnedAt !== 'string' ||
+    !Number.isFinite(Date.parse(record.pinnedAt))
+  ) {
+    throw new Error('Stored Push Broker target is incomplete');
+  }
+  return {
+    installationId: record.installationId,
+    brokerBaseUrl: normalizeBrokerBaseUrl(record.brokerBaseUrl),
+    pinnedAt: new Date(record.pinnedAt).toISOString(),
+  };
 };
 
 const parseBinding = (value: unknown): StoredPushBinding => {
@@ -112,6 +147,10 @@ const parseRegistry = (raw: string): PushBindingRegistry => {
   }
   return {
     schemaVersion: 1,
+    brokerTarget:
+      record.brokerTarget === undefined || record.brokerTarget === null
+        ? null
+        : parseBrokerTarget(record.brokerTarget),
     activeBinding:
       record.activeBinding === null ? null : parseBinding(record.activeBinding),
     consumedBindingNonces: Array.from(
@@ -132,6 +171,39 @@ abstract class BasePushBindingStateStore implements PushBindingStateStore {
 
   private async saveRegistry(registry: PushBindingRegistry) {
     await this.writeRaw(JSON.stringify(registry));
+  }
+
+  async getBrokerTarget() {
+    const registry = await this.loadRegistry();
+    return registry.brokerTarget ? { ...registry.brokerTarget } : null;
+  }
+
+  async pinBrokerTarget(target: StoredPushBrokerTarget) {
+    const normalized: StoredPushBrokerTarget = {
+      installationId: target.installationId.trim(),
+      brokerBaseUrl: normalizeBrokerBaseUrl(target.brokerBaseUrl),
+      pinnedAt: new Date(target.pinnedAt).toISOString(),
+    };
+    if (!normalized.installationId || !normalized.brokerBaseUrl) {
+      throw new Error('Push Broker target is incomplete');
+    }
+
+    const registry = await this.loadRegistry();
+    if (registry.brokerTarget) {
+      if (
+        registry.brokerTarget.installationId !== normalized.installationId ||
+        registry.brokerTarget.brokerBaseUrl !== normalized.brokerBaseUrl
+      ) {
+        throw new Error(
+          'Push Broker origin changed for this installation; reset Push installation before changing Broker',
+        );
+      }
+      return { ...registry.brokerTarget };
+    }
+
+    registry.brokerTarget = normalized;
+    await this.saveRegistry(registry);
+    return { ...normalized };
   }
 
   async getActiveBinding() {
@@ -157,8 +229,17 @@ abstract class BasePushBindingStateStore implements PushBindingStateStore {
 
   async saveBinding(binding: StoredPushBinding) {
     const registry = await this.loadRegistry();
+    const brokerBaseUrl = normalizeBrokerBaseUrl(binding.brokerBaseUrl);
+    if (
+      registry.brokerTarget &&
+      (registry.brokerTarget.installationId !== binding.installationId ||
+        registry.brokerTarget.brokerBaseUrl !== brokerBaseUrl)
+    ) {
+      throw new Error('Push binding does not match the pinned Broker target');
+    }
     registry.activeBinding = {
       ...binding,
+      brokerBaseUrl,
       sourceScope: normalizePushSourceScope(binding.sourceScope),
     };
     await this.saveRegistry(registry);

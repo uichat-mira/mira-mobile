@@ -230,7 +230,6 @@ export class PushBrokerClient {
         }
       },
     );
-    await this.identity.reset();
   }
 
   private async writeRegistration(
