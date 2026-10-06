@@ -1,3 +1,5 @@
+import { NativeModules } from 'react-native';
+
 import {
   PUSH_BROKER_SCHEMA_VERSION,
   bindingApprovalSigningValue,
@@ -40,6 +42,45 @@ export interface PushBindingReceipt {
 
 type FetchLike = typeof fetch;
 
+interface NativePushBrokerResponse {
+  status: number;
+  body: string;
+}
+
+interface NativeNotificationsModule {
+  postPushBrokerJson(
+    url: string,
+    body: string,
+  ): Promise<NativePushBrokerResponse>;
+}
+
+const nativePushBrokerPost = async (
+  url: string,
+  body: string,
+): Promise<NativePushBrokerResponse> => {
+  const module = NativeModules.MiraNotifications as
+    | NativeNotificationsModule
+    | undefined;
+  if (!module || typeof module.postPushBrokerJson !== 'function') {
+    throw new PushBrokerError(
+      'BROKER_TRANSPORT_UNAVAILABLE',
+      'Secure Push Broker transport is unavailable',
+    );
+  }
+  const response = await module.postPushBrokerJson(url, body);
+  if (
+    !response ||
+    !Number.isInteger(response.status) ||
+    typeof response.body !== 'string'
+  ) {
+    throw new PushBrokerError(
+      'INVALID_RESPONSE',
+      'Push Broker transport returned an invalid response',
+    );
+  }
+  return response;
+};
+
 export const normalizePushBrokerBaseUrl = (
   value: string,
   allowInsecureDevelopment: boolean,
@@ -65,8 +106,7 @@ const parseObject = (value: unknown) => {
   return value as Record<string, unknown>;
 };
 
-const readJson = async (response: Response) => {
-  const text = await response.text();
+const readJson = (text: string, status: number) => {
   if (!text.trim()) return null;
   try {
     return JSON.parse(text) as unknown;
@@ -74,7 +114,7 @@ const readJson = async (response: Response) => {
     throw new PushBrokerError(
       'INVALID_JSON',
       'Push Broker returned invalid JSON',
-      response.status,
+      status,
     );
   }
 };
@@ -121,7 +161,7 @@ export class PushBrokerClient {
     baseUrl: string,
     private readonly identity: PushInstallationIdentityService =
       pushInstallationIdentity,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl?: FetchLike,
     allowInsecureDevelopment = false,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -269,27 +309,37 @@ export class PushBrokerClient {
     body: unknown,
     parse: (value: unknown) => T,
   ): Promise<T> {
-    let response: Response;
+    const requestBody = JSON.stringify(body);
+    let response: NativePushBrokerResponse;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        redirect: 'manual',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+      if (this.fetchImpl) {
+        const fetched = await this.fetchImpl(`${this.baseUrl}${path}`, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: requestBody,
+        });
+        response = {
+          status: fetched.status,
+          body: await fetched.text(),
+        };
+      } else {
+        response = await nativePushBrokerPost(
+          `${this.baseUrl}${path}`,
+          requestBody,
+        );
+      }
     } catch (error) {
+      if (error instanceof PushBrokerError) throw error;
       throw new PushBrokerError(
         'NETWORK_ERROR',
         error instanceof Error ? error.message : 'Unable to reach Push Broker',
       );
     }
-    if (
-      (response.status >= 300 && response.status < 400) ||
-      response.type === 'opaqueredirect'
-    ) {
+
+    if (response.status >= 300 && response.status < 400) {
       throw new PushBrokerError(
         'REDIRECT_REJECTED',
         'Push Broker redirects are not allowed',
@@ -297,8 +347,9 @@ export class PushBrokerClient {
       );
     }
 
-    const payload = await readJson(response);
-    if (!response.ok) {
+    const payload = readJson(response.body, response.status);
+    const ok = response.status >= 200 && response.status < 300;
+    if (!ok) {
       const record =
         payload && typeof payload === 'object' && !Array.isArray(payload)
           ? (payload as Record<string, unknown>)
