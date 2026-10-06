@@ -198,6 +198,21 @@ describe('PushBindingService', () => {
     ]);
   });
 
+  it('validates Broker origin before pinning or exposing the provider identifier', async () => {
+    const { service, host, broker, state } = await createHarness();
+    host.descriptor = {
+      ...host.descriptor,
+      brokerBaseUrl: 'http://attacker.example.test',
+    };
+
+    await expect(
+      service.enableForSourceScope(['thread-a', 'thread-b']),
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(broker.registrations).toEqual([]);
+    await expect(state.getBrokerTarget()).resolves.toBeNull();
+  });
+
   it('pins the Broker origin for an installation and rejects silent origin drift', async () => {
     const { service, host, broker, installation, state } = await createHarness();
 

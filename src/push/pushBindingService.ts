@@ -19,6 +19,7 @@ import {
 import {
   PushBrokerClient,
   PushBrokerError,
+  normalizePushBrokerBaseUrl,
   type PushBindingReceipt,
   type PushRegistrationReceipt,
 } from './pushBrokerClient';
@@ -114,15 +115,19 @@ export class PushBindingService {
       requestedSourceScope: requestedScope,
       now: this.now().getTime(),
     });
+    const brokerBaseUrl = normalizePushBrokerBaseUrl(
+      validated.brokerBaseUrl,
+      __DEV__,
+    );
     await this.state.pinBrokerTarget({
       installationId: installation.installationId,
-      brokerBaseUrl: validated.brokerBaseUrl,
+      brokerBaseUrl,
       pinnedAt: this.now().toISOString(),
     });
     await this.state.claimBindingNonce(validated.descriptor.bindingNonce);
 
     const provider = await this.readProviderRegistration();
-    const broker = this.createBroker(validated.brokerBaseUrl);
+    const broker = this.createBroker(brokerBaseUrl);
     await this.registerOrRefresh(broker, provider);
 
     const authorization = await broker.approveBinding(validated.descriptor);
@@ -136,7 +141,7 @@ export class PushBindingService {
     const pendingBinding: StoredPushBinding = {
       installationId: installation.installationId,
       hostId: validated.descriptor.hostId,
-      brokerBaseUrl: validated.brokerBaseUrl,
+      brokerBaseUrl,
       sourceScope: validated.descriptor.sourceScope,
       bindingNonce: validated.descriptor.bindingNonce,
       status: 'pending-handoff',

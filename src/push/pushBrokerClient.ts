@@ -40,7 +40,7 @@ export interface PushBindingReceipt {
 
 type FetchLike = typeof fetch;
 
-const normalizeBaseUrl = (
+export const normalizePushBrokerBaseUrl = (
   value: string,
   allowInsecureDevelopment: boolean,
 ) => {
@@ -125,7 +125,10 @@ export class PushBrokerClient {
     allowInsecureDevelopment = false,
     private readonly now: () => Date = () => new Date(),
   ) {
-    this.baseUrl = normalizeBaseUrl(baseUrl, allowInsecureDevelopment);
+    this.baseUrl = normalizePushBrokerBaseUrl(
+      baseUrl,
+      allowInsecureDevelopment,
+    );
   }
 
   registerProviderToken(
