@@ -22,6 +22,7 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
 import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
@@ -306,8 +307,79 @@ class MiraNotificationsModule(
   }
 }
 
+private data class MiraRemotePushEnvelope(
+  val eventId: String,
+  val sourceId: String,
+  val canonicalMessageId: String,
+)
+
+private object MiraRemotePushContract {
+  private const val SCHEMA_VERSION = "1"
+  private const val EVENT_TYPE = "assistant-message"
+  private const val ELIGIBILITY_EVENT = "final_transition_first_seen"
+  private const val MAX_ID_LENGTH = 512
+
+  private fun validIdentity(value: String?): String? {
+    val normalized = value?.trim() ?: return null
+    if (normalized.isEmpty() || normalized.length > MAX_ID_LENGTH) return null
+    if (normalized.any { it == '\n' || it == '\r' || it == '\u0000' }) return null
+    return normalized
+  }
+
+  fun parse(data: Map<String, String>): MiraRemotePushEnvelope? {
+    if (data["schemaVersion"] != SCHEMA_VERSION) return null
+    if (data["eventType"] != EVENT_TYPE) return null
+    if (data["eligibilityEvent"] != ELIGIBILITY_EVENT) return null
+
+    val installationId = validIdentity(data["installationId"]) ?: return null
+    val eventId = validIdentity(data["eventId"]) ?: return null
+    val sourceId = validIdentity(data["sourceId"]) ?: return null
+    val canonicalMessageId = validIdentity(data["canonicalMessageId"]) ?: return null
+
+    // installationId is validated even though presentation dedupe is keyed only
+    // by the canonical Mira message identity.
+    if (installationId.isEmpty()) return null
+    return MiraRemotePushEnvelope(eventId, sourceId, canonicalMessageId)
+  }
+}
+
+private object MiraRemotePushPresentationDedupe {
+  private const val PREFS_NAME = "mira.remote.push.presentation.v1"
+  private const val KEY_CANONICAL_IDS = "canonical_message_ids"
+  private const val MAX_CANONICAL_IDS = 128
+
+  @Synchronized
+  fun recordIfNew(context: Context, canonicalMessageId: String): Boolean {
+    val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val ids = preferences
+      .getString(KEY_CANONICAL_IDS, "")
+      .orEmpty()
+      .lineSequence()
+      .filter { it.isNotBlank() }
+      .toMutableList()
+
+    if (canonicalMessageId in ids) return false
+
+    ids += canonicalMessageId
+    val bounded = ids.takeLast(MAX_CANONICAL_IDS)
+    preferences.edit().putString(KEY_CANONICAL_IDS, bounded.joinToString("\n")).apply()
+    return true
+  }
+}
+
 class MiraFirebaseMessagingService : FirebaseMessagingService() {
   override fun onRegistered(installationId: String) {
     MiraNotificationsModule.publishAndroidProviderIdentifier(installationId)
+  }
+
+  override fun onMessageReceived(message: RemoteMessage) {
+    super.onMessageReceived(message)
+    val envelope = MiraRemotePushContract.parse(message.data) ?: return
+    MiraRemotePushPresentationDedupe.recordIfNew(this, envelope.canonicalMessageId)
+
+    // Broker v1 sends a normal FCM notification + data envelope. Android shows
+    // that notification itself in background/killed states. Foreground messages
+    // arrive here instead, and deliberately produce no system notification:
+    // MOB-056B owns the foreground reminder.
   }
 }
