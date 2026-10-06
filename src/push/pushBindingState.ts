@@ -152,7 +152,9 @@ const parseRegistry = (raw: string): PushBindingRegistry => {
         ? null
         : parseBrokerTarget(record.brokerTarget),
     activeBinding:
-      record.activeBinding === null ? null : parseBinding(record.activeBinding),
+      record.activeBinding === undefined || record.activeBinding === null
+        ? null
+        : parseBinding(record.activeBinding),
     consumedBindingNonces: Array.from(
       new Set(record.consumedBindingNonces as string[]),
     ).slice(-MAX_CONSUMED_BINDING_NONCES),
