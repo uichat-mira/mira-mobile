@@ -71,6 +71,16 @@ if (!(packageMetadata.version instanceof String) || packageMetadata.version.trim
 }
 def packageVersion = packageMetadata.version
 
+def firebaseConfigValues = [
+    MIRA_FIREBASE_APP_ID: project.findProperty('MIRA_FIREBASE_APP_ID') ?: System.getenv('MIRA_FIREBASE_APP_ID') ?: '',
+    MIRA_FIREBASE_API_KEY: project.findProperty('MIRA_FIREBASE_API_KEY') ?: System.getenv('MIRA_FIREBASE_API_KEY') ?: '',
+    MIRA_FIREBASE_PROJECT_ID: project.findProperty('MIRA_FIREBASE_PROJECT_ID') ?: System.getenv('MIRA_FIREBASE_PROJECT_ID') ?: '',
+    MIRA_FIREBASE_SENDER_ID: project.findProperty('MIRA_FIREBASE_SENDER_ID') ?: System.getenv('MIRA_FIREBASE_SENDER_ID') ?: '',
+]
+def buildConfigString = { value ->
+    '"' + value.toString().replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+
 def releaseSigningValues = [
     MIRA_RELEASE_STORE_FILE: project.findProperty('MIRA_RELEASE_STORE_FILE') ?: System.getenv('MIRA_RELEASE_STORE_FILE'),
     MIRA_RELEASE_STORE_PASSWORD: project.findProperty('MIRA_RELEASE_STORE_PASSWORD') ?: System.getenv('MIRA_RELEASE_STORE_PASSWORD'),
@@ -102,8 +112,12 @@ android {
         applicationId "io.tomz.mira.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 15
+        versionCode 16
         versionName packageVersion
+        buildConfigField "String", "MIRA_FIREBASE_APP_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_APP_ID)
+        buildConfigField "String", "MIRA_FIREBASE_API_KEY", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_API_KEY)
+        buildConfigField "String", "MIRA_FIREBASE_PROJECT_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_PROJECT_ID)
+        buildConfigField "String", "MIRA_FIREBASE_SENDER_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_SENDER_ID)
     }
 
     signingConfigs {
@@ -135,6 +149,10 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    implementation platform("com.google.firebase:firebase-bom:34.19.0")
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("com.google.firebase:firebase-installations")
+    testImplementation("junit:junit:4.13.2")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

@@ -91,6 +91,9 @@ export interface RemoteManifest {
     // the mobile adapter treats the absent key as "not advertised" rather
     // than failing the whole manifest parse.
     memory?: string[];
+    // Desktop #268 publishes this group when Host Push binding is available.
+    // Older Hosts omit it and remain compatible.
+    push?: string[];
   };
   reconnect: {
     mode: 'canonical-state-replay';
@@ -536,6 +539,10 @@ export const parseRemoteManifest = (value: unknown): RemoteManifest => {
         typeof value.routes.memory === 'undefined'
           ? []
           : stringArray(value.routes.memory, 'manifest.routes.memory'),
+      push:
+        typeof value.routes.push === 'undefined'
+          ? []
+          : stringArray(value.routes.push, 'manifest.routes.push'),
     },
     reconnect: {
       mode: 'canonical-state-replay',

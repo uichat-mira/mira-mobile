@@ -121,6 +121,21 @@ jest.mock('../src/api/remoteMiraHost', () => ({
   },
 }));
 
+// Push registration lifecycle is orthogonal to startup route restoration.
+// Keep this regression focused on bootstrap + navigator semantics.
+jest.mock('../src/push/pushBindingService', () => ({
+  pushBindingService: {
+    refreshProviderRegistrationIfBound: jest.fn(async () => 'unbound'),
+    reconcileWithPairedDevice: jest.fn(async () => 'unchanged'),
+  },
+}));
+
+jest.mock('../src/push/providerToken', () => ({
+  subscribePushProviderRegistration: jest.fn(() => ({
+    remove: jest.fn(),
+  })),
+}));
+
 const mockListedSessions = [
   {
     id: 'thread-42',
