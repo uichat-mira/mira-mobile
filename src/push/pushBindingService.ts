@@ -86,7 +86,7 @@ export class PushBindingService {
       new PushBrokerClient(
         baseUrl,
         pushInstallationIdentity,
-        fetch,
+        undefined,
         __DEV__,
       ),
     private readonly now: () => Date = () => new Date(),
