@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -43,6 +43,7 @@ export function NotificationSettingsScreen() {
   const { colors } = useTheme();
   const [status, setStatus] = useState<NotificationPermissionStatus | 'loading'>('loading');
   const [busy, setBusy] = useState(false);
+  const approvalOperationRef = useRef(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [pushRuntime, setPushRuntime] = useState<PushBindingRuntimeStatus>({
     binding: null,
@@ -145,6 +146,8 @@ export function NotificationSettingsScreen() {
 
   const approveRemoteReplies = useCallback(
     async (sourceScope: string[]) => {
+      if (approvalOperationRef.current) return;
+      approvalOperationRef.current = true;
       setBusy(true);
       setTestResult(null);
       try {
@@ -176,6 +179,7 @@ export function NotificationSettingsScreen() {
         );
         await refreshPushRuntime();
       } finally {
+        approvalOperationRef.current = false;
         setBusy(false);
       }
     },
@@ -221,6 +225,7 @@ export function NotificationSettingsScreen() {
     }
 
     setBusy(true);
+    let approvalPromptOpen = false;
     try {
       const threads = await remoteMiraHostClient.listThreads();
       const sourceScope = threads.map(thread => thread.id);
@@ -232,18 +237,28 @@ export function NotificationSettingsScreen() {
         return;
       }
 
+      approvalPromptOpen = true;
       Alert.alert(
         '允许后台回复完成提醒？',
         `Mira 将允许当前已配对 Host 为现在这 ${sourceScope.length} 个活动会话发送“回复完成”提醒。Push 不包含消息正文；新增会话不会自动加入，之后需要重新授权。`,
         [
-          { text: '取消', style: 'cancel' },
+          {
+            text: '取消',
+            style: 'cancel',
+            onPress: () => setBusy(false),
+          },
           {
             text: '允许',
             onPress: () => {
+              setBusy(false);
               void approveRemoteReplies(sourceScope);
             },
           },
         ],
+        {
+          cancelable: true,
+          onDismiss: () => setBusy(false),
+        },
       );
     } catch (error) {
       Alert.alert(
@@ -253,7 +268,9 @@ export function NotificationSettingsScreen() {
           : '请确认手机仍与 Mira Desktop 配对并可连接。',
       );
     } finally {
-      setBusy(false);
+      if (!approvalPromptOpen) {
+        setBusy(false);
+      }
     }
   }, [approveRemoteReplies, busy, pushRuntime.binding, refreshPushRuntime]);
 
