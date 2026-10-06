@@ -54,6 +54,12 @@ const createDescriptor = (
   };
 };
 
+class SeedablePushBindingStateStore extends MemoryPushBindingStateStore {
+  async seed(raw: string) {
+    await this.writeRaw(raw);
+  }
+}
+
 class HostFake {
   descriptor!: RemotePushBindingDescriptorResponse;
   accepted: Array<{
@@ -156,6 +162,21 @@ const createHarness = async () => {
   );
   return { service, identity, installation, host, broker, state };
 };
+
+describe('Push binding state', () => {
+  it('treats a missing active binding as empty state', async () => {
+    const state = new SeedablePushBindingStateStore();
+    await state.seed(
+      JSON.stringify({
+        schemaVersion: 1,
+        brokerTarget: null,
+        consumedBindingNonces: [],
+      }),
+    );
+
+    await expect(state.getActiveBinding()).resolves.toBeNull();
+  });
+});
 
 describe('PushBindingService', () => {
   it('registers with Broker, verifies Host descriptor, approves, and hands only delivery capability to Host', async () => {
