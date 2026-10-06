@@ -28,8 +28,13 @@ export const useAppLifecycle = (): void => {
           }
           return restored;
         } catch (error) {
-          const storedCredential = await deviceCredentialStore.load();
-          if (!storedCredential) {
+          let storedCredential;
+          try {
+            storedCredential = await deviceCredentialStore.load();
+          } catch {
+            storedCredential = undefined;
+          }
+          if (storedCredential === null) {
             await pushBindingService.reconcileWithPairedDevice(false);
           }
           throw error;
@@ -43,7 +48,8 @@ export const useAppLifecycle = (): void => {
         credential
           ? pushBindingService.refreshProviderRegistrationIfBound()
           : pushBindingService.reconcileWithPairedDevice(false),
-      );
+      )
+      .catch(() => undefined);
 
     const providerSubscription = subscribePushProviderRegistration(
       registration => {
