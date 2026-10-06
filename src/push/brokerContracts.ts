@@ -120,3 +120,24 @@ export const bindingRevokeSigningValue = (request: {
     requestNonce: request.requestNonce,
     issuedAt: request.issuedAt,
   });
+
+
+export const hostBindingDescriptorSigningValue = (request: {
+  schemaVersion: 1;
+  hostId: string;
+  hostPublicKey: string;
+  installationId: string;
+  sourceScope: string[];
+  bindingNonce: string;
+  bindingExpiresAt: string;
+}) =>
+  canonicalJson({
+    action: 'binding-descriptor',
+    schemaVersion: request.schemaVersion,
+    hostId: request.hostId,
+    hostPublicKey: request.hostPublicKey,
+    installationId: request.installationId,
+    sourceScope: [...request.sourceScope].sort(compareStrings),
+    bindingNonce: request.bindingNonce,
+    bindingExpiresAt: request.bindingExpiresAt,
+  });

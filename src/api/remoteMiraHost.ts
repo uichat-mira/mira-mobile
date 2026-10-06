@@ -125,6 +125,28 @@ type PairingClaimWithTransport = PairingClaimResponse & {
   transport: RemoteTransportKind;
 };
 
+export interface RemotePushBindingDescriptor {
+  schemaVersion: 1;
+  hostId: string;
+  hostPublicKey: string;
+  installationId: string;
+  sourceScope: string[];
+  bindingNonce: string;
+  bindingExpiresAt: string;
+  hostSignature: string;
+}
+
+export interface RemotePushBindingDescriptorResponse {
+  brokerBaseUrl: string;
+  descriptor: RemotePushBindingDescriptor;
+}
+
+export interface RemotePushBindingAcceptResponse {
+  installationId: string;
+  sourceScope: string[];
+  status: 'active';
+}
+
 const DIRECT_RETRY_COOLDOWN_MS = 30_000;
 
 const parseArray = <T>(
@@ -192,6 +214,11 @@ const REMOTE_TOOL_ROUTES = {
 // the Remote Gateway allowlist yet; every memory call below therefore also
 // requires the device scope plus the advertised manifest route before it is
 // dispatched, and unadvertised routes surface as a 403-style capability miss.
+const REMOTE_PUSH_ROUTES = {
+  descriptor: 'POST /remote/v1/push/binding-descriptor',
+  accept: 'POST /remote/v1/push/bindings/accept',
+} as const;
+
 const REMOTE_MEMORY_ROUTES = {
   overview: 'GET /memory',
   settings: 'PUT /memory/settings',
@@ -573,6 +600,119 @@ export class RemoteMiraHostClient {
     });
   }
 
+  async createPushBindingDescriptor(input: {
+    installationId: string;
+    sourceScope: string[];
+  }): Promise<RemotePushBindingDescriptorResponse> {
+    const installationId = input.installationId.trim();
+    const sourceScope = Array.from(
+      new Set(input.sourceScope.map(value => value.trim()).filter(Boolean)),
+    ).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    if (!installationId || sourceScope.length === 0) {
+      throw new RemoteHostError(
+        'PUSH_BINDING_INPUT_REQUIRED',
+        'Push binding requires an installation id and at least one source',
+      );
+    }
+
+    return this.withCredential(credential =>
+      this.dispatchCredentialJsonMutationOnce(
+        credential,
+        {
+          path: '/remote/v1/push/binding-descriptor',
+          method: 'POST',
+          credential: credential.credential,
+          body: { installationId, sourceScope },
+          parse: value => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              throw new Error('Push binding descriptor response must be an object');
+            }
+            const record = value as Record<string, unknown>;
+            if (
+              typeof record.brokerBaseUrl !== 'string' ||
+              !record.brokerBaseUrl.trim() ||
+              !record.descriptor ||
+              typeof record.descriptor !== 'object' ||
+              Array.isArray(record.descriptor)
+            ) {
+              throw new Error('Push binding descriptor response is incomplete');
+            }
+            const descriptor = record.descriptor as Record<string, unknown>;
+            if (
+              descriptor.schemaVersion !== 1 ||
+              typeof descriptor.hostId !== 'string' ||
+              typeof descriptor.hostPublicKey !== 'string' ||
+              typeof descriptor.installationId !== 'string' ||
+              !Array.isArray(descriptor.sourceScope) ||
+              descriptor.sourceScope.some(item => typeof item !== 'string') ||
+              typeof descriptor.bindingNonce !== 'string' ||
+              typeof descriptor.bindingExpiresAt !== 'string' ||
+              typeof descriptor.hostSignature !== 'string'
+            ) {
+              throw new Error('Push binding descriptor is incomplete');
+            }
+            return {
+              brokerBaseUrl: record.brokerBaseUrl.trim(),
+              descriptor: {
+                schemaVersion: 1,
+                hostId: descriptor.hostId,
+                hostPublicKey: descriptor.hostPublicKey,
+                installationId: descriptor.installationId,
+                sourceScope: descriptor.sourceScope as string[],
+                bindingNonce: descriptor.bindingNonce,
+                bindingExpiresAt: descriptor.bindingExpiresAt,
+                hostSignature: descriptor.hostSignature,
+              },
+            };
+          },
+        },
+        'PUSH_BINDING_DESCRIPTOR_UNCERTAIN',
+        manifest =>
+          this.assertPushRoute(manifest, REMOTE_PUSH_ROUTES.descriptor),
+      ),
+    );
+  }
+
+  async acceptPushBinding(input: {
+    bindingNonce: string;
+    installationId: string;
+    deliveryToken: string;
+    sourceScope: string[];
+  }): Promise<RemotePushBindingAcceptResponse> {
+    return this.withCredential(credential =>
+      this.dispatchCredentialJsonMutationOnce(
+        credential,
+        {
+          path: '/remote/v1/push/bindings/accept',
+          method: 'POST',
+          credential: credential.credential,
+          body: input,
+          parse: value => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              throw new Error('Push binding accept response must be an object');
+            }
+            const record = value as Record<string, unknown>;
+            if (
+              typeof record.installationId !== 'string' ||
+              !Array.isArray(record.sourceScope) ||
+              record.sourceScope.some(item => typeof item !== 'string') ||
+              record.status !== 'active'
+            ) {
+              throw new Error('Push binding accept response is incomplete');
+            }
+            return {
+              installationId: record.installationId,
+              sourceScope: record.sourceScope as string[],
+              status: 'active',
+            };
+          },
+        },
+        'PUSH_BINDING_ACCEPT_UNCERTAIN',
+        manifest => this.assertPushRoute(manifest, REMOTE_PUSH_ROUTES.accept),
+      ),
+    );
+  }
+
   async listRemoteTools(): Promise<RemoteToolManifest[]> {
     return this.withCredentialScope('tools:read', async credential => {
       const manifest = await this.getManifestWithCredential(credential);
@@ -924,6 +1064,21 @@ export class RemoteMiraHostClient {
         'REMOTE_TOOL_ROUTE_UNAVAILABLE',
         `Mira Host does not advertise required tool route: ${route}`,
         undefined,
+        { route },
+      );
+    }
+  }
+
+  private assertPushRoute(
+    manifest: RemoteManifest,
+    route: string,
+  ) {
+    const pushRoutes = manifest.routes.push ?? [];
+    if (!pushRoutes.includes(route)) {
+      throw new RemoteHostError(
+        'REMOTE_PUSH_ROUTE_UNAVAILABLE',
+        `Mira Host does not advertise required Push route: ${route}`,
+        403,
         { route },
       );
     }
