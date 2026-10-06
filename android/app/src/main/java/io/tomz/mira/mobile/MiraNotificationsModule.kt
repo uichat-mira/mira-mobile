@@ -320,13 +320,19 @@ private object MiraRemotePushPresentationDedupe {
       .orEmpty()
       .lineSequence()
       .filter { it.isNotBlank() }
-      .toMutableList()
+      .toList()
 
-    if (canonicalMessageId in ids) return false
+    val dedupe = appendCanonicalMessageId(
+      existing = ids,
+      canonicalMessageId = canonicalMessageId,
+      limit = MAX_CANONICAL_IDS,
+    )
+    if (!dedupe.isNew) return false
 
-    ids += canonicalMessageId
-    val bounded = ids.takeLast(MAX_CANONICAL_IDS)
-    preferences.edit().putString(KEY_CANONICAL_IDS, bounded.joinToString("\n")).apply()
+    preferences
+      .edit()
+      .putString(KEY_CANONICAL_IDS, dedupe.ids.joinToString("\n"))
+      .apply()
     return true
   }
 }
