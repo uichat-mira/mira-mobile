@@ -32,13 +32,17 @@ describe('PushBrokerClient', () => {
       now,
     );
     const installation = await identity.getOrCreate();
-    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const requests: Array<{
+      url: string;
+      body: Record<string, unknown>;
+      redirect: RequestRedirect | undefined;
+    }> = [];
     const client = new PushBrokerClient(
       'https://push.example.test',
       identity,
       (async (input, init) => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        requests.push({ url: String(input), body });
+        requests.push({ url: String(input), body, redirect: init?.redirect });
         return new Response(
           JSON.stringify({
             installationId: installation.installationId,
@@ -59,6 +63,7 @@ describe('PushBrokerClient', () => {
       `https://push.example.test/v1/installations/${installation.installationId}/register`,
     );
     expect(requests[0]?.body.providerToken).toBe('raw-fcm-token');
+    expect(requests[0]?.redirect).toBe('manual');
     const body = requests[0]!.body as {
       schemaVersion: 1;
       installationId: string;
@@ -185,6 +190,34 @@ describe('PushBrokerClient', () => {
         installation.installationPublicKey,
       ),
     ).toBe(true);
+  });
+
+  it('rejects redirects instead of forwarding signed provider credentials', async () => {
+    const identity = new PushInstallationIdentityService(
+      new MemoryPushInstallationSecureStore(),
+      now,
+    );
+    const client = new PushBrokerClient(
+      'https://push.example.test',
+      identity,
+      (async (_input, init) => {
+        expect(init?.redirect).toBe('manual');
+        return new Response(null, {
+          status: 307,
+          headers: { location: 'https://attacker.example.test/steal' },
+        });
+      }) as typeof fetch,
+      false,
+      now,
+    );
+
+    await expect(
+      client.registerProviderToken('android', 'raw-fcm-token'),
+    ).rejects.toMatchObject({
+      name: 'PushBrokerError',
+      code: 'REDIRECT_REJECTED',
+      status: 307,
+    });
   });
 
   it('rejects non-local insecure Broker URLs', () => {
