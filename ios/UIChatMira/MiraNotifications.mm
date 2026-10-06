@@ -388,12 +388,19 @@ RCT_REMAP_METHOD(showTestNotification,
     return;
   }
 
-  // Keep the existing local test-notification behavior unchanged.
-  completionHandler(
-    UNNotificationPresentationOptionBanner |
-    UNNotificationPresentationOptionList |
-    UNNotificationPresentationOptionSound
-  );
+  if ([notification.request.identifier isEqualToString:@"mira.test.notification"]) {
+    // Keep the explicit local test-notification behavior unchanged.
+    completionHandler(
+      UNNotificationPresentationOptionBanner |
+      UNNotificationPresentationOptionList |
+      UNNotificationPresentationOptionSound
+    );
+    return;
+  }
+
+  // Unknown or malformed notification payloads must not become Mira foreground
+  // message notifications merely because they reached UserNotifications.
+  completionHandler(UNNotificationPresentationOptionNone);
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
