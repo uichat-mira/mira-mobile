@@ -345,11 +345,13 @@ class MiraFirebaseMessagingService : FirebaseMessagingService() {
   override fun onMessageReceived(message: RemoteMessage) {
     super.onMessageReceived(message)
     val envelope = MiraRemotePushContract.parse(message.data) ?: return
-    if (!MiraRemotePushPresentationDedupe.recordIfNew(this, envelope.canonicalMessageId)) return
+    MiraRemotePushPresentationDedupe.recordIfNew(this, envelope.canonicalMessageId)
 
     // Broker v1 sends a normal FCM notification + data envelope. Android shows
-    // that notification itself in background/killed states. Foreground messages
-    // arrive here instead, and deliberately produce no system notification:
+    // that notification itself in background/killed states; those deliveries
+    // bypass onMessageReceived, so this foreground receipt record is never
+    // consulted to suppress an OS-owned background notification. Foreground
+    // messages arrive here and deliberately produce no system notification:
     // MOB-056B owns the foreground reminder.
   }
 }
