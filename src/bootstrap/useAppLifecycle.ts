@@ -28,14 +28,14 @@ export const useAppLifecycle = (): void => {
           }
           return restored;
         } catch (error) {
-          let storedCredential;
           try {
-            storedCredential = await deviceCredentialStore.load();
+            const storedCredential = await deviceCredentialStore.load();
+            if (!storedCredential) {
+              await pushBindingService.reconcileWithPairedDevice(false);
+            }
           } catch {
-            storedCredential = undefined;
-          }
-          if (storedCredential === null) {
-            await pushBindingService.reconcileWithPairedDevice(false);
+            // Preserve the original restore failure when secure storage itself
+            // is unavailable; an unknown credential state must not trigger revoke.
           }
           throw error;
         }
@@ -53,14 +53,18 @@ export const useAppLifecycle = (): void => {
 
     const providerSubscription = subscribePushProviderRegistration(
       registration => {
-        void pushBindingService.refreshProviderRegistrationIfBound(registration);
+        void pushBindingService
+          .refreshProviderRegistrationIfBound(registration)
+          .catch(() => undefined);
       },
     );
 
     const subscription = AppState.addEventListener('change', (nextState) => {
       controller.handleStateChange(nextState);
       if (nextState === 'active') {
-        void pushBindingService.refreshProviderRegistrationIfBound();
+        void pushBindingService
+          .refreshProviderRegistrationIfBound()
+          .catch(() => undefined);
       }
     });
 
