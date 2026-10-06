@@ -273,6 +273,7 @@ export class PushBrokerClient {
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: 'POST',
+        redirect: 'manual',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
@@ -285,6 +286,17 @@ export class PushBrokerClient {
         error instanceof Error ? error.message : 'Unable to reach Push Broker',
       );
     }
+    if (
+      (response.status >= 300 && response.status < 400) ||
+      response.type === 'opaqueredirect'
+    ) {
+      throw new PushBrokerError(
+        'REDIRECT_REJECTED',
+        'Push Broker redirects are not allowed',
+        response.status,
+      );
+    }
+
     const payload = await readJson(response);
     if (!response.ok) {
       const record =
