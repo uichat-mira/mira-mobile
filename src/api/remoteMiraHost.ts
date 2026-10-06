@@ -615,7 +615,7 @@ export class RemoteMiraHostClient {
       );
     }
 
-    return this.withCredential(credential =>
+    return this.withPushCredential(credential =>
       this.dispatchCredentialJsonMutationOnce(
         credential,
         {
@@ -679,7 +679,7 @@ export class RemoteMiraHostClient {
     deliveryToken: string;
     sourceScope: string[];
   }): Promise<RemotePushBindingAcceptResponse> {
-    return this.withCredential(credential =>
+    return this.withPushCredential(credential =>
       this.dispatchCredentialJsonMutationOnce(
         credential,
         {
@@ -1096,6 +1096,24 @@ export class RemoteMiraHostClient {
         403,
         { route },
       );
+    }
+  }
+
+  private async withPushCredential<T>(
+    operation: (credential: StoredDeviceCredential) => Promise<T>,
+  ): Promise<T> {
+    const credential = await this.requireCredential();
+    try {
+      return await operation(credential);
+    } catch (error) {
+      // Push endpoints can legitimately return 403 for capability/scope
+      // mismatches. Only an authentication failure proves the paired-device
+      // credential itself is invalid.
+      if (error instanceof RemoteHostError && error.status === 401) {
+        this.activeCredential = null;
+        await this.credentialStore.clear();
+      }
+      throw error;
     }
   }
 
