@@ -196,6 +196,26 @@ export class PushBindingService {
     }
   }
 
+  async reconcileWithPairedDevice(
+    hasPairedDevice: boolean,
+  ): Promise<'unchanged' | 'revoked' | 'failed'> {
+    const binding = await this.state.getActiveBinding();
+    if (hasPairedDevice || !binding) {
+      return 'unchanged';
+    }
+
+    try {
+      await this.revokeCurrentBinding();
+      return 'revoked';
+    } catch (error) {
+      this.lastRefreshError =
+        error instanceof Error
+          ? error.message
+          : 'Push binding revoke reconciliation failed';
+      return 'failed';
+    }
+  }
+
   async revokeCurrentBinding(): Promise<boolean> {
     const binding = await this.state.getActiveBinding();
     if (!binding) return false;

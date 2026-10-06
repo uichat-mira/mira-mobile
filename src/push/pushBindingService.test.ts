@@ -256,6 +256,35 @@ describe('PushBindingService', () => {
     expect(host.accepted).toEqual([]);
   });
 
+  it('revokes a stored Broker binding after paired-device authority disappears', async () => {
+    const { service, broker, state } = await createHarness();
+    await service.enableForSourceScope(['thread-a', 'thread-b']);
+
+    await expect(service.reconcileWithPairedDevice(false)).resolves.toBe(
+      'revoked',
+    );
+
+    expect(broker.revokedHosts).toContain('host-1');
+    await expect(state.getActiveBinding()).resolves.toBeNull();
+  });
+
+  it('keeps the binding for retry when revoke reconciliation cannot reach Broker', async () => {
+    const { service, broker, state } = await createHarness();
+    await service.enableForSourceScope(['thread-a', 'thread-b']);
+    broker.revokeError = new Error('Broker unavailable');
+
+    await expect(service.reconcileWithPairedDevice(false)).resolves.toBe(
+      'failed',
+    );
+    await expect(state.getActiveBinding()).resolves.toMatchObject({
+      hostId: 'host-1',
+      status: 'active',
+    });
+    await expect(service.getRuntimeStatus()).resolves.toMatchObject({
+      lastRefreshError: 'Broker unavailable',
+    });
+  });
+
   it('does not clear local binding when Broker revoke fails', async () => {
     const { service, broker, state } = await createHarness();
     await service.enableForSourceScope(['thread-a', 'thread-b']);

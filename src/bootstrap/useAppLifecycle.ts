@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import { remoteMiraHostClient } from '../api/remoteMiraHost';
+import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import { useHostStore } from '../store/hostStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { createAppLifecycleController } from './appLifecycle';
@@ -19,10 +20,30 @@ export const useAppLifecycle = (): void => {
       getConnectionStatus: () => useHostStore.getState().connectionStatus,
       setConnectionStatus: (status) =>
         useHostStore.getState().setConnectionStatus(status),
-      restoreConnection: () => remoteMiraHostClient.restoreConnection(),
+      restoreConnection: async () => {
+        try {
+          const restored = await remoteMiraHostClient.restoreConnection();
+          if (!restored) {
+            await pushBindingService.reconcileWithPairedDevice(false);
+          }
+          return restored;
+        } catch (error) {
+          const storedCredential = await deviceCredentialStore.load();
+          if (!storedCredential) {
+            await pushBindingService.reconcileWithPairedDevice(false);
+          }
+          throw error;
+        }
+      },
     });
 
-    void pushBindingService.refreshProviderRegistrationIfBound();
+    void deviceCredentialStore
+      .load()
+      .then(credential =>
+        credential
+          ? pushBindingService.refreshProviderRegistrationIfBound()
+          : pushBindingService.reconcileWithPairedDevice(false),
+      );
 
     const providerSubscription = subscribePushProviderRegistration(
       registration => {
