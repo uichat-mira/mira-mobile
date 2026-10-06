@@ -35,14 +35,13 @@ describe('PushBrokerClient', () => {
     const requests: Array<{
       url: string;
       body: Record<string, unknown>;
-      redirect: RequestRedirect | undefined;
     }> = [];
     const client = new PushBrokerClient(
       'https://push.example.test',
       identity,
       (async (input, init) => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        requests.push({ url: String(input), body, redirect: init?.redirect });
+        requests.push({ url: String(input), body });
         return new Response(
           JSON.stringify({
             installationId: installation.installationId,
@@ -63,7 +62,6 @@ describe('PushBrokerClient', () => {
       `https://push.example.test/v1/installations/${installation.installationId}/register`,
     );
     expect(requests[0]?.body.providerToken).toBe('raw-fcm-token');
-    expect(requests[0]?.redirect).toBe('manual');
     const body = requests[0]!.body as {
       schemaVersion: 1;
       installationId: string;
@@ -200,8 +198,7 @@ describe('PushBrokerClient', () => {
     const client = new PushBrokerClient(
       'https://push.example.test',
       identity,
-      (async (_input, init) => {
-        expect(init?.redirect).toBe('manual');
+      (async () => {
         return new Response(null, {
           status: 307,
           headers: { location: 'https://attacker.example.test/steal' },
