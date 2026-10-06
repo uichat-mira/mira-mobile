@@ -11,6 +11,7 @@ import com.facebook.react.bridge.ReactMethod
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -89,6 +90,34 @@ class MiraSecureCredentialStoreModule(
       promise.reject(
         "SECURE_CREDENTIAL_WRITE_FAILED",
         "Unable to persist the Mira device credential",
+        error,
+      )
+    }
+  }
+
+  @ReactMethod
+  fun randomBytes(length: Int, promise: Promise) {
+    if (length < 1 || length > 1024) {
+      promise.reject(
+        "SECURE_RANDOM_INVALID_LENGTH",
+        "Secure random byte length must be between 1 and 1024",
+      )
+      return
+    }
+
+    try {
+      val bytes = ByteArray(length)
+      SecureRandom().nextBytes(bytes)
+      promise.resolve(
+        Base64.encodeToString(
+          bytes,
+          Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+        ),
+      )
+    } catch (error: Exception) {
+      promise.reject(
+        "SECURE_RANDOM_FAILED",
+        "Unable to generate secure random bytes",
         error,
       )
     }
