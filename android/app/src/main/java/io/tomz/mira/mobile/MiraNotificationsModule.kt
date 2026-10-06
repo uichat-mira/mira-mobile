@@ -23,6 +23,8 @@ import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import java.lang.ref.WeakReference
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MiraNotificationsModule(
   reactContext: ReactApplicationContext,
@@ -80,6 +82,62 @@ class MiraNotificationsModule(
         promise.resolve(providerPayload("android", installationId))
       }
     }
+  }
+
+  @ReactMethod
+  fun postPushBrokerJson(url: String, body: String, promise: Promise) {
+    Thread {
+      var connection: HttpURLConnection? = null
+      try {
+        val target = URL(url)
+        val local =
+          target.host == "localhost" ||
+            target.host == "127.0.0.1" ||
+            target.host == "::1"
+        if (
+          target.protocol != "https" &&
+          !(BuildConfig.DEBUG && target.protocol == "http" && local)
+        ) {
+          promise.reject(
+            "PUSH_BROKER_URL_REJECTED",
+            "Push Broker requires HTTPS outside local development",
+          )
+          return@Thread
+        }
+
+        connection = target.openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 10_000
+        connection.doOutput = true
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.outputStream.use { output ->
+          output.write(body.toByteArray(Charsets.UTF_8))
+        }
+
+        val status = connection.responseCode
+        val stream =
+          if (status >= 400) connection.errorStream else connection.inputStream
+        val responseBody =
+          stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        promise.resolve(
+          Arguments.createMap().apply {
+            putInt("status", status)
+            putString("body", responseBody)
+          },
+        )
+      } catch (error: Exception) {
+        promise.reject(
+          "PUSH_BROKER_NETWORK_ERROR",
+          "Unable to reach Push Broker",
+          error,
+        )
+      } finally {
+        connection?.disconnect()
+      }
+    }.start()
   }
 
   @ReactMethod
