@@ -392,6 +392,63 @@ describe('RemoteMiraHostClient transport selection', () => {
   });
 });
 
+describe('RemoteMiraHostClient Push binding capability', () => {
+  it('does not clear pairing when an older Host omits Push routes', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read'],
+      savedAt: '2026-10-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async request =>
+      request.parse(manifestPayload);
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(
+      client.createPushBindingDescriptor({
+        installationId: 'mira-installation-1',
+        sourceScope: ['thread-a'],
+      }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_PUSH_ROUTE_UNAVAILABLE',
+      status: 403,
+    });
+
+    await expect(store.load()).resolves.toMatchObject({
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+    });
+  });
+
+  it('still clears pairing when Host authentication is rejected', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read'],
+      savedAt: '2026-10-07T00:00:00.000Z',
+    });
+    const json: JsonTransport = async _request => {
+      throw new RemoteHostError('HTTP_401', 'unauthorized', 401);
+    };
+    const client = new RemoteMiraHostClient(store, json);
+
+    await expect(
+      client.createPushBindingDescriptor({
+        installationId: 'mira-installation-1',
+        sourceScope: ['thread-a'],
+      }),
+    ).rejects.toMatchObject({ status: 401 });
+
+    await expect(store.load()).resolves.toBeNull();
+  });
+});
+
 describe('RemoteMiraHostClient tool gateway', () => {
   const toolManifestPayload = {
     ...manifestPayload,

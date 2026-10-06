@@ -91,6 +91,39 @@ RCT_REMAP_METHOD(set,
   resolve(nil);
 }
 
+RCT_REMAP_METHOD(randomBytes,
+                 randomBytesWithLength:(nonnull NSNumber *)length
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSInteger byteLength = [length integerValue];
+  if (byteLength < 1 || byteLength > 1024) {
+    reject(@"SECURE_RANDOM_INVALID_LENGTH",
+           @"Secure random byte length must be between 1 and 1024",
+           nil);
+    return;
+  }
+
+  NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)byteLength];
+  int status = SecRandomCopyBytes(
+    kSecRandomDefault,
+    (size_t)byteLength,
+    (uint8_t *)data.mutableBytes
+  );
+  if (status != errSecSuccess) {
+    reject(@"SECURE_RANDOM_FAILED", @"Unable to generate secure random bytes", nil);
+    return;
+  }
+
+  NSString *encoded = [data base64EncodedStringWithOptions:0];
+  encoded = [[encoded stringByReplacingOccurrencesOfString:@"+" withString:@"-"]
+    stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+  while ([encoded hasSuffix:@"="]) {
+    encoded = [encoded substringToIndex:encoded.length - 1];
+  }
+  resolve(encoded);
+}
+
 RCT_REMAP_METHOD(remove,
                  removeForService:(NSString *)service
                  resolver:(RCTPromiseResolveBlock)resolve

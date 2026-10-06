@@ -16,6 +16,16 @@
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
+      <meta-data
+        android:name="firebase_messaging_installation_id_enabled"
+        android:value="true" />
+      <service
+        android:name=".MiraFirebaseMessagingService"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.google.firebase.MESSAGING_EVENT" />
+        </intent-filter>
+      </service>
       <provider
         android:name="androidx.core.content.FileProvider"
         android:authorities="${applicationId}.mira.share"
