@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, AppState, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { Bell, BellRing, MessageCircleMore, Settings2 } from 'lucide-react-native';
+import { Bell, BellRing, MessageCircleMore, RefreshCcw, Settings2 } from 'lucide-react-native';
 import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import {
   SettingsGroup,
@@ -257,6 +257,42 @@ export function NotificationSettingsScreen() {
     }
   }, [approveRemoteReplies, busy, pushRuntime.binding, refreshPushRuntime]);
 
+  const resetPushInstallation = useCallback(() => {
+    if (busy) return;
+    Alert.alert(
+      '重置后台提醒身份？',
+      '这会先撤销当前 Push Broker installation（包括现有 Host binding），再轮换本机 installation identity。完成后需要重新授权后台回复提醒。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '重置',
+          style: 'destructive',
+          onPress: () => {
+            setBusy(true);
+            void pushBindingService
+              .resetInstallation()
+              .then(async () => {
+                await refreshPushRuntime();
+                Alert.alert(
+                  '已重置后台提醒身份',
+                  '旧 Broker installation 已撤销。下次启用后台回复提醒时会使用新的 installation identity。',
+                );
+              })
+              .catch((error: unknown) => {
+                Alert.alert(
+                  '无法安全重置',
+                  error instanceof Error
+                    ? error.message
+                    : 'Broker 撤销未确认，本机会保留旧身份和状态以便稍后重试。',
+                );
+              })
+              .finally(() => setBusy(false));
+          },
+        },
+      ],
+    );
+  }, [busy, refreshPushRuntime]);
+
   const openSystemSettings = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -281,11 +317,19 @@ export function NotificationSettingsScreen() {
         void sendTest();
       } else if (actionId === 'remote-replies') {
         void handleRemoteReplies();
+      } else if (actionId === 'reset-push-installation') {
+        resetPushInstallation();
       } else if (actionId === 'system-settings') {
         void openSystemSettings();
       }
     },
-    [handleRemoteReplies, openSystemSettings, requestPermission, sendTest],
+    [
+      handleRemoteReplies,
+      openSystemSettings,
+      requestPermission,
+      resetPushInstallation,
+      sendTest,
+    ],
   );
 
   return (
@@ -326,6 +370,13 @@ export function NotificationSettingsScreen() {
             }
             actionId="remote-replies"
             isFirst
+            isLast={false}
+          />
+          <SettingsRow
+            icon={RefreshCcw}
+            title="重置后台提醒身份"
+            subtitle="撤销旧 Broker installation，并轮换本机 installation identity"
+            actionId={busy ? undefined : 'reset-push-installation'}
             isLast
           />
         </SettingsGroup>

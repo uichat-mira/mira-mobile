@@ -132,6 +132,7 @@ class BrokerFake {
 
   async revokeInstallation() {
     this.revokeInstallationCount += 1;
+    if (this.revokeError) throw this.revokeError;
   }
 }
 
@@ -229,6 +230,24 @@ describe('PushBindingService', () => {
       service.enableForSourceScope(['thread-a', 'thread-b']),
     ).rejects.toThrow('Push Broker origin changed');
     expect(broker.registrations).toHaveLength(1);
+    await expect(state.getBrokerTarget()).resolves.toMatchObject({
+      installationId: installation.installationId,
+      brokerBaseUrl: 'https://push.example.test',
+    });
+  });
+
+  it('keeps installation identity and Broker target when reset revoke fails', async () => {
+    const { service, identity, installation, broker, state } = await createHarness();
+    await service.enableForSourceScope(['thread-a', 'thread-b']);
+    broker.revokeError = new Error('Broker unavailable');
+
+    await expect(service.resetInstallation()).rejects.toThrow(
+      'Broker unavailable',
+    );
+
+    expect((await identity.getOrCreate()).installationId).toBe(
+      installation.installationId,
+    );
     await expect(state.getBrokerTarget()).resolves.toMatchObject({
       installationId: installation.installationId,
       brokerBaseUrl: 'https://push.example.test',
