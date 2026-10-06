@@ -281,7 +281,6 @@ export function HostConfigScreen() {
   const handleDisconnect = async () => {
     try {
       await pushBindingService.revokeCurrentBinding();
-      if (secureStorageAvailable) await remoteMiraHostClient.disconnect();
     } catch (error) {
       Alert.alert(
         '无法安全断开',
@@ -290,6 +289,20 @@ export function HostConfigScreen() {
           : '后台通知授权撤销失败。为避免留下仍有效的 Broker 权限，本机不会清除配对凭据。',
       );
       return;
+    }
+
+    if (secureStorageAvailable) {
+      try {
+        await remoteMiraHostClient.disconnect();
+      } catch (error) {
+        Alert.alert(
+          '无法断开 Host',
+          error instanceof Error
+            ? `Host 配对凭据撤销失败：${error.message}`
+            : 'Host 配对凭据撤销失败。当前后台通知授权已撤销，但本机仍保留配对状态以便重试。',
+        );
+        return;
+      }
     }
 
     clearConfig();
