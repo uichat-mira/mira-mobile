@@ -1,11 +1,9 @@
-import { filterReasoningTagEvents } from '../provider/reasoningTagFilter';
 import type { LocalProviderConfig } from '../provider/providerConfigStore';
 import {
   createLocalProviderConsolidator,
   type LocalMemoryService,
 } from '../memory';
 import type { LocalProviderExecutor } from './localProviderExecution';
-import type { RuntimeEvent } from './conversationRuntime';
 
 // Completed-turn Memory consolidation for the Local Provider runtime.
 //
@@ -63,9 +61,9 @@ export interface LocalTurnConsolidationDependencies {
  *
  * The consolidator is built per turn from the exact Local Provider client /
  * model that produced this turn so concurrent sessions can never share or
- * overwrite each other's Provider. It goes through the same provider
- * compatibility normalization (e.g. reasoning-tag stripping) as the chat
- * request, so a reasoning-tag-prefixed JSON payload is still parsed correctly.
+ * overwrite each other's Provider. It uses the same selected standard OpenAI
+ * protocol adapter as chat / Agent execution, so Memory cannot drift onto a
+ * second Provider wire path.
  */
 export async function consolidateLocalTurn(
   input: LocalTurnConsolidationInput,
@@ -82,14 +80,7 @@ export async function consolidateLocalTurn(
     if (await service.isProcessed(source)) return;
     const consolidator = createLocalProviderConsolidator({
       model: config.model,
-      chat: async (request) => {
-        const stream: AsyncIterable<RuntimeEvent> = await executor.client.streamChat(
-          request,
-        );
-        return config.compatibility?.reasoningTags === 'strip'
-          ? filterReasoningTagEvents(stream)
-          : stream;
-      },
+      chat: (request) => executor.streamMessages(request.messages),
     });
     await service.commitTurn({
       source,

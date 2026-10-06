@@ -1,4 +1,4 @@
-import type { OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
+import type { OpenAiMessage } from '../provider/openAiStandardClient';
 import { MobileAgentLoop } from './mobileAgentLoop';
 import type { LocalProviderExecutor } from './localProviderExecution';
 import type { RuntimeEvent } from './conversationRuntime';
@@ -25,7 +25,7 @@ interface PendingApproval {
 
 export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
-  initialMessages: readonly OpenAiCompatibleMessage[];
+  initialMessages: readonly OpenAiMessage[];
   shouldPause?: () => boolean;
 }
 

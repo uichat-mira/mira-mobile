@@ -1,5 +1,5 @@
 import type { ChatMessage, Session } from '../types';
-import { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
   ProviderConfigStore,
   type LocalProviderConfig,
@@ -69,6 +69,17 @@ export class LocalProviderDeletionRollbackIncompleteError extends Error {
   }
 }
 
+export class LocalProviderConfigReviewRequiredError extends Error {
+  readonly code = 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED';
+
+  constructor() {
+    super(
+      '此 Local Provider 来自旧版非标准兼容配置，请先在设置中修正 Base URL 和协议后保存。',
+    );
+    this.name = 'LocalProviderConfigReviewRequiredError';
+  }
+}
+
 export class LocalProviderSendUnavailableError extends Error {
   readonly code = 'LOCAL_PROVIDER_SEND_UNAVAILABLE';
 
@@ -102,7 +113,7 @@ export interface LocalProviderRuntimeOptions {
   clientFactory?: (
     config: LocalProviderConfig,
     apiKey: string,
-  ) => OpenAiCompatibleClient;
+  ) => OpenAiStandardClient;
   toolGateway?: ToolGatewayClient;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
@@ -130,7 +141,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly clientFactory: (
     config: LocalProviderConfig,
     apiKey: string,
-  ) => OpenAiCompatibleClient;
+  ) => OpenAiStandardClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
   private readonly memoryService: LocalMemoryService;
   private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
@@ -153,9 +164,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.clientFactory =
       options.clientFactory ??
       ((config, apiKey) =>
-        new OpenAiCompatibleClient({
+        new OpenAiStandardClient({
           baseUrl: config.baseUrl,
           apiKey,
+          protocol: config.protocol,
         }));
     this.loadPersonalization =
       options.loadPersonalization ?? loadPersonalizationSettings;
@@ -330,6 +342,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
       ? configs.find((item) => item.id === providerId)
       : configs[0];
     if (!config) throw new Error('请先配置 Local Provider');
+    if (config.requiresStandardProtocolReview) {
+      throw new LocalProviderConfigReviewRequiredError();
+    }
 
     const release = this.acquireProviderMutation(config.id);
     try {
@@ -350,7 +365,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
       left.model === right.model &&
       left.protocol === right.protocol &&
       left.toolGatewayId === right.toolGatewayId &&
-      left.compatibility?.reasoningTags === right.compatibility?.reasoningTags
+      left.requiresStandardProtocolReview ===
+        right.requiresStandardProtocolReview &&
+      left.legacyReasoningBehaviorChanged ===
+        right.legacyReasoningBehaviorChanged
     );
   }
 
@@ -551,6 +569,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
         if (!config) {
           throw new LocalProviderSendUnavailableError('provider-missing');
         }
+        if (config.requiresStandardProtocolReview) {
+          throw new LocalProviderConfigReviewRequiredError();
+        }
 
         const session = await runtime.sessionRepository.get(sessionId);
         const currentProviderId =
@@ -570,6 +591,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
           throw new Error('Local Provider request was cancelled');
         }
 
+        // The Provider client is scoped to this outer send. Agent model rounds
+        // reuse this executor, while a later conversation turn gets a fresh client,
+        // so Responses continuation state cannot leak across user turns.
         const executor = createLocalProviderExecutor(
           runtime.clientFactory(config, apiKey),
           config,

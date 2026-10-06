@@ -105,6 +105,16 @@ export const getChatSendErrorMessage = (
     return '工具调用不符合当前安全策略，本轮已停止';
   }
 
+  if (
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code ===
+      'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED'
+  ) {
+    return '这个 Provider 来自旧版非标准配置，请先到 Local Provider 设置修正 Base URL 和协议并保存';
+  }
+
   if (error instanceof Error) {
     if (error.message === 'Local Provider API key is not configured') {
       return '请先配置当前 Provider 的 API Key';

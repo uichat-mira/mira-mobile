@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types';
-import type { OpenAiCompatibleMessage } from '../provider/openAiCompatibleClient';
+import type { OpenAiMessage } from '../provider/openAiStandardClient';
 import type { PersonalizationSettings } from '../settings/personalizationSettings';
 import type { LocalMemoryService } from '../memory';
 import { buildLocalPersonalizationContext } from './localPersonalizationContext';
@@ -25,7 +25,7 @@ export interface LocalRequestContextDependencies {
 
 export interface LocalRequestContext {
   /** The full request payload: Local-only system contexts followed by history. */
-  messages: OpenAiCompatibleMessage[];
+  messages: OpenAiMessage[];
   personalizationContext: string | null;
   memoryContext: string | null;
 }
@@ -58,7 +58,7 @@ export async function assembleLocalRequestContext(
   canonicalMessages: readonly ChatMessage[],
   dependencies: LocalRequestContextDependencies,
 ): Promise<LocalRequestContext> {
-  const messages = canonicalMessages.map<OpenAiCompatibleMessage>((message) => ({
+  const messages = canonicalMessages.map<OpenAiMessage>((message) => ({
     role: message.role,
     content: message.content,
   }));

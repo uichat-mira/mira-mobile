@@ -1,28 +1,32 @@
+import { RemoteHostError } from '../api/remoteHttp';
 import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
   LocalProviderSessionRollbackIncompleteError,
   LocalSessionRepository,
 } from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
-import type { OpenAiCompatibleClient } from '../provider/openAiCompatibleClient';
+import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
 } from '../settings/personalizationSettings';
-import { LocalProviderRuntime } from './localProviderRuntime';
+import {
+  LocalProviderConfigReviewRequiredError,
+  LocalProviderRuntime,
+  type LocalProviderRuntimeOptions,
+} from './localProviderRuntime';
 
 const config: LocalProviderConfig = {
   id: 'provider-a',
   name: 'Provider A',
   baseUrl: 'https://provider.example.com',
   model: 'model-a',
-  protocol: 'chat-completions',
+  protocol: 'openai-chat-completions',
 };
 
 const storedConfig = (value: LocalProviderConfig): LocalProviderConfig => ({
   ...value,
-  compatibility: value.compatibility ?? { reasoningTags: 'strip' },
 });
 
 const createSendReadyRuntime = async () => {
@@ -37,10 +41,36 @@ const createSendReadyRuntime = async () => {
     sessionRepository: repository,
     clientFactory: () => ({
       cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(async () => (async function* () {})()),
-    } as unknown as OpenAiCompatibleClient),
+      streamMessages: jest.fn(async () => (async function* () {})()),
+    } as unknown as OpenAiStandardClient),
   });
   return { runtime, repository };
+};
+
+const createConfiguredRuntime = async (options: {
+  providerConfig?: LocalProviderConfig;
+  configStore?: ProviderConfigStore;
+  clientFactory?: LocalProviderRuntimeOptions['clientFactory'];
+  toolGateway?: LocalProviderRuntimeOptions['toolGateway'];
+}) => {
+  const providerConfig = options.providerConfig ?? config;
+  const configStore =
+    options.configStore ??
+    new ProviderConfigStore(new MemoryLocalKeyValueStore());
+  if (!options.configStore) {
+    await configStore.save([providerConfig]);
+  }
+  const credentialStore = new MemoryProviderCredentialStore();
+  await credentialStore.save(providerConfig.id, 'sk-test');
+  const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+  const runtime = new LocalProviderRuntime({
+    configStore,
+    credentialStore,
+    sessionRepository: repository,
+    ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
+    ...(options.toolGateway ? { toolGateway: options.toolGateway } : {}),
+  });
+  return { runtime, repository, configStore, credentialStore };
 };
 
 describe('LocalProviderRuntime', () => {
@@ -79,7 +109,7 @@ describe('LocalProviderRuntime', () => {
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     const makeClient = () => ({
       cancelActiveRun: jest.fn(),
-      streamChat: jest.fn(async () => (async function* () {
+      streamMessages: jest.fn(async () => (async function* () {
         yield { type: 'finish', reason: 'stop' as const };
       })()),
     });
@@ -178,6 +208,327 @@ describe('LocalProviderRuntime', () => {
 });
 
 
+describe('LocalProviderRuntime standard protocol routing', () => {
+  it.each([
+    'openai-chat-completions',
+    'openai-responses',
+  ] as const)('uses the selected %s protocol through the same canonical turn path', async (protocol) => {
+    const selectedConfig: LocalProviderConfig = {
+      ...config,
+      id: `provider-${protocol}`,
+      protocol,
+    };
+    const selectedProtocols: LocalProviderConfig['protocol'][] = [];
+    const { runtime, repository } = await createConfiguredRuntime({
+      providerConfig: selectedConfig,
+      clientFactory: (providerConfig) => {
+        selectedProtocols.push(providerConfig.protocol);
+        return {
+          cancelActiveRun: jest.fn(),
+          streamMessages: jest.fn(async () =>
+            (async function* () {
+              yield { type: 'text-delta' as const, delta: 'reply' };
+              yield { type: 'finish' as const, reason: 'stop' };
+            })(),
+          ),
+        } as unknown as OpenAiStandardClient;
+      },
+    });
+    const session = await runtime.createSession('Protocol', selectedConfig.id);
+
+    await expect(
+      drain(await runtime.sendMessage(session.id, 'hello')),
+    ).resolves.toEqual([
+      { type: 'text-delta', delta: 'reply' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+
+    expect(selectedProtocols).toEqual([protocol]);
+    await expect(repository.getMessages(session.id)).resolves.toMatchObject([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'reply' },
+    ]);
+  });
+});
+
+describe('LocalProviderRuntime Responses Agent client reuse', () => {
+  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
+    const responsesConfig: LocalProviderConfig = {
+      ...config,
+      protocol: 'openai-responses',
+    };
+    const streamMessages = jest
+      .fn()
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield {
+            type: 'tool-call' as const,
+            callId: 'call-1',
+            name: 'search',
+            arguments: '{"q":"mira"}',
+          };
+          yield { type: 'finish' as const, reason: 'tool_calls' };
+        })(),
+      )
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield { type: 'text-delta' as const, delta: 'done' };
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      );
+    const client = {
+      cancelActiveRun: jest.fn(),
+      streamMessages,
+    } as unknown as OpenAiStandardClient;
+    const clientFactory = jest.fn(() => client);
+    const callTool = jest.fn(async () => ({ content: '{"result":"ok"}' }));
+    const { runtime, repository } = await createConfiguredRuntime({
+      providerConfig: responsesConfig,
+      clientFactory,
+      toolGateway: {
+        listTools: async () => [{
+          name: 'search',
+          description: 'Search',
+          parameters: { type: 'object' },
+        }],
+        callTool,
+      },
+    });
+    const session = await runtime.createSession('Responses Agent', config.id);
+
+    const events = await drain(await runtime.sendMessage(session.id, 'find', {
+      agentEnabled: true,
+    }));
+
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(streamMessages).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual({ type: 'text-delta', delta: 'done' });
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'find' }),
+      expect.objectContaining({ role: 'assistant', content: 'done' }),
+    ]);
+  });
+});
+
+describe('LocalProviderRuntime rejected provider streams', () => {
+  it('does not persist partial assistant text when a provider stream fails late', async () => {
+    const { runtime, repository } = await createConfiguredRuntime({
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages: jest.fn(async () =>
+          (async function* () {
+            yield { type: 'text-delta' as const, delta: 'partial' };
+            throw new RemoteHostError(
+              'INVALID_PROVIDER_EVENT',
+              'provider stream became invalid',
+            );
+          })(),
+        ),
+      } as unknown as OpenAiStandardClient),
+    });
+    const session = await runtime.createSession('Partial failure', config.id);
+    const stream = await runtime.sendMessage(session.id, 'hello');
+    const seen: unknown[] = [];
+
+    await expect((async () => {
+      for await (const event of stream) seen.push(event);
+    })()).rejects.toMatchObject({ code: 'INVALID_PROVIDER_EVENT' });
+
+    expect(seen).toEqual([{ type: 'text-delta', delta: 'partial' }]);
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'hello' }),
+    ]);
+  });
+
+  it('does not execute a pending Agent tool call when the provider stream fails before completion', async () => {
+    const callTool = jest.fn(async () => ({ content: 'should-not-run' }));
+    const { runtime, repository } = await createConfiguredRuntime({
+      toolGateway: {
+        listTools: async () => [{
+          name: 'search',
+          description: 'Search',
+          parameters: { type: 'object' },
+        }],
+        callTool,
+      },
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages: jest.fn(async () =>
+          (async function* () {
+            yield {
+              type: 'tool-call' as const,
+              callId: 'call-1',
+              name: 'search',
+              arguments: '{"q":"mira"}',
+            };
+            throw new RemoteHostError(
+              'INVALID_PROVIDER_EVENT',
+              'provider stream became invalid',
+            );
+          })(),
+        ),
+      } as unknown as OpenAiStandardClient),
+    });
+    const session = await runtime.createSession('Agent failure', config.id);
+    const stream = await runtime.sendMessage(session.id, 'find', {
+      agentEnabled: true,
+    });
+
+    await expect(drain(stream)).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_EVENT',
+    });
+    expect(callTool).not.toHaveBeenCalled();
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'find' }),
+    ]);
+  });
+
+  it('keeps a standard migrated legacy Provider usable while surfacing only a non-blocking behavior notice', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      'mira.local-provider.configs.v1',
+      JSON.stringify([{
+        id: config.id,
+        name: config.name,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        protocol: 'chat-completions',
+      }]),
+    );
+    const configStore = new ProviderConfigStore(storage);
+    const [migrated] = await configStore.load();
+    expect(migrated).toMatchObject({
+      protocol: 'openai-chat-completions',
+      legacyReasoningBehaviorChanged: true,
+    });
+    expect(migrated).not.toHaveProperty('requiresStandardProtocolReview');
+
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages: jest.fn(async () =>
+          (async function* () {
+            yield { type: 'text-delta' as const, delta: 'reply' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+        ),
+      } as unknown as OpenAiStandardClient),
+    });
+
+    const session = await runtime.createSession('Migrated', config.id);
+    await expect(drain(await runtime.sendMessage(session.id, 'hello'))).resolves.toEqual([
+      { type: 'text-delta', delta: 'reply' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+});
+
+describe('LocalProviderRuntime provider review and client isolation', () => {
+  it('uses a typed error for a migrated Provider that still requires standard-protocol review', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set(
+      'mira.local-provider.configs.v1',
+      JSON.stringify([{
+        id: config.id,
+        name: config.name,
+        baseUrl: 'https://provider.example.com/api/v1',
+        model: config.model,
+        protocol: 'chat-completions',
+      }]),
+    );
+    const runtime = new LocalProviderRuntime({
+      configStore: new ProviderConfigStore(storage),
+      credentialStore: new MemoryProviderCredentialStore(),
+      sessionRepository: new LocalSessionRepository(
+        new MemoryLocalKeyValueStore(),
+      ),
+    });
+
+    await expect(
+      runtime.createSession('Blocked', config.id),
+    ).rejects.toBeInstanceOf(LocalProviderConfigReviewRequiredError);
+    await expect(
+      runtime.createSession('Blocked', config.id),
+    ).rejects.toMatchObject({
+      code: 'LOCAL_PROVIDER_CONFIG_REVIEW_REQUIRED',
+    });
+  });
+
+  it('creates a distinct Provider client for overlapping sends on the same session', async () => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([{
+      ...config,
+      protocol: 'openai-responses',
+    }]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstClient = {
+      cancelActiveRun: jest.fn(),
+      streamMessages: jest.fn(async () => {
+        markFirstStarted?.();
+        return (async function* () {
+          await firstGate;
+          yield { type: 'finish' as const, reason: 'stop' };
+        })();
+      }),
+    } as unknown as OpenAiStandardClient;
+    const secondClient = {
+      cancelActiveRun: jest.fn(),
+      streamMessages: jest.fn(async () =>
+        (async function* () {
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      ),
+    } as unknown as OpenAiStandardClient;
+    const clientFactory = jest
+      .fn()
+      .mockReturnValueOnce(firstClient)
+      .mockReturnValueOnce(secondClient);
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      clientFactory,
+    });
+    const session = await runtime.createSession('Overlap', config.id);
+
+    const firstDrain = drain(
+      await runtime.sendMessage(session.id, 'first'),
+    );
+    await firstStarted;
+
+    await expect(
+      drain(await runtime.sendMessage(session.id, 'second')),
+    ).resolves.toContainEqual({ type: 'finish', reason: 'stop' });
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(firstClient).not.toBe(secondClient);
+
+    releaseFirst?.();
+    await expect(firstDrain).resolves.toContainEqual({
+      type: 'finish',
+      reason: 'stop',
+    });
+  });
+});
+
 describe('LocalProviderRuntime send preflight', () => {
   it('rejects a missing API key before returning a stream', async () => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
@@ -243,10 +594,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
       stageSessionReferenceRemoval,
       clientFactory: () => ({
         cancelActiveRun: jest.fn(),
-        streamChat: jest.fn(async () => (async function* () {
+        streamMessages: jest.fn(async () => (async function* () {
           yield { type: 'finish', reason: 'stop' as const };
         })()),
-      } as unknown as OpenAiCompatibleClient),
+      } as unknown as OpenAiStandardClient),
     });
     return {
       runtime,
@@ -712,8 +1063,10 @@ describe('LocalProviderRuntime Provider deletion', () => {
         baseUrl: value.baseUrl,
         name: value.name,
         id: value.id,
-        compatibility: value.compatibility,
         ...(value.toolGatewayId ? { toolGatewayId: value.toolGatewayId } : {}),
+        ...(value.requiresStandardProtocolReview
+          ? { requiresStandardProtocolReview: true }
+          : {}),
       };
       await originalUpsert(reordered);
     });
@@ -953,38 +1306,39 @@ const createPersonalizationRuntime = async (
   const credentialStore = new MemoryProviderCredentialStore();
   await credentialStore.save(config.id, 'sk-test');
   const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
-  const streamChat = jest.fn(async () => (async function* () {})());
+  const streamMessages = jest.fn(async () => (async function* () {})());
   const runtime = new LocalProviderRuntime({
     configStore,
     credentialStore,
     sessionRepository: repository,
     clientFactory: () => ({
       cancelActiveRun: jest.fn(),
-      streamChat,
-    } as unknown as OpenAiCompatibleClient),
+      streamMessages,
+    } as unknown as OpenAiStandardClient),
     loadPersonalization,
     toolGateway: {
       listTools: async () => [],
       callTool: async () => ({ content: 'unused' }),
     },
   });
-  return { runtime, streamChat };
+  return { runtime, streamMessages };
 };
 
-const firstRequestMessages = (streamChat: jest.Mock) => {
-  const request = streamChat.mock.calls[0][0] as {
+const firstRequestMessages = (streamMessages: jest.Mock) => {
+  const request = streamMessages.mock.calls[0][0] as {
     messages: Array<{ role: string; content: string | null }>;
   };
   return request.messages;
 };
 
 const drain = async (stream: AsyncIterable<unknown>) => {
-  // Exhaust the runtime stream so lazy model calls are dispatched.
-  const iterator = stream[Symbol.asyncIterator]();
-  let result = await iterator.next();
-  while (!result.done) {
-    result = await iterator.next();
+  // Exhaust the runtime stream so lazy model calls are dispatched, while
+  // preserving the emitted events for assertions that verify lifecycle order.
+  const events: unknown[] = [];
+  for await (const event of stream) {
+    events.push(event);
   }
+  return events;
 };
 
 describe('LocalProviderRuntime personalization context', () => {
@@ -995,12 +1349,12 @@ describe('LocalProviderRuntime personalization context', () => {
   };
 
   it('injects a Personalization system context into plain Local Chat requests', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].role).toBe('system');
     expect(messages[0].content).toContain('professional');
     expect(messages[0].content).toContain('保持克制');
@@ -1008,35 +1362,35 @@ describe('LocalProviderRuntime personalization context', () => {
   });
 
   it('injects the same Personalization context into Local Agent requests', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Agent', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好', { agentEnabled: true }));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].role).toBe('system');
     expect(messages[0].content).toContain('professional');
   });
 
   it('does not inject a system context when personalization is default and no instruction is present', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(
+    const { runtime, streamMessages } = await createPersonalizationRuntime(
       DEFAULT_PERSONALIZATION_SETTINGS,
     );
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '你好'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
   });
 
   it('carries the precedence note so the current user message can override the stored style', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized);
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Chat', config.id);
 
     await drain(await runtime.sendMessage(session.id, '请用非常简短的一句话回答'));
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages[0].content).toContain('follow the current user message');
   });
 
@@ -1051,16 +1405,16 @@ describe('LocalProviderRuntime personalization context', () => {
   });
 
   it('degrades to no personalization context when loading fails, without failing the send', async () => {
-    const { runtime, streamChat } = await createPersonalizationRuntime(personalized, () => {
+    const { runtime, streamMessages } = await createPersonalizationRuntime(personalized, () => {
       throw new Error('corrupted personalization payload');
     });
     const session = await runtime.createSession('Chat', config.id);
 
     await expect(
       drain(await runtime.sendMessage(session.id, '你好')),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([]);
 
-    const messages = firstRequestMessages(streamChat);
+    const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
   });
 });

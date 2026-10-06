@@ -5,6 +5,10 @@ const source = readFileSync(
   resolve(process.cwd(), 'src/screens/LocalProviderConfigScreen.tsx'),
   'utf8',
 );
+const protocolSource = readFileSync(
+  resolve(process.cwd(), 'src/provider/openAiStandardProtocol.ts'),
+  'utf8',
+);
 
 describe('MOB-038 Local Provider configuration', () => {
   it('supports multiple Provider profiles without mixing API keys into config JSON', () => {
@@ -42,6 +46,33 @@ describe('MOB-038 Local Provider configuration', () => {
     ).toBeGreaterThanOrEqual(4);
     expect(source).toContain('editable={editable}');
     expect(source).toContain('!editable && styles.disabledButton');
+  });
+
+  it('offers only standard OpenAI protocol choices', () => {
+    expect(source).toContain('OPENAI_STANDARD_PROTOCOL_OPTIONS.map((option) =>');
+    expect(protocolSource).toContain("label: 'OpenAI Chat Completions'");
+    expect(protocolSource).toContain("label: 'OpenAI Responses'");
+    expect(protocolSource).toContain("endpoint: '/v1/chat/completions'");
+    expect(protocolSource).toContain("endpoint: '/v1/responses'");
+    expect(protocolSource).not.toContain('OpenAI-compatible Provider');
+    expect(protocolSource).not.toContain('opencode');
+    expect(protocolSource).not.toContain('ark');
+    expect(protocolSource).not.toContain('minimax');
+  });
+
+  it('labels HTTP Provider URLs as explicit development-only plaintext connections', () => {
+    expect(source).toContain("__DEV__ && /^http:");
+    expect(source).toContain('开发模式 · HTTP 明文连接');
+    expect(source).toContain('仅用于受信任的局域网调试');
+  });
+
+  it('blocks only non-standard migrated configs and keeps reasoning migration notice non-blocking', () => {
+    expect(source).toContain('config.requiresStandardProtocolReview');
+    expect(source).toContain('Base URL 不是可确认的标准 OpenAI 根地址');
+    expect(source).toContain('config.legacyReasoningBehaviorChanged');
+    expect(source).toContain('旧版 reasoning-tag 过滤兼容已移除');
+    expect(source).toContain('此标准协议配置仍可继续使用');
+    expect(source).toContain('normalizeOpenAiStandardBaseUrl(config.baseUrl)');
   });
 
   it('creates a local conversation with the selected Provider', () => {
