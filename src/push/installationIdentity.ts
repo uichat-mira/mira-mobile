@@ -32,7 +32,7 @@ export interface PushInstallationSecureStore {
   randomBytes(length: number): Promise<string>;
 }
 
-const base64UrlToBytes = (value: string) => {
+export const base64UrlToBytes = (value: string) => {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
   const alphabet =
@@ -70,7 +70,7 @@ export const bytesToBase64Url = (value: Uint8Array) => {
   return output.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
 };
 
-const utf8Bytes = (value: string) => {
+export const utf8Bytes = (value: string) => {
   const bytes: number[] = [];
   for (let index = 0; index < value.length; index += 1) {
     let codePoint = value.codePointAt(index);

@@ -7,13 +7,10 @@ import {
 import {
   MemoryPushInstallationSecureStore,
   PushInstallationIdentityService,
+  base64UrlToBytes,
+  utf8Bytes,
 } from './installationIdentity';
 import { PushBrokerClient } from './pushBrokerClient';
-
-const decode = (value: string) => {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  return Uint8Array.from(Buffer.from(normalized, 'base64'));
-};
 
 const verify = (
   message: string,
@@ -21,9 +18,9 @@ const verify = (
   publicKey: string,
 ) =>
   nacl.sign.detached.verify(
-    new TextEncoder().encode(message),
-    decode(signature),
-    decode(publicKey),
+    utf8Bytes(message),
+    base64UrlToBytes(signature),
+    base64UrlToBytes(publicKey),
   );
 
 describe('PushBrokerClient', () => {
@@ -160,7 +157,9 @@ describe('PushBrokerClient', () => {
       bindingExpiresAt: '2026-10-07T00:04:00.000Z',
     });
 
-    const body = requestBody as {
+    expect(requestBody).not.toBeNull();
+    if (!requestBody) throw new Error('Broker approval request was not captured');
+    const body = requestBody as unknown as {
       schemaVersion: 1;
       installationId: string;
       hostId: string;

@@ -3,13 +3,10 @@ import nacl from 'tweetnacl';
 import {
   MemoryPushInstallationSecureStore,
   PushInstallationIdentityService,
+  base64UrlToBytes,
   bytesToBase64Url,
+  utf8Bytes,
 } from './installationIdentity';
-
-const base64UrlToBytes = (value: string) => {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  return Uint8Array.from(Buffer.from(normalized, 'base64'));
-};
 
 describe('PushInstallationIdentityService', () => {
   it('persists one stable installation identity in secure storage', async () => {
@@ -39,7 +36,7 @@ describe('PushInstallationIdentityService', () => {
 
     expect(
       nacl.sign.detached.verify(
-        new TextEncoder().encode(message),
+        utf8Bytes(message),
         base64UrlToBytes(signature),
         base64UrlToBytes(identity.installationPublicKey),
       ),
