@@ -17,12 +17,16 @@ interface ConnectionStatusDotProps {
 
 export function ConnectionStatusDot({ status, size = spacing.sm }: ConnectionStatusDotProps) {
   const { colors } = useTheme();
+  // Green must mean an actual connection. `connecting` (which also covers the
+  // reconnecting-after-failure case) is not connected, so it shares the
+  // attention color with `disconnected`; otherwise an unreachable Host keeps a
+  // green "connected" dot.
   const color =
-    status === 'connected' || status === 'connecting'
+    status === 'connected'
       ? colors.status.success
       : status === 'error'
         ? colors.status.error
-        : status === 'disconnected'
+        : status === 'connecting' || status === 'disconnected'
           ? colors.status.warning
           : colors.text.soft;
 
