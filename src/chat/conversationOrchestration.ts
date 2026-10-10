@@ -13,6 +13,7 @@ export type ConversationStreamPhase =
   | 'continuing'
   | 'waiting-approval'
   | 'paused'
+  | 'degraded'
   | 'completed'
   | 'error';
 
@@ -138,6 +139,11 @@ export class ConversationOrchestrator {
     let replyText = '';
     let agentPaused = false;
     let sawToolResult = false;
+    // Set when the runtime reports it answered without tools because the tool
+    // channel was unavailable. The end-of-turn phase then stays 'degraded'
+    // instead of claiming a full Agent completion, so the UI keeps the notice
+    // visible for the whole turn.
+    let agentDegraded = false;
     try {
       const stream = await this.send({
         content: input.content,
@@ -207,6 +213,12 @@ export class ConversationOrchestrator {
               );
               sink.emit({ type: 'phase', phase: 'continuing' });
               break;
+            case 'notice':
+              // Non-error: the turn keeps going, but the notice must stay
+              // visible so the skipped tooling is never hidden.
+              agentDegraded = true;
+              sink.emit({ type: 'phase', phase: 'degraded' });
+              break;
             case 'run-paused':
               agentPaused = true;
               sink.emit({ type: 'clear-approval' });
@@ -215,7 +227,10 @@ export class ConversationOrchestrator {
               break;
             case 'finish':
               if (event.reason !== 'tool_calls' && !agentPaused) {
-                sink.emit({ type: 'phase', phase: 'completed' });
+                sink.emit({
+                  type: 'phase',
+                  phase: agentDegraded ? 'degraded' : 'completed',
+                });
               }
               break;
             case 'error':
@@ -230,7 +245,10 @@ export class ConversationOrchestrator {
         sink.emit({ type: 'text', text: replyText });
       }
       if (useLocalAgent && !agentPaused && !this.abortRequested) {
-        sink.emit({ type: 'phase', phase: 'completed' });
+        sink.emit({
+          type: 'phase',
+          phase: agentDegraded ? 'degraded' : 'completed',
+        });
       }
 
       const canonicalMessages = await this.options.loadCanonicalMessages();
