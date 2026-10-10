@@ -515,6 +515,35 @@ describe('MobileAgentLoop', () => {
     ]);
   });
 
+  it('fails honestly when a degraded turn still requests tools', async () => {
+    const callTool = jest.fn(async () => ({ content: 'unused' }));
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool,
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      collect(
+        await loop.run(
+          [{ role: 'user', content: 'read the file' }],
+          async () =>
+            (async function* () {
+              yield { type: 'tool-call' as const, callId: 'c1', name: 'read_file', arguments: '{}' };
+              yield { type: 'finish' as const, reason: 'tool_calls' };
+            })(),
+          { onToolChannelUnavailable: 'continue-without-tools' },
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'TOOL_CHANNEL_UNAVAILABLE' });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
   it('surfaces the tool-channel failure by default instead of silently continuing', async () => {
     const gateway: ToolGatewayClient = {
       listTools: async () => {
