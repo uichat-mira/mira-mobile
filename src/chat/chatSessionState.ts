@@ -85,10 +85,9 @@ export const getChatSendErrorMessage = (
     if (error.status === 404) return 'Provider 地址或模型不可用，请检查配置';
     if (error.status === 429) return 'Provider 请求过于频繁，请稍后重试';
     if (error.status !== undefined && error.status >= 500) return 'Provider 服务暂时不可用，请稍后重试';
-    // Any other Host-side failure (including an unreachable remote tool
-    // channel) must stay explainable instead of collapsing into the opaque
-    // local send failure below.
-    return `本地对话暂时无法连接所需服务：${error.code}`;
+    // Any remaining Host-side failure stays user-appropriate and code-free:
+    // raw error codes belong in logging/telemetry, not in chat UI copy.
+    return '本地对话暂时无法连接所需服务，请稍后重试';
   }
 
   if (error instanceof ToolGatewayError) {
