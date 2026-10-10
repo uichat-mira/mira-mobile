@@ -112,7 +112,7 @@ android {
         applicationId "io.tomz.mira.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 16
+        versionCode 17
         versionName packageVersion
         buildConfigField "String", "MIRA_FIREBASE_APP_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_APP_ID)
         buildConfigField "String", "MIRA_FIREBASE_API_KEY", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_API_KEY)
