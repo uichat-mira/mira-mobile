@@ -144,12 +144,12 @@ describe('chatSessionState', () => {
     ).toContain('远程工具通道');
   });
 
-  it('keeps an unrecognized local Host send failure explainable', () => {
+  it('keeps an unrecognized local Host send failure code-free and user-appropriate', () => {
     const message = getChatSendErrorMessage(
       new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),
       'local-provider',
     );
-    expect(message).toContain('UNRECOGNIZED_HOST_FAILURE');
-    expect(message).not.toBe('本地对话发送失败，请重试');
+    expect(message).not.toContain('UNRECOGNIZED_HOST_FAILURE');
+    expect(message).toBe('本地对话暂时无法连接所需服务，请稍后重试');
   });
 });
