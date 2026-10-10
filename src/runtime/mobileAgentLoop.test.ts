@@ -477,4 +477,63 @@ describe('MobileAgentLoop', () => {
 
     expect(events).toEqual([{ type: 'run-paused', reason: 'app-suspended' }]);
   });
+
+  it('continues without tools when the tool channel cannot be listed and fallback is enabled', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const calls: unknown[][] = [];
+    const loop = new MobileAgentLoop(gateway);
+
+    const events = await collect(
+      await loop.run(
+        [{ role: 'user', content: '1+5=?' }],
+        async (messages, tools) => {
+          calls.push([messages, tools]);
+          return (async function* () {
+            yield { type: 'text-delta' as const, delta: '5' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          })();
+        },
+        { onToolChannelUnavailable: 'continue-without-tools' },
+      ),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual([{ role: 'user', content: '1+5=?' }]);
+    expect(calls[0][1]).toEqual([]);
+    expect(events).toEqual([
+      { type: 'text-delta', delta: '5' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+  it('surfaces the tool-channel failure by default instead of silently continuing', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      loop.run(
+        [],
+        async () =>
+          (async function* () {
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+      ),
+    ).rejects.toMatchObject({ code: 'TOOL_CHANNEL_UNAVAILABLE' });
+  });
 });
