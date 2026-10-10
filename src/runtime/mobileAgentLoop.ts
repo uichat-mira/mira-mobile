@@ -23,7 +23,8 @@ export interface MobileAgentLoopOptions {
    *   to an actionable message.
    * - 'continue-without-tools': run the model without tools so an ordinary turn
    *   stays answerable while the tool channel is unreachable. Tools are only
-   *   skipped, never fabricated.
+   *   skipped, never fabricated, and a non-error notice is emitted so the
+   *   skipped tooling is visible to the user.
    */
   onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
   requestApproval?: (
@@ -58,6 +59,7 @@ export class MobileAgentLoop {
   ): Promise<AsyncIterable<RuntimeEvent>> {
     let manifests: readonly ToolManifest[];
     let tools: OpenAiTool[];
+    let toolChannelUnavailable = false;
     try {
       manifests = await this.gateway.listTools();
       tools = manifests.map(toOpenAiTool);
@@ -70,9 +72,11 @@ export class MobileAgentLoop {
       }
       // Agent mode must not turn an otherwise plain turn into a failure merely
       // because the approved remote tool channel is unreachable. Continue
-      // without tools instead of fabricating or silently faking a tool run.
+      // without tools, and emit a notice below so the run is not silently
+      // presented as a full Agent run.
       manifests = [];
       tools = [];
+      toolChannelUnavailable = true;
     }
     const maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     const maxToolResultBytes = options.maxToolResultBytes;
@@ -82,6 +86,12 @@ export class MobileAgentLoop {
     const shouldPause = options.shouldPause ?? (() => false);
 
     return (async function* () {
+      if (toolChannelUnavailable) {
+        yield {
+          type: 'notice' as const,
+          code: 'tool-channel-unavailable' as const,
+        };
+      }
       const messages = [...initialMessages];
       let rounds = 0;
       while (true) {
