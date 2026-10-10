@@ -39,6 +39,13 @@ export type RuntimeEvent =
       type: 'run-paused';
       reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected';
     }
+  /**
+   * Non-error, user-visible signal that does not stop the turn. Emitted, for
+   * example, when Agent mode proceeds without tools because the approved tool
+   * channel is unreachable; the UI must surface it so the skipped tooling is
+   * never hidden from the user.
+   */
+  | { type: 'notice'; code: 'tool-channel-unavailable' }
   | { type: 'error'; message: string };
 
 export interface ConversationRuntime {
