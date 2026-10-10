@@ -478,7 +478,7 @@ describe('MobileAgentLoop', () => {
     expect(events).toEqual([{ type: 'run-paused', reason: 'app-suspended' }]);
   });
 
-  it('continues without tools when the tool channel cannot be listed and fallback is enabled', async () => {
+  it('continues without tools and emits a notice when the tool channel cannot be listed', async () => {
     const gateway: ToolGatewayClient = {
       listTools: async () => {
         throw new ToolGatewayError(
@@ -509,6 +509,7 @@ describe('MobileAgentLoop', () => {
     expect(calls[0][0]).toEqual([{ role: 'user', content: '1+5=?' }]);
     expect(calls[0][1]).toEqual([]);
     expect(events).toEqual([
+      { type: 'notice', code: 'tool-channel-unavailable' },
       { type: 'text-delta', delta: '5' },
       { type: 'finish', reason: 'stop' },
     ]);
