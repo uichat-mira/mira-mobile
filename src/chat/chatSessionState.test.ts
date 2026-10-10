@@ -134,4 +134,22 @@ describe('chatSessionState', () => {
       ),
     ).toContain('频繁');
   });
+
+  it('maps an unavailable remote tool channel to an actionable message', () => {
+    expect(
+      getChatSendErrorMessage(
+        new RemoteHostError('REMOTE_ENDPOINT_UNAVAILABLE', 'no endpoint'),
+        'local-provider',
+      ),
+    ).toContain('远程工具通道');
+  });
+
+  it('keeps an unrecognized local Host send failure explainable', () => {
+    const message = getChatSendErrorMessage(
+      new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),
+      'local-provider',
+    );
+    expect(message).toContain('UNRECOGNIZED_HOST_FAILURE');
+    expect(message).not.toBe('本地对话发送失败，请重试');
+  });
 });
