@@ -144,6 +144,27 @@ describe('chatSessionState', () => {
     ).toContain('远程工具通道');
   });
 
+  it('maps a tool attempt on an unavailable channel to an actionable message', () => {
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'model requested tools while the channel was down',
+        ),
+        'local-provider',
+      ),
+    ).toContain('工具通道');
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'model requested tools while the channel was down',
+        ),
+        'local-provider',
+      ),
+    ).toContain('未能执行');
+  });
+
   it('keeps an unrecognized local Host send failure code-free and user-appropriate', () => {
     const message = getChatSendErrorMessage(
       new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),
