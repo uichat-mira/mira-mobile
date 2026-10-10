@@ -16,6 +16,16 @@ export interface MobileAgentLoopOptions {
   maxToolResultBytes?: number;
   shouldPause?: () => boolean;
   signal?: AbortSignal;
+  /**
+   * Reaction when the approved remote tool channel cannot be listed.
+   *
+   * - 'fail' (default): rethrow the tool-channel error so the caller can map it
+   *   to an actionable message.
+   * - 'continue-without-tools': run the model without tools so an ordinary turn
+   *   stays answerable while the tool channel is unreachable. Tools are only
+   *   skipped, never fabricated.
+   */
+  onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
   requestApproval?: (
     approval: ToolApprovalRequest,
   ) => Promise<ToolApprovalDecision>;
@@ -46,8 +56,24 @@ export class MobileAgentLoop {
     modelCall: AgentModelCall,
     options: MobileAgentLoopOptions = {},
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    const manifests = await this.gateway.listTools();
-    const tools = manifests.map(toOpenAiTool);
+    let manifests: readonly ToolManifest[];
+    let tools: OpenAiTool[];
+    try {
+      manifests = await this.gateway.listTools();
+      tools = manifests.map(toOpenAiTool);
+    } catch (error) {
+      if (
+        (options.onToolChannelUnavailable ?? 'fail') !==
+        'continue-without-tools'
+      ) {
+        throw error;
+      }
+      // Agent mode must not turn an otherwise plain turn into a failure merely
+      // because the approved remote tool channel is unreachable. Continue
+      // without tools instead of fabricating or silently faking a tool run.
+      manifests = [];
+      tools = [];
+    }
     const maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     const maxToolResultBytes = options.maxToolResultBytes;
     const deadline = Date.now() + (options.overallTimeoutMs ?? DEFAULT_OVERALL_TIMEOUT_MS);
