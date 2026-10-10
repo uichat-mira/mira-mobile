@@ -26,6 +26,7 @@ export type LocalAgentRunPhase =
   | 'waiting-approval'
   | 'running-tool'
   | 'continuing'
+  | 'degraded'
   | 'completed'
   | 'paused'
   | 'error';
@@ -60,6 +61,7 @@ const phaseLabel: Record<LocalAgentRunPhase, string> = {
   'waiting-approval': '等待你的批准',
   'running-tool': '正在执行工具',
   continuing: '工具完成，继续生成',
+  degraded: '未使用工具完成',
   completed: '本轮完成',
   paused: '本轮已暂停',
   error: '运行失败',
@@ -207,6 +209,12 @@ export function LocalAgentRunCard({
             </Pressable>
           </View>
         </View>
+      ) : null}
+
+      {phase === 'degraded' ? (
+        <Text style={[styles.notice, { color: colors.text.muted }]}>
+          工具通道当前不可用，本次已按普通回答处理，未使用任何工具。
+        </Text>
       ) : null}
 
       {pauseReason ? (
