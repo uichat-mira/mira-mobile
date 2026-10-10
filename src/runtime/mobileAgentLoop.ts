@@ -23,8 +23,9 @@ export interface MobileAgentLoopOptions {
    *   to an actionable message.
    * - 'continue-without-tools': run the model without tools so an ordinary turn
    *   stays answerable while the tool channel is unreachable. Tools are only
-   *   skipped, never fabricated, and a non-error notice is emitted so the
-   *   skipped tooling is visible to the user.
+   *   skipped, never fabricated, a non-error notice marks the skipped tooling,
+   *   and a model round that still requests tools fails the turn honestly
+   *   instead of succeeding without the requested capability.
    */
   onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
   requestApproval?: (
@@ -129,6 +130,15 @@ export class MobileAgentLoop {
         }
 
         if (pendingCalls.length === 0 || finishReason !== 'tool_calls') return;
+        if (toolChannelUnavailable) {
+          // The model requested tools although none were offered: this turn
+          // demonstrably required them. Fail honestly instead of returning an
+          // ordinary answer that silently lacks the requested capability.
+          throw new ToolGatewayError(
+            'TOOL_CHANNEL_UNAVAILABLE',
+            'The model requested tools while the tool channel was unavailable',
+          );
+        }
         if (rounds >= maxToolRounds) {
           yield { type: 'error' as const, message: `Tool round limit reached (${maxToolRounds})` };
           return;
