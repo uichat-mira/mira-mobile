@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Check } from 'lucide-react-native';
@@ -41,20 +41,26 @@ export function ShareMessageSelector({
   onConfirm,
 }: ShareMessageSelectorProps) {
   const { colors } = useTheme();
-  const rows = useMemo(() => buildShareSelectionRows(messages), [messages]);
-  const [selected, setSelected] = useState<Set<string>>(() =>
-    defaultShareSelection(rows),
-  );
+  const [offeredRows, setOfferedRows] = useState<ShareSelectionRow[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const wasVisible = useRef(false);
 
-  // Opening the selector always starts from the documented default (all selected)
-  // for the currently offered message set.
+  // Freeze the offered set on open and start from the documented default (all
+  // selected). Snapshotting only on the closed->open edge — not on every
+  // `messages` change — keeps the user's explicit opt-outs from being silently
+  // discarded when a reply streams in or the conversation otherwise mutates
+  // while the selector is open.
   useEffect(() => {
-    if (!visible) return;
-    setSelected(defaultShareSelection(rows));
-  }, [visible, rows]);
+    if (visible && !wasVisible.current) {
+      const nextRows = buildShareSelectionRows(messages);
+      setOfferedRows(nextRows);
+      setSelected(defaultShareSelection(nextRows));
+    }
+    wasVisible.current = visible;
+  }, [visible, messages]);
 
-  const selectedCount = countSelected(rows, selected);
-  const exceedsCap = selectedExceedsCardCap(rows, selected);
+  const selectedCount = countSelected(offeredRows, selected);
+  const exceedsCap = selectedExceedsCardCap(offeredRows, selected);
   const confirmDisabled = busy || selectedCount === 0;
 
   const handleToggle = useCallback((id: string) => {
@@ -63,8 +69,8 @@ export function ShareMessageSelector({
 
   const handleConfirm = useCallback(() => {
     if (busy || selectedCount === 0) return;
-    onConfirm(selectedShareMessageIds(rows, selected));
-  }, [busy, onConfirm, rows, selected, selectedCount]);
+    onConfirm(selectedShareMessageIds(offeredRows, selected));
+  }, [busy, onConfirm, offeredRows, selected, selectedCount]);
 
   const renderRow = useCallback(
     ({ item }: { item: ShareSelectionRow }) => {
@@ -147,7 +153,7 @@ export function ShareMessageSelector({
 
         <FlatList
           testID="share-selector-list"
-          data={rows}
+          data={offeredRows}
           keyExtractor={(item) => item.id}
           renderItem={renderRow}
           contentContainerStyle={styles.listContent}
@@ -155,7 +161,7 @@ export function ShareMessageSelector({
 
         <View style={[styles.footer, { borderColor: colors.border.default }]}>
           <Text style={[styles.footerText, { color: colors.text.soft }]}>
-            {'已选 ' + selectedCount + ' / ' + rows.length + ' 条'}
+            {'已选 ' + selectedCount + ' / ' + offeredRows.length + ' 条'}
           </Text>
           {exceedsCap ? (
             <Text style={[styles.footerHint, { color: colors.status.warning }]}>

@@ -55,9 +55,8 @@ import {
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
 } from '../agent/LocalAgentRunCard';
-import { buildShareCardModel } from '../share/shareCardModel';
+import { buildShareCardModel, collectShareableMessages } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
-import { buildShareSelectionRows } from '../share/shareSelection';
 import { ShareMessageSelector } from '../share/ShareMessageSelector';
 import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
@@ -244,6 +243,9 @@ export function ChatScreen() {
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isShareSelecting, setIsShareSelecting] = useState(false);
+  // Frozen when the selector opens, so the confirm path builds the very same
+  // message snapshot the user selected from.
+  const [shareSnapshot, setShareSnapshot] = useState<readonly ChatMessage[]>([]);
   const [searchFocusMessageId, setSearchFocusMessageId] = useState<string | null>(
     null,
   );
@@ -438,11 +440,13 @@ export function ChatScreen() {
     if (shareCoordinator.isActive || isSharing) return;
     if (isLoadingHistory || isLoading || historyError) return;
 
-    if (buildShareSelectionRows(messages).length === 0) {
+    const snapshot = collectShareableMessages(messages);
+    if (snapshot.length === 0) {
       Alert.alert('暂无可分享内容', '当前会话还没有可分享的消息。');
       return;
     }
 
+    setShareSnapshot(snapshot);
     setIsShareSelecting(true);
   }, [
     historyError,
@@ -459,8 +463,10 @@ export function ChatScreen() {
       if (shareCoordinator.isActive || isSharing) return;
 
       const selected = new Set(selectedIds);
-      // Filtering the canonical snapshot keeps the conversation order.
-      const selectedMessages = messages.filter((message) => selected.has(message.id));
+      // Build from the frozen snapshot the selector displayed, so messages that
+      // streamed in while it was open can neither leak in nor shift order.
+      const selectedMessages = shareSnapshot.filter((message) => selected.has(message.id));
+      setShareSnapshot([]);
       const model = buildShareCardModel(selectedMessages, sessionTitle);
       if (!model) {
         Alert.alert('暂无可分享内容', '请至少选择一条要分享的消息。');
@@ -479,7 +485,7 @@ export function ChatScreen() {
         setIsSharing(false);
       }
     },
-    [isSharing, messages, sessionTitle, shareCoordinator],
+    [isSharing, sessionTitle, shareCoordinator, shareSnapshot],
   );
 
   const closeSearch = useCallback(() => {
@@ -1004,9 +1010,12 @@ export function ChatScreen() {
 
       <ShareMessageSelector
         visible={isShareSelecting}
-        messages={messages}
+        messages={shareSnapshot}
         busy={isSharing}
-        onCancel={() => setIsShareSelecting(false)}
+        onCancel={() => {
+          setIsShareSelecting(false);
+          setShareSnapshot([]);
+        }}
         onConfirm={(selectedIds) => void handleConfirmShare(selectedIds)}
       />
 
