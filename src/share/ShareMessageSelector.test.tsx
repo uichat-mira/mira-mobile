@@ -34,6 +34,20 @@ const conversation: ChatMessage[] = [
   message('a-1', 'assistant', '回答一'),
 ];
 
+// VirtualizedList renders cells on a timer. Unmounting inside act on teardown
+// clears that timer, so no state update (and no act warning) escapes after the
+// test finishes.
+const mounted: ReactTestRenderer[] = [];
+
+afterEach(() => {
+  for (const tree of mounted) {
+    act(() => {
+      tree.unmount();
+    });
+  }
+  mounted.length = 0;
+});
+
 const mount = (messages: ChatMessage[], onConfirm: (ids: string[]) => void) => {
   let tree!: ReactTestRenderer;
   act(() => {
@@ -47,13 +61,16 @@ const mount = (messages: ChatMessage[], onConfirm: (ids: string[]) => void) => {
       />,
     );
   });
+  mounted.push(tree);
   return tree;
 };
 
 // testID is forwarded to the inner host View as well, so pick the node that
 // actually owns onPress.
 const nodeByTestID = (tree: ReactTestRenderer, testID: string) =>
-  tree.root.findAll((node) => node.props.testID === testID && typeof node.props.onPress === 'function')[0];
+  tree.root.findAll(
+    (node) => node.props.testID === testID && typeof node.props.onPress === 'function',
+  )[0];
 
 const press = (tree: ReactTestRenderer, testID: string) => {
   const node = nodeByTestID(tree, testID);
@@ -67,9 +84,9 @@ describe('ShareMessageSelector', () => {
     const confirmed: string[][] = [];
     const tree = mount(conversation, (ids) => confirmed.push(ids));
 
-    expect(
-      nodeByTestID(tree, 'share-selector-confirm').props.accessibilityLabel,
-    ).toBe('分享选中的 2 条消息');
+    expect(nodeByTestID(tree, 'share-selector-confirm').props.accessibilityLabel).toBe(
+      '分享选中的 2 条消息',
+    );
 
     press(tree, 'share-selector-confirm');
     expect(confirmed).toEqual([['u-1', 'a-1']]);
