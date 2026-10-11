@@ -134,4 +134,43 @@ describe('chatSessionState', () => {
       ),
     ).toContain('频繁');
   });
+
+  it('maps an unavailable remote tool channel to an actionable message', () => {
+    expect(
+      getChatSendErrorMessage(
+        new RemoteHostError('REMOTE_ENDPOINT_UNAVAILABLE', 'no endpoint'),
+        'local-provider',
+      ),
+    ).toContain('远程工具通道');
+  });
+
+  it('maps a tool attempt on an unavailable channel to an actionable message', () => {
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'model requested tools while the channel was down',
+        ),
+        'local-provider',
+      ),
+    ).toContain('工具通道');
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'model requested tools while the channel was down',
+        ),
+        'local-provider',
+      ),
+    ).toContain('未能执行');
+  });
+
+  it('keeps an unrecognized local Host send failure code-free and user-appropriate', () => {
+    const message = getChatSendErrorMessage(
+      new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),
+      'local-provider',
+    );
+    expect(message).not.toContain('UNRECOGNIZED_HOST_FAILURE');
+    expect(message).toBe('本地对话暂时无法连接所需服务，请稍后重试');
+  });
 });

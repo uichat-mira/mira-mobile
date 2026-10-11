@@ -60,6 +60,10 @@ export class LocalAgentRunController {
         {
           shouldPause: input.shouldPause,
           signal: abortController.signal,
+          // A Local turn must stay answerable when the approved remote tool
+          // channel is temporarily unreachable; Agent mode degrades to a plain
+          // model round instead of failing the whole turn.
+          onToolChannelUnavailable: 'continue-without-tools',
           requestApproval: (approval) =>
             this.waitForApprovalDecision(runToken, approval),
         },
