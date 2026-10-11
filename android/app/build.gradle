@@ -27,9 +27,6 @@ react {
     //   A list containing the node command and its flags. Default is just 'node'.
     // nodeExecutableAndArgs = ["node"]
     //
-    //   The command to run when bundling. By default is 'bundle'
-    // bundleCommand = "ram-bundle"
-    //
     //   The path to the CLI configuration file. Default is empty.
     // bundleConfig = file(../rn-cli.config.js)
     //
@@ -47,7 +44,7 @@ react {
     //   The hermes compiler command. By default it is 'hermesc'
     // hermesCommand = "$rootDir/my-custom-hermesc/bin/hermesc"
     //
-    //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
+    //   The list of flags to pass to the Hermes compiler. By default it is "-O", "-output-source-map"
     // hermesFlags = ["-O", "-output-source-map"]
 
     /* Autolinking */
@@ -112,7 +109,7 @@ android {
         applicationId "io.tomz.mira.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 17
+        versionCode 18
         versionName packageVersion
         buildConfigField "String", "MIRA_FIREBASE_APP_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_APP_ID)
         buildConfigField "String", "MIRA_FIREBASE_API_KEY", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_API_KEY)
