@@ -1,4 +1,5 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 import type { AppRelease } from './appUpdate';
@@ -32,6 +33,12 @@ jest.mock('../theme/ThemeContext', () => ({
   }),
 }));
 
+interface AlertButton {
+  text?: string;
+  style?: string;
+  onPress?: () => void;
+}
+
 const release: AppRelease = {
   version: { major: 0, minor: 4, patch: 0 },
   displayVersion: '0.4.0-dev',
@@ -59,6 +66,7 @@ const setFlow = (flow: AppUpdateFlow | null): void => {
 };
 
 let mounted: ReactTestRenderer[] = [];
+let alertSpy: jest.SpyInstance;
 
 const renderOverlay = (): ReactTestRenderer => {
   let tree!: ReactTestRenderer;
@@ -77,9 +85,19 @@ const textsOf = (tree: ReactTestRenderer): string[] =>
     .findAll((node) => typeof node.props.children === 'string')
     .map((node) => node.props.children as string);
 
+const lastAlertButtons = (): AlertButton[] =>
+  (alertSpy.mock.calls.at(-1)?.[2] as AlertButton[] | undefined) ?? [];
+
+const pressBackdrop = (tree: ReactTestRenderer): void => {
+  act(() => {
+    nodeWithTestId(tree, 'app-update-backdrop').props.onPress();
+  });
+};
+
 beforeEach(() => {
   mockCancelUpdateDownload.mockReset();
   mockCancelUpdateDownload.mockResolvedValue(undefined);
+  alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   act(() => {
     useAppUpdateStore.setState({ flow: null });
   });
@@ -92,6 +110,7 @@ afterEach(() => {
     mounted.forEach((tree) => tree.unmount());
   });
   mounted = [];
+  alertSpy.mockRestore();
 });
 
 describe('formatBytes', () => {
@@ -133,12 +152,20 @@ describe('AppUpdateOverlay', () => {
     ).toBe(true);
   });
 
-  it('cancels the running download when the backdrop is tapped', () => {
+  it('asks before a backdrop tap discards a running download', () => {
     setFlow(flowWith({ status: 'downloading' }));
     const tree = renderOverlay();
 
+    pressBackdrop(tree);
+
+    expect(mockCancelUpdateDownload).not.toHaveBeenCalled();
+    expect(useAppUpdateStore.getState().flow).not.toBeNull();
+
+    const terminate = lastAlertButtons().find((button) => button.text === '终止');
+    expect(terminate).toBeDefined();
+
     act(() => {
-      nodeWithTestId(tree, 'app-update-backdrop').props.onPress();
+      terminate?.onPress?.();
     });
 
     expect(mockCancelUpdateDownload).toHaveBeenCalledTimes(1);
@@ -149,10 +176,9 @@ describe('AppUpdateOverlay', () => {
     setFlow(flowWith({ status: 'failed', errorMessage: '更新失败，请稍后重试。' }));
     const tree = renderOverlay();
 
-    act(() => {
-      nodeWithTestId(tree, 'app-update-backdrop').props.onPress();
-    });
+    pressBackdrop(tree);
 
+    expect(alertSpy).not.toHaveBeenCalled();
     expect(mockCancelUpdateDownload).not.toHaveBeenCalled();
     expect(useAppUpdateStore.getState().flow).toBeNull();
   });

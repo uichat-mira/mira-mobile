@@ -1,9 +1,12 @@
 import { create } from 'zustand';
 import type { AppRelease } from './appUpdate';
 import {
+  UPDATE_PERMISSION_MESSAGE,
+  canInstallPackages,
   cancelUpdateDownload,
   downloadUpdate,
   installDownloadedUpdate,
+  isInAppUpdateSupported,
   openInstallPermissionSettings,
   toAppUpdateError,
   updateInstallErrorMessage,
@@ -46,6 +49,17 @@ interface AppUpdateState {
 let activeRun = 0;
 
 export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
+  const markStopped = (
+    run: number,
+    status: AppUpdateFlowStatus,
+    message: string,
+  ): void => {
+    if (run !== activeRun) return;
+    set((state) =>
+      state.flow === null ? state : { flow: { ...state.flow, status, errorMessage: message } },
+    );
+  };
+
   const beginRun = (release: AppRelease): void => {
     activeRun += 1;
     const run = activeRun;
@@ -60,56 +74,61 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
       },
     });
 
-    void downloadUpdate(release, (progress) => {
+    void (async () => {
+      // A previous native transfer has to be fully torn down first: the native
+      // module refuses a concurrent download, so a retry issued while the
+      // abandoned thread is still winding down would fail spuriously.
+      await cancelUpdateDownload();
       if (run !== activeRun) return;
-      set((state) =>
-        state.flow === null || state.flow.status !== 'downloading'
-          ? state
-          : {
-              flow: {
-                ...state.flow,
-                receivedBytes: progress.receivedBytes,
-                totalBytes: progress.totalBytes,
-              },
-            },
-      );
-    })
-      .then((filePath) => {
+
+      // Asking for install consent up front avoids fetching tens of megabytes
+      // only to stop at the installer's own permission gate.
+      if (isInAppUpdateSupported() && !(await canInstallPackages())) {
+        if (run !== activeRun) return;
+        markStopped(run, 'permission-required', UPDATE_PERMISSION_MESSAGE);
+        return;
+      }
+      if (run !== activeRun) return;
+
+      try {
+        const filePath = await downloadUpdate(release, (progress) => {
+          if (run !== activeRun) return;
+          set((state) =>
+            state.flow === null || state.flow.status !== 'downloading'
+              ? state
+              : {
+                  flow: {
+                    ...state.flow,
+                    receivedBytes: progress.receivedBytes,
+                    totalBytes: progress.totalBytes,
+                  },
+                },
+          );
+        });
         if (run !== activeRun) return;
         set((state) =>
           state.flow === null ? state : { flow: { ...state.flow, status: 'installing' } },
         );
-        return installDownloadedUpdate(filePath, release.sha256).then(() => {
-          if (run !== activeRun) return;
-          set((state) =>
-            state.flow === null
-              ? state
-              : { flow: { ...state.flow, status: 'handed-off' } },
-          );
-        });
-      })
-      .catch((error: unknown) => {
+
+        await installDownloadedUpdate(filePath, release.sha256);
+        if (run !== activeRun) return;
+        set((state) =>
+          state.flow === null ? state : { flow: { ...state.flow, status: 'handed-off' } },
+        );
+      } catch (error) {
         if (run !== activeRun) return;
         const code = toAppUpdateError(error).code;
         if (code === 'UPDATE_CANCELLED') {
           set({ flow: null });
           return;
         }
-        set((state) =>
-          state.flow === null
-            ? state
-            : {
-                flow: {
-                  ...state.flow,
-                  status:
-                    code === 'UPDATE_PERMISSION_REQUIRED'
-                      ? 'permission-required'
-                      : 'failed',
-                  errorMessage: updateInstallErrorMessage(error),
-                },
-              },
+        markStopped(
+          run,
+          code === 'UPDATE_PERMISSION_REQUIRED' ? 'permission-required' : 'failed',
+          updateInstallErrorMessage(error),
         );
-      });
+      }
+    })();
   };
 
   return {

@@ -74,6 +74,13 @@ class MiraAppUpdateModule(
   fun cancelDownload(promise: Promise) {
     cancelled.set(true)
     activeConnection?.let { connection -> runCatching { connection.disconnect() } }
+    // Wait for the transfer thread to unwind before resolving. Otherwise a
+    // retry issued right after a cancel can reach download() while the previous
+    // thread is still registered and be rejected as an already-running download.
+    val thread = synchronized(downloadLock) { downloadThread }
+    if (thread != null && thread != Thread.currentThread()) {
+      runCatching { thread.join(CANCEL_JOIN_TIMEOUT_MS) }
+    }
     promise.resolve(null)
   }
 
@@ -208,7 +215,7 @@ class MiraAppUpdateModule(
             receivedBytes += read
             if (receivedBytes - emittedBytes >= PROGRESS_STEP_BYTES) {
               emittedBytes = receivedBytes
-              emitProgress(receivedBytes, totalBytes)
+              emitProgress(target, receivedBytes, totalBytes)
             }
           }
           output.flush()
@@ -216,7 +223,7 @@ class MiraAppUpdateModule(
       }
 
       if (cancelled.get()) throw DownloadCancelledException()
-      emitProgress(receivedBytes, totalBytes)
+      emitProgress(target, receivedBytes, totalBytes)
 
       val actualDigest = toHex(digest.digest())
       if (actualDigest != expectedDigest) {
@@ -239,8 +246,13 @@ class MiraAppUpdateModule(
     }
   }
 
-  private fun emitProgress(receivedBytes: Long, totalBytes: Long?) {
+  /**
+   * `target` lets JS attribute a frame to the transfer it asked for, so progress
+   * left over from an abandoned native thread cannot be shown for a new run.
+   */
+  private fun emitProgress(target: File, receivedBytes: Long, totalBytes: Long?) {
     val payload = WritableNativeMap().apply {
+      putString("target", target.name)
       putDouble("receivedBytes", receivedBytes.toDouble())
       if (totalBytes == null) {
         putNull("totalBytes")
@@ -297,6 +309,7 @@ class MiraAppUpdateModule(
     private const val UPDATE_FILE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
+    private const val CANCEL_JOIN_TIMEOUT_MS = 5_000L
     private const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
     private const val PROGRESS_STEP_BYTES = 256L * 1024L
     private val DIGEST_PATTERN = Regex("^[a-f0-9]{64}$")

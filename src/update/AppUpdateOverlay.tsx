@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
 import { useAppUpdateStore, type AppUpdateFlow } from './appUpdateStore';
@@ -79,8 +79,15 @@ export function AppUpdateOverlay() {
   })();
 
   const handleRequestClose = () => {
+    // Starting the update was an explicit confirmation, so abandoning a running
+    // transfer must be one too: a stray backdrop tap or back press should not
+    // silently discard a multi-megabyte download. The sheet's own 取消 button is
+    // already a deliberate action and stays immediate.
     if (busy) {
-      cancel();
+      Alert.alert('终止下载？', '已下载的部分会被丢弃，下次需要重新下载。', [
+        { text: '继续下载', style: 'cancel' },
+        { text: '终止', style: 'destructive', onPress: cancel },
+      ]);
       return;
     }
     dismiss();

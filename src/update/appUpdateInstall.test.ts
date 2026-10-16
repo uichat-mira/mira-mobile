@@ -98,25 +98,46 @@ describe('isInAppUpdateSupported', () => {
 });
 
 describe('parseUpdateProgress', () => {
-  it('keeps a reported total', () => {
-    expect(parseUpdateProgress({ receivedBytes: 10, totalBytes: 40 })).toEqual({
-      receivedBytes: 10,
-      totalBytes: 40,
-    });
+  it('keeps the reported target and total', () => {
+    expect(
+      parseUpdateProgress({
+        target: 'mira-0.4.0-dev.apk',
+        receivedBytes: 10,
+        totalBytes: 40,
+      }),
+    ).toEqual({ target: 'mira-0.4.0-dev.apk', receivedBytes: 10, totalBytes: 40 });
   });
 
   it('reports a missing total as null instead of zero', () => {
-    expect(parseUpdateProgress({ receivedBytes: 10, totalBytes: null })).toEqual({
-      receivedBytes: 10,
-      totalBytes: null,
-    });
+    expect(
+      parseUpdateProgress({
+        target: 'mira-0.4.0-dev.apk',
+        receivedBytes: 10,
+        totalBytes: null,
+      }),
+    ).toEqual({ target: 'mira-0.4.0-dev.apk', receivedBytes: 10, totalBytes: null });
   });
 
   it('rejects payloads without a usable byte count', () => {
     expect(parseUpdateProgress({})).toBeNull();
-    expect(parseUpdateProgress({ receivedBytes: 'ten' })).toBeNull();
-    expect(parseUpdateProgress({ receivedBytes: 10, totalBytes: 'many' })).toBeNull();
+    expect(
+      parseUpdateProgress({ target: 'mira-0.4.0-dev.apk', receivedBytes: 'ten' }),
+    ).toBeNull();
+    expect(
+      parseUpdateProgress({
+        target: 'mira-0.4.0-dev.apk',
+        receivedBytes: 10,
+        totalBytes: 'many',
+      }),
+    ).toBeNull();
     expect(parseUpdateProgress(null)).toBeNull();
+  });
+
+  it('rejects frames that do not name the transfer they belong to', () => {
+    expect(parseUpdateProgress({ receivedBytes: 10, totalBytes: 40 })).toBeNull();
+    expect(
+      parseUpdateProgress({ target: '', receivedBytes: 10, totalBytes: 40 }),
+    ).toBeNull();
   });
 });
 
@@ -138,7 +159,11 @@ describe('downloadUpdate', () => {
     const progress: unknown[] = [];
 
     const pending = downloadUpdate(release, (update) => progress.push(update));
-    emitProgress({ receivedBytes: 512, totalBytes: 2048 });
+    emitProgress({
+      target: 'mira-0.4.0-dev.apk',
+      receivedBytes: 512,
+      totalBytes: 2048,
+    });
 
     await expect(pending).resolves.toBe('/cache/mira-update/mira-0.4.0-dev.apk');
     expect(mockDownload).toHaveBeenCalledWith(
@@ -146,7 +171,28 @@ describe('downloadUpdate', () => {
       release.sha256,
       'mira-0.4.0-dev.apk',
     );
-    expect(progress).toEqual([{ receivedBytes: 512, totalBytes: 2048 }]);
+    expect(progress).toEqual([
+      { target: 'mira-0.4.0-dev.apk', receivedBytes: 512, totalBytes: 2048 },
+    ]);
+  });
+
+  it('drops progress frames that belong to another transfer', async () => {
+    mockDownload.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    const progress: unknown[] = [];
+
+    const pending = downloadUpdate(release, (update) => progress.push(update));
+    emitProgress({ target: 'mira-0.3.9-dev.apk', receivedBytes: 999, totalBytes: 1000 });
+    emitProgress({
+      target: 'mira-0.4.0-dev.apk',
+      receivedBytes: 512,
+      totalBytes: 2048,
+    });
+
+    await pending;
+
+    expect(progress).toEqual([
+      { target: 'mira-0.4.0-dev.apk', receivedBytes: 512, totalBytes: 2048 },
+    ]);
   });
 
   it('stops listening for progress once the download settles', async () => {

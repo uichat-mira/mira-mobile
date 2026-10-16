@@ -11,6 +11,15 @@ export interface UpdateDownloadProgress {
   totalBytes: number | null;
 }
 
+/**
+ * A native frame also names the file it belongs to, so frames emitted by an
+ * abandoned transfer can be dropped instead of being shown against the run the
+ * user is actually watching.
+ */
+export interface UpdateProgressFrame extends UpdateDownloadProgress {
+  target: string;
+}
+
 export type AppUpdateErrorCode =
   | 'UPDATE_UNSUPPORTED'
   | 'UPDATE_BAD_ARGUMENT'
@@ -69,19 +78,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export const parseUpdateProgress = (
   payload: unknown,
-): UpdateDownloadProgress | null => {
+): UpdateProgressFrame | null => {
   if (!isRecord(payload)) return null;
-  const { receivedBytes, totalBytes } = payload;
+  const { target, receivedBytes, totalBytes } = payload;
+  if (typeof target !== 'string' || target.length === 0) return null;
   if (typeof receivedBytes !== 'number' || !Number.isFinite(receivedBytes)) {
     return null;
   }
   if (totalBytes == null) {
-    return { receivedBytes, totalBytes: null };
+    return { target, receivedBytes, totalBytes: null };
   }
   if (typeof totalBytes !== 'number' || !Number.isFinite(totalBytes)) {
     return null;
   }
-  return { receivedBytes, totalBytes };
+  return { target, receivedBytes, totalBytes };
 };
 
 export const toAppUpdateError = (error: unknown): AppUpdateInstallError => {
@@ -128,20 +138,18 @@ export const downloadUpdate = async (
     );
   }
 
+  const fileName = updateFileName(release);
   const subscription = DeviceEventEmitter.addListener(
     PROGRESS_EVENT,
     (payload: unknown) => {
-      const progress = parseUpdateProgress(payload);
-      if (progress) onProgress(progress);
+      const frame = parseUpdateProgress(payload);
+      // Frames from another target belong to a transfer this call does not own.
+      if (frame && frame.target === fileName) onProgress(frame);
     },
   );
 
   try {
-    return await nativeModule.download(
-      release.apkUrl,
-      release.sha256,
-      updateFileName(release),
-    );
+    return await nativeModule.download(release.apkUrl, release.sha256, fileName);
   } catch (error) {
     throw toAppUpdateError(error);
   } finally {
@@ -208,6 +216,14 @@ export const cancelUpdateDownload = async (): Promise<void> => {
   }
 };
 
+/**
+ * Shared by the pre-flight check in the store and the post-download rejection,
+ * so the same wording is shown whether the missing consent is discovered before
+ * or after the APK has been fetched.
+ */
+export const UPDATE_PERMISSION_MESSAGE =
+  '需要允许 Mira「安装未知应用」才能完成更新。';
+
 const ERROR_MESSAGES: Record<AppUpdateErrorCode, string> = {
   UPDATE_UNSUPPORTED: '当前平台不支持应用内更新。',
   UPDATE_BAD_ARGUMENT: '更新信息异常，请稍后重试。',
@@ -218,7 +234,7 @@ const ERROR_MESSAGES: Record<AppUpdateErrorCode, string> = {
   UPDATE_CANCELLED: '已取消下载。',
   UPDATE_FILE_MISSING: '安装包已不存在，请重新下载。',
   UPDATE_FILE_OUTSIDE_CACHE: '安装包位置异常，请重新下载。',
-  UPDATE_PERMISSION_REQUIRED: '需要允许 Mira「安装未知应用」才能完成更新。',
+  UPDATE_PERMISSION_REQUIRED: UPDATE_PERMISSION_MESSAGE,
   UPDATE_INSTALL_FAILED: '无法启动系统安装，请稍后重试。',
 };
 
