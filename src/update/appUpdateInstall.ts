@@ -42,7 +42,7 @@ export class AppUpdateInstallError extends Error {
 interface MiraAppUpdateNativeModule {
   download(url: string, sha256: string, fileName: string): Promise<string>;
   cancelDownload(): Promise<void>;
-  install(filePath: string): Promise<void>;
+  install(filePath: string, sha256: string): Promise<void>;
   canInstallPackages(): Promise<boolean>;
   openInstallPermissionSettings(): Promise<void>;
 }
@@ -149,7 +149,15 @@ export const downloadUpdate = async (
   }
 };
 
-export const installDownloadedUpdate = async (filePath: string): Promise<void> => {
+/**
+ * The native installer re-verifies the file against `sha256` before handing it
+ * to the system, so the integrity gate does not depend on this call site having
+ * received the path from `downloadUpdate`.
+ */
+export const installDownloadedUpdate = async (
+  filePath: string,
+  sha256: string,
+): Promise<void> => {
   const nativeModule = getNativeModule();
   if (nativeModule === null) {
     throw new AppUpdateInstallError(
@@ -158,7 +166,7 @@ export const installDownloadedUpdate = async (filePath: string): Promise<void> =
     );
   }
   try {
-    await nativeModule.install(filePath);
+    await nativeModule.install(filePath, sha256);
   } catch (error) {
     throw toAppUpdateError(error);
   }

@@ -114,6 +114,7 @@ describe('completing an in-app update', () => {
 
     expect(mockInstallDownloadedUpdate).toHaveBeenCalledWith(
       '/cache/mira-update/mira-0.4.0-dev.apk',
+      release.sha256,
     );
     expect(currentFlow()).toMatchObject({ status: 'handed-off', errorMessage: null });
   });

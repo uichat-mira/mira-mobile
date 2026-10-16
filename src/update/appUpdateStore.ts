@@ -79,7 +79,7 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
         set((state) =>
           state.flow === null ? state : { flow: { ...state.flow, status: 'installing' } },
         );
-        return installDownloadedUpdate(filePath).then(() => {
+        return installDownloadedUpdate(filePath, release.sha256).then(() => {
           if (run !== activeRun) return;
           set((state) =>
             state.flow === null

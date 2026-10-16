@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The update manifest already carries the canonical APK URL and its SHA-256, so
  * the download is verified before the installer is ever launched: a partially
  * written or tampered file is deleted instead of being offered for install.
+ * `install()` re-checks the digest independently, so it does not trust that
+ * `download()` produced the file.
  * Files stay inside `cacheDir/mira-update` and leave through a dedicated
  * FileProvider authority so the install grant cannot expose anything else.
  */
@@ -105,7 +107,18 @@ class MiraAppUpdateModule(
   }
 
   @ReactMethod
-  fun install(filePath: String, promise: Promise) {
+  fun install(filePath: String, sha256: String, promise: Promise) {
+    val expectedDigest = sha256.trim().lowercase()
+    if (!DIGEST_PATTERN.matches(expectedDigest)) {
+      promise.reject("UPDATE_BAD_ARGUMENT", "Update SHA-256 must be 64 hex characters")
+      return
+    }
+    // Hashing a release APK reads tens of megabytes, so it must not run on the
+    // native modules queue that JS calls are dispatched on.
+    Thread { runInstall(filePath, expectedDigest, promise) }.start()
+  }
+
+  private fun runInstall(filePath: String, expectedDigest: String, promise: Promise) {
     try {
       if (!canRequestPackageInstalls()) {
         promise.reject("UPDATE_PERMISSION_REQUIRED", "Installing unknown apps is not allowed for Mira")
@@ -119,6 +132,13 @@ class MiraAppUpdateModule(
       }
       if (!file.exists() || !file.isFile || file.length() <= 0L) {
         promise.reject("UPDATE_FILE_MISSING", "Update file is missing or empty")
+        return
+      }
+      // Independent integrity gate: anything reachable in the update directory
+      // must still match the manifest digest before the system installer sees
+      // it, so a stale or partial file cannot be offered for install.
+      if (sha256Of(file) != expectedDigest) {
+        promise.reject("UPDATE_DIGEST_MISMATCH", "Update file failed SHA-256 verification")
         return
       }
 
@@ -198,7 +218,7 @@ class MiraAppUpdateModule(
       if (cancelled.get()) throw DownloadCancelledException()
       emitProgress(receivedBytes, totalBytes)
 
-      val actualDigest = digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xFF) }
+      val actualDigest = toHex(digest.digest())
       if (actualDigest != expectedDigest) {
         target.delete()
         promise.reject("UPDATE_DIGEST_MISMATCH", "Downloaded update failed SHA-256 verification")
@@ -232,6 +252,22 @@ class MiraAppUpdateModule(
   }
 
   private fun updateDirectory(): File = File(reactApplicationContext.cacheDir, UPDATE_DIRECTORY_NAME)
+
+  private fun sha256Of(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+      val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
+      while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    return toHex(digest.digest())
+  }
+
+  private fun toHex(bytes: ByteArray): String =
+    bytes.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xFF) }
 
   private fun isInsideUpdateDirectory(file: File): Boolean {
     val root = updateDirectory().canonicalFile.path

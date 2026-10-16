@@ -93,10 +93,24 @@ export function AppUpdateOverlay() {
       animationType="fade"
       onRequestClose={handleRequestClose}
     >
-      <View style={styles.backdrop}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="关闭更新提示"
+        testID="app-update-backdrop"
+        onPress={handleRequestClose}
+        style={styles.backdrop}
+      >
         <View
           accessibilityViewIsModal
-          style={[styles.sheet, { backgroundColor: colors.bg.card, borderColor: colors.border.default }]}
+          testID="app-update-sheet"
+          // Claim the touch responder so a tap aimed at the sheet (or at one of
+          // its buttons) cannot fall through to the backdrop and close the panel
+          // while the user is reading progress or reaching for an action.
+          onStartShouldSetResponder={() => true}
+          style={[
+            styles.sheet,
+            { backgroundColor: colors.bg.card, borderColor: colors.border.default },
+          ]}
         >
           <Text style={[styles.title, { color: colors.text.ink }]}>{title}</Text>
           <Text style={[styles.version, { color: colors.text.muted }]}>
@@ -156,7 +170,7 @@ export function AppUpdateOverlay() {
             </Pressable>
           </View>
         </View>
-      </View>
+      </Pressable>
     </Modal>
   );
 }

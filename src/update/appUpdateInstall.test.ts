@@ -182,12 +182,15 @@ describe('downloadUpdate', () => {
 });
 
 describe('installDownloadedUpdate', () => {
-  it('hands the verified file path to the native installer', async () => {
+  it('hands the verified file path and digest to the native installer', async () => {
     mockInstall.mockResolvedValue(undefined);
 
-    await installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk');
+    await installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256);
 
-    expect(mockInstall).toHaveBeenCalledWith('/cache/mira-update/mira-0.4.0-dev.apk');
+    expect(mockInstall).toHaveBeenCalledWith(
+      '/cache/mira-update/mira-0.4.0-dev.apk',
+      release.sha256,
+    );
   });
 
   it('surfaces the install permission requirement as its own code', async () => {
@@ -197,8 +200,19 @@ describe('installDownloadedUpdate', () => {
     });
 
     await expect(
-      installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk'),
+      installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256),
     ).rejects.toMatchObject({ code: 'UPDATE_PERMISSION_REQUIRED' });
+  });
+
+  it('reports a digest mismatch raised by the installer instead of installing', async () => {
+    mockInstall.mockRejectedValue({
+      code: 'UPDATE_DIGEST_MISMATCH',
+      message: 'Update file failed SHA-256 verification',
+    });
+
+    await expect(
+      installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256),
+    ).rejects.toMatchObject({ code: 'UPDATE_DIGEST_MISMATCH' });
   });
 });
 
