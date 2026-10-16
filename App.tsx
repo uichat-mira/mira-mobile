@@ -42,6 +42,7 @@ import { TailscaleConnectivityLifecycle } from './src/connectivity/TailscaleConn
 import { useAppBootstrap } from './src/bootstrap/useAppBootstrap';
 import { useAppLifecycle } from './src/bootstrap/useAppLifecycle';
 import { ShareCardCaptureRoot } from './src/share/ShareCardCapture';
+import { AppUpdateOverlay } from './src/update/AppUpdateOverlay';
 import type { RootStackParamList } from './src/types/navigation';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -141,6 +142,7 @@ function App() {
     <ThemeProvider>
       <SafeAreaProvider>
         <ShareCardCaptureRoot />
+        <AppUpdateOverlay />
         <NavigationContainer linking={linking}>
           <StatusBarThemed />
           <AppInner />
