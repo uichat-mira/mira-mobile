@@ -20,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
           add(MiraAudioRecorderPackage())
           add(MiraImageSharePackage())
           add(MiraNotificationsPackage())
+          add(MiraAppUpdatePackage())
         },
       useDevSupport = BuildConfig.DEBUG,
     )

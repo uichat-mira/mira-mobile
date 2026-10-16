@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Only the downloaded update package is exposed, so the install grant
+       cannot reach any other app-private file. -->
+  <cache-path name="mira_update_cache" path="mira-update/" />
+</paths>
