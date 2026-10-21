@@ -14,7 +14,7 @@ react {
     // reactNativeDir = file("../../node_modules/react-native")
     //   The folder where the React Native Codegen package is. Default is ../../node_modules/@react-native/codegen
     // codegenDir = file("../../node_modules/@react-native/codegen")
-    //   The cli.js file which is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
+    //   The cli.js file is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
     // cliFile = file("../../node_modules/react-native/cli.js")
 
     /* Variants */
@@ -109,7 +109,7 @@ android {
         applicationId "io.tomz.mira.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 19
+        versionCode 20
         versionName packageVersion
         buildConfigField "String", "MIRA_FIREBASE_APP_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_APP_ID)
         buildConfigField "String", "MIRA_FIREBASE_API_KEY", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_API_KEY)
