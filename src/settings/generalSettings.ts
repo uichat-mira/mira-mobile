@@ -5,12 +5,26 @@ import type { SessionSource } from '../types';
 export type DefaultSessionSource = 'ask' | SessionSource;
 export type LaunchBehavior = 'home' | 'last-session';
 
+/**
+ * Perceptual haptics strength on a 0–100 scale.
+ *
+ * 0     => no vibration even when hapticsEnabled is on (user effectively muted)
+ * 100   => strongest allowed (maps to the full LIGHT_IMPACT_MS baseline)
+ *
+ * The numeric scale is intentionally decoupled from the physical vibrator
+ * duration so it stays stable across devices and future tuning.
+ */
+export const HAPTICS_STRENGTH_MIN = 0;
+export const HAPTICS_STRENGTH_MAX = 100;
+export const HAPTICS_STRENGTH_DEFAULT = 60;
+
 export interface GeneralSettings {
   defaultSessionSource: DefaultSessionSource;
   launchBehavior: LaunchBehavior;
   autoCheckUpdates: boolean;
   textScale: TextScaleId;
   hapticsEnabled: boolean;
+  hapticsStrength: number;
 }
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
@@ -19,6 +33,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   autoCheckUpdates: true,
   textScale: 'standard',
   hapticsEnabled: true,
+  hapticsStrength: HAPTICS_STRENGTH_DEFAULT,
 };
 
 const GENERAL_SETTINGS_KEY = 'mira.mobile.general.v1';
@@ -59,6 +74,14 @@ const sanitizeGeneralSettings = (value: unknown): GeneralSettings => {
       typeof candidate.hapticsEnabled === 'boolean'
         ? candidate.hapticsEnabled
         : DEFAULT_GENERAL_SETTINGS.hapticsEnabled,
+    hapticsStrength:
+      typeof candidate.hapticsStrength === 'number' &&
+      Number.isFinite(candidate.hapticsStrength)
+        ? Math.min(
+            HAPTICS_STRENGTH_MAX,
+            Math.max(HAPTICS_STRENGTH_MIN, Math.round(candidate.hapticsStrength)),
+          )
+        : DEFAULT_GENERAL_SETTINGS.hapticsStrength,
   };
 };
 

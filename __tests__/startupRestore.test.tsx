@@ -288,6 +288,7 @@ describe('startup session restore', () => {
         autoCheckUpdates: false,
         textScale: 'standard',
         hapticsEnabled: true,
+        hapticsStrength: 60,
       },
       localKeyValueStore,
     );
@@ -300,6 +301,7 @@ describe('startup session restore', () => {
         autoCheckUpdates: true,
         textScale: 'standard',
         hapticsEnabled: true,
+        hapticsStrength: 60,
       },
       localKeyValueStore,
     );
