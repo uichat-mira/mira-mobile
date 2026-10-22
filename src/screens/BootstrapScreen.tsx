@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronRight, Monitor, Puzzle } from 'lucide-react-native';
+import { ChevronRight, Cpu, Monitor, Puzzle } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../types/navigation';
@@ -65,6 +65,28 @@ export function BootstrapScreen() {
           <View style={styles.actionText}>
             <Text style={[styles.actionTitle, { color: colors.text.ink }]}>插件</Text>
             <Text style={[styles.actionDescription, { color: colors.text.soft }]}>直接进入拾言等独立能力，无需连接 Desktop。</Text>
+          </View>
+          <ChevronRight size={20} color={colors.text.soft} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="配置本地大模型"
+          onPress={() => navigation.navigate('LocalProviderConfig')}
+          style={({ pressed }) => [
+            styles.action,
+            {
+              backgroundColor: pressed ? colors.bg.soft : colors.bg.card,
+              borderColor: colors.border.default,
+            },
+          ]}
+        >
+          <View style={[styles.iconWrap, { backgroundColor: colors.bg.soft }]}>
+            <Cpu size={22} color={colors.primary} />
+          </View>
+          <View style={styles.actionText}>
+            <Text style={[styles.actionTitle, { color: colors.text.ink }]}>本地大模型</Text>
+            <Text style={[styles.actionDescription, { color: colors.text.soft }]}>配置本地模型 Provider，在设备侧直接对话。</Text>
           </View>
           <ChevronRight size={20} color={colors.text.soft} />
         </Pressable>
