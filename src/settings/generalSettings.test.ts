@@ -28,6 +28,7 @@ describe('generalSettings', () => {
       autoCheckUpdates: false,
       textScale: 'large',
       hapticsEnabled: false,
+      hapticsStrength: 42,
     } as const;
 
     await saveGeneralSettings(settings, store);
@@ -44,10 +45,32 @@ describe('generalSettings', () => {
         autoCheckUpdates: 'yes',
         textScale: 'huge',
         hapticsEnabled: 1,
+        hapticsStrength: 'strong',
       }),
     );
 
     await expect(loadGeneralSettings(store)).resolves.toEqual(DEFAULT_GENERAL_SETTINGS);
+  });
+
+  it('clamps hapticsStrength to the 0–100 scale', async () => {
+    const store = makeStore();
+    await store.set(
+      'mira.mobile.general.v1',
+      JSON.stringify({
+        ...DEFAULT_GENERAL_SETTINGS,
+        hapticsStrength: 999,
+      }),
+    );
+    await expect(loadGeneralSettings(store)).resolves.toMatchObject({ hapticsStrength: 100 });
+
+    await store.set(
+      'mira.mobile.general.v1',
+      JSON.stringify({
+        ...DEFAULT_GENERAL_SETTINGS,
+        hapticsStrength: -50,
+      }),
+    );
+    await expect(loadGeneralSettings(store)).resolves.toMatchObject({ hapticsStrength: 0 });
   });
 
   it('falls back to defaults on malformed JSON', async () => {
