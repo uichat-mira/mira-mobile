@@ -24,6 +24,7 @@ jobs:
   publish-r2-release-truth:
     name: Publish branch-isolated R2 release truth
     runs-on: ubuntu-latest
+    timeout-minutes: 100
     steps:
       - name: Validate release channel
         shell: bash
@@ -61,8 +62,12 @@ jobs:
             workflow_file='mobile-ci.yml'
           fi
 
+          # Native Android/iOS branch CI can legitimately exceed 30 minutes.
+          # Keep the release-truth waiter comfortably above the observed build window,
+          # while the job-level timeout still prevents an unbounded runner lease.
+          wait_deadline=$((SECONDS + 5400))
           source_run_id=''
-          for attempt in $(seq 1 180); do
+          while [ "$SECONDS" -lt "$wait_deadline" ]; do
             source_run_id=$(gh api \
               --method GET \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs" \
@@ -108,7 +113,7 @@ jobs:
             exit 0
           done
 
-          echo "Timed out waiting for canonical ${workflow_file} run for ${RELEASE_CHANNEL}@${GITHUB_SHA}." >&2
+          echo "Timed out after 90 minutes waiting for canonical ${workflow_file} run for ${RELEASE_CHANNEL}@${GITHUB_SHA}." >&2
           exit 1
 
       - name: Download signed release from canonical CI

@@ -14,7 +14,7 @@ react {
     // reactNativeDir = file("../../node_modules/react-native")
     //   The folder where the React Native Codegen package is. Default is ../../node_modules/@react-native/codegen
     // codegenDir = file("../../node_modules/@react-native/codegen")
-    //   The cli.js file which is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
+    //   The cli.js file is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
     // cliFile = file("../../node_modules/react-native/cli.js")
 
     /* Variants */
@@ -26,9 +26,6 @@ react {
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
     // nodeExecutableAndArgs = ["node"]
-    //
-    //   The command to run when bundling. By default is 'bundle'
-    // bundleCommand = "ram-bundle"
     //
     //   The path to the CLI configuration file. Default is empty.
     // bundleConfig = file(../rn-cli.config.js)
@@ -47,7 +44,7 @@ react {
     //   The hermes compiler command. By default it is 'hermesc'
     // hermesCommand = "$rootDir/my-custom-hermesc/bin/hermesc"
     //
-    //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
+    //   The list of flags to pass to the Hermes compiler. By default it is "-O", "-output-source-map"
     // hermesFlags = ["-O", "-output-source-map"]
 
     /* Autolinking */
@@ -112,7 +109,7 @@ android {
         applicationId "io.tomz.mira.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 16
+        versionCode 20
         versionName packageVersion
         buildConfigField "String", "MIRA_FIREBASE_APP_ID", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_APP_ID)
         buildConfigField "String", "MIRA_FIREBASE_API_KEY", buildConfigString(firebaseConfigValues.MIRA_FIREBASE_API_KEY)

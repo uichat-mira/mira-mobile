@@ -55,8 +55,9 @@ import {
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
 } from '../agent/LocalAgentRunCard';
-import { buildShareCardModel } from '../share/shareCardModel';
+import { buildShareCardModel, collectShareableMessages } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
+import { ShareMessageSelector } from '../share/ShareMessageSelector';
 import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
@@ -241,6 +242,10 @@ export function ChatScreen() {
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [isShareSelecting, setIsShareSelecting] = useState(false);
+  // Frozen when the selector opens, so the confirm path builds the very same
+  // message snapshot the user selected from.
+  const [shareSnapshot, setShareSnapshot] = useState<readonly ChatMessage[]>([]);
   const [searchFocusMessageId, setSearchFocusMessageId] = useState<string | null>(
     null,
   );
@@ -429,36 +434,59 @@ export function ChatScreen() {
     flatListRef.current?.scrollToEnd({ animated: true });
   }, [isSearchVisible]);
 
-  const handleShare = useCallback(async () => {
+  // The share button no longer shares immediately: it opens the selection mode
+  // so the user decides which questions and replies end up in the card.
+  const handleShare = useCallback(() => {
     if (shareCoordinator.isActive || isSharing) return;
     if (isLoadingHistory || isLoading || historyError) return;
 
-    const model = buildShareCardModel(messages, sessionTitle);
-    if (!model) {
+    const snapshot = collectShareableMessages(messages);
+    if (snapshot.length === 0) {
       Alert.alert('暂无可分享内容', '当前会话还没有可分享的消息。');
       return;
     }
 
-    setIsSharing(true);
-    try {
-      await shareCoordinator.share(model);
-    } catch {
-      Alert.alert(
-        '分享失败',
-        '未能生成分享图片或打开系统分享，请重试；若仍失败，可重新打开会话后再试。',
-      );
-    } finally {
-      setIsSharing(false);
-    }
+    setShareSnapshot(snapshot);
+    setIsShareSelecting(true);
   }, [
     historyError,
     isLoading,
     isLoadingHistory,
     isSharing,
     messages,
-    sessionTitle,
     shareCoordinator,
   ]);
+
+  const handleConfirmShare = useCallback(
+    async (selectedIds: string[]) => {
+      setIsShareSelecting(false);
+      if (shareCoordinator.isActive || isSharing) return;
+
+      const selected = new Set(selectedIds);
+      // Build from the frozen snapshot the selector displayed, so messages that
+      // streamed in while it was open can neither leak in nor shift order.
+      const selectedMessages = shareSnapshot.filter((message) => selected.has(message.id));
+      setShareSnapshot([]);
+      const model = buildShareCardModel(selectedMessages, sessionTitle);
+      if (!model) {
+        Alert.alert('暂无可分享内容', '请至少选择一条要分享的消息。');
+        return;
+      }
+
+      setIsSharing(true);
+      try {
+        await shareCoordinator.share(model);
+      } catch {
+        Alert.alert(
+          '分享失败',
+          '未能生成分享图片或打开系统分享，请重试；若仍失败，可重新打开会话后再试。',
+        );
+      } finally {
+        setIsSharing(false);
+      }
+    },
+    [isSharing, sessionTitle, shareCoordinator, shareSnapshot],
+  );
 
   const closeSearch = useCallback(() => {
     setIsSearchVisible(false);
@@ -978,6 +1006,17 @@ export function ChatScreen() {
         shareDisabled={shareDisabled}
         shareDisabledAccessibilityLabel={shareAccessibilityLabel}
         onFindInChat={openSearch}
+      />
+
+      <ShareMessageSelector
+        visible={isShareSelecting}
+        messages={shareSnapshot}
+        busy={isSharing}
+        onCancel={() => {
+          setIsShareSelecting(false);
+          setShareSnapshot([]);
+        }}
+        onConfirm={(selectedIds) => void handleConfirmShare(selectedIds)}
       />
 
       {isSearchVisible ? (

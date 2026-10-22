@@ -23,11 +23,17 @@ export const MAX_SHARE_CARD_MESSAGE_CHARS = 800;
 const MAX_TITLE_CHARS = 30;
 const FALLBACK_TITLE = '对话分享';
 
-const isShareableMessage = (message: ChatMessage): message is ChatMessage & {
-  role: 'user' | 'assistant';
-} => message.role === 'user' || message.role === 'assistant';
+export type ShareableChatMessage = ChatMessage & { role: 'user' | 'assistant' };
 
-const resolveMessageContent = (message: ChatMessage): string => {
+const isShareableMessage = (message: ChatMessage): message is ShareableChatMessage =>
+  message.role === 'user' || message.role === 'assistant';
+
+/**
+ * Resolve the text a share card shows for one message. Canonical `content` wins;
+ * assistant text `parts` are the fallback because a streamed reply can land its
+ * text in `parts` before `content` is written.
+ */
+export const resolveShareMessageContent = (message: ChatMessage): string => {
   const direct = message.content.trim();
   if (direct) return direct;
 
@@ -37,6 +43,19 @@ const resolveMessageContent = (message: ChatMessage): string => {
     .join('\n')
     .trim();
 };
+
+/**
+ * Single source of truth for "which messages can be shared": user/assistant
+ * order is preserved and empty-content messages are dropped. The pre-share
+ * selector and the card model both consume this, so the offered list and the
+ * exported list can never drift apart.
+ */
+export const collectShareableMessages = (
+  messages: readonly ChatMessage[],
+): ShareableChatMessage[] =>
+  messages
+    .filter(isShareableMessage)
+    .filter((message) => resolveShareMessageContent(message).length > 0);
 
 const truncateCodePoints = (value: string, max: number): string => {
   const characters = Array.from(value);
@@ -74,14 +93,11 @@ export const buildShareCardModel = (
   title?: string,
   now: Date = new Date(),
 ): ShareCardModel | null => {
-  const shareable = messages
-    .filter(isShareableMessage)
-    .map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: resolveMessageContent(message),
-    }))
-    .filter((message) => message.content.length > 0);
+  const shareable = collectShareableMessages(messages).map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: resolveShareMessageContent(message),
+  }));
   if (shareable.length === 0) return null;
 
   const capped = shareable.slice(0, MAX_SHARE_CARD_MESSAGES).map((message) => ({
