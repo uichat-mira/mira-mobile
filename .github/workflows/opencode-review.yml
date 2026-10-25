@@ -69,7 +69,7 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
         with:
           use_github_token: true
-          model: opencode-go/union-alpha-free
+          model: opencode-go/union-alpha
           prompt: |
             Retry this pull request review as an independent advisory reviewer.
             Follow AGENTS.md and report high-confidence P0-P2 defects only.
