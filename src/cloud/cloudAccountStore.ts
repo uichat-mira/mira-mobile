@@ -292,10 +292,19 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const result = await cloudAuthService.listDevices();
       // The request may finish after logout, revoke, or a different login.
       // Its result belongs only to the account that initiated this load.
-      if (
-        get().status !== 'signed_in' ||
-        get().account?.id !== current.account.id
-      ) return;
+      const latest = get();
+      if (latest.account?.id !== current.account.id) return;
+      if (latest.status !== 'signed_in') {
+        // Same account, but refresh has moved it offline/authorizing. Never
+        // publish the stale list, and do not strand the retry state on loading.
+        if (latest.devicesStatus === 'loading') {
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: deviceListFailureMessage,
+          });
+        }
+        return;
+      }
       switch (result.status) {
         case 'listed':
           set({
@@ -329,9 +338,10 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           });
       }
     } catch {
+      const latest = get();
       if (
-        get().status === 'signed_in' &&
-        get().account?.id === current.account.id
+        latest.account?.id === current.account.id &&
+        latest.devicesStatus === 'loading'
       ) {
         set({
           devicesStatus: 'unavailable',
