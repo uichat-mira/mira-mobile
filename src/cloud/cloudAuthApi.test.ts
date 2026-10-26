@@ -89,6 +89,7 @@ describe('Mira Cloud OAuth/API contract', () => {
     ];
     expect(probeUrl).toBe('https://cloud-auth.tomzlab.cn/health');
     expect(probeInit.method).toBe('GET');
+    expect(probeInit.credentials).toBe('omit');
     expect(probeInit.body).toBeUndefined();
     expect(probeInit.headers).toBeUndefined();
     expect(probeUrl).not.toContain('single-use-secret');
