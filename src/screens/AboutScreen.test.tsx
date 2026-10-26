@@ -111,7 +111,7 @@ describe('AboutScreen MOB-056D', () => {
     const subtitles = tree.root
       .findAll((node) => typeof node.props.children === 'string')
       .map((node) => node.props.children as string);
-    expect(subtitles.some((value) => value.includes('0.3.18-dev'))).toBe(true);
+    expect(subtitles.some((value) => value.includes('0.3.19-dev'))).toBe(true);
   });
 
   it('shows no new-version state when the release is equal or older', async () => {
