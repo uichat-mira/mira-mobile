@@ -339,11 +339,13 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const result = await cloudAuthService.revokeDevice(deviceId);
       switch (result.status) {
         case 'signed_out':
+          // There was no stored Cloud credential, so the service never sent
+          // DELETE. Do not report the requested device as revoked.
           set({
             status: 'signed_out',
             account: null,
             expiresAt: null,
-            message: 'Mira Cloud 已确认撤销这台设备。',
+            message: '本机 Mira Cloud 已退出，设备撤销未执行；请重新登录后重试。',
             ...deviceReset(),
           });
           return;
