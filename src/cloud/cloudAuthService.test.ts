@@ -724,6 +724,9 @@ describe('Mira Cloud device service', () => {
 
   it('serializes logout before a later revoke and does not send DELETE with a cleared token', async () => {
     const harness = createHarness();
+    await harness.service.beginSignIn();
+    const installationId = harness.installationStore.peek()?.installationId;
+    expect(installationId).toBeDefined();
     await harness.sessionStore.save(storedSession());
     let releaseLogout!: () => void;
     let logoutStarted!: () => void;
@@ -746,7 +749,10 @@ describe('Mira Cloud device service', () => {
     await expect(revoke).resolves.toEqual({ status: 'signed_out' });
     expect(harness.api.revokeDevice).not.toHaveBeenCalled();
     expect(harness.sessionStore.peek()).toBeNull();
-    expect(harness.installationStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(
+      installationId,
+    );
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
   });
 
   it('keeps the installation identity when this device is revoked', async () => {
