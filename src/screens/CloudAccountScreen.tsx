@@ -22,6 +22,7 @@ import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
+import type { MiraDevice } from '../cloud/cloudAuthApi';
 
 interface ActionButtonProps {
   label: string;
@@ -86,6 +87,21 @@ const expiryLabel = (expiresAt: string | null): string | null => {
   return `会话有效期至 ${year}-${month}-${day}`;
 };
 
+const dateLabel = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const devicePlatformLabel = (platform: MiraDevice['platform']): string =>
+  platform === 'desktop' ? '桌面设备' : '移动设备';
+
+const deviceTitle = (device: MiraDevice): string =>
+  device.clientName?.trim() || devicePlatformLabel(device.platform);
+
 export function CloudAccountScreen() {
   const { colors } = useTheme();
   const status = useCloudAccountStore(state => state.status);
@@ -97,12 +113,25 @@ export function CloudAccountScreen() {
   const cancelSignIn = useCloudAccountStore(state => state.cancelSignIn);
   const signOut = useCloudAccountStore(state => state.signOut);
   const refresh = useCloudAccountStore(state => state.refresh);
+  const devices = useCloudAccountStore(state => state.devices);
+  const devicesStatus = useCloudAccountStore(state => state.devicesStatus);
+  const devicesMessage = useCloudAccountStore(state => state.devicesMessage);
+  const revokingDeviceId = useCloudAccountStore(
+    state => state.revokingDeviceId,
+  );
+  const loadDevices = useCloudAccountStore(state => state.loadDevices);
+  const revokeDevice = useCloudAccountStore(state => state.revokeDevice);
 
   useFocusEffect(
     useCallback(() => {
       const current = useCloudAccountStore.getState();
       if (current.initialized && current.status !== 'authorizing') {
-        void current.refresh();
+        void current.refresh().then(() => {
+          const next = useCloudAccountStore.getState();
+          if (next.status === 'signed_in') {
+            void next.loadDevices();
+          }
+        });
       }
     }, []),
   );
@@ -122,6 +151,21 @@ export function CloudAccountScreen() {
     );
   };
 
+  const requestRevoke = (device: MiraDevice) => {
+    Alert.alert(
+      '撤销这台 Mira 设备？',
+      'Mira Cloud 无法可靠识别哪一台是当前设备。如果撤销的是本机，这台手机的 Mira Cloud 登录会失效，需要重新登录。只有服务端确认后才会显示撤销成功。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '撤销设备',
+          style: 'destructive',
+          onPress: () => void revokeDevice(device.id),
+        },
+      ],
+    );
+  };
+
   const subtitle =
     status === 'signed_in'
       ? account?.username ?? '已登录'
@@ -132,6 +176,12 @@ export function CloudAccountScreen() {
       : status === 'session_rejected'
       ? '登录已失效'
       : '可选';
+
+  const showDeviceSection =
+    account !== null &&
+    (status === 'signed_in' ||
+      (status === 'cloud_unavailable' &&
+        (devicesStatus === 'loaded' || devices.length > 0)));
 
   return (
     <SafeAreaView
@@ -312,6 +362,146 @@ export function CloudAccountScreen() {
           </View>
         ) : null}
 
+        {showDeviceSection ? (
+          <View
+            style={[
+              styles.deviceSection,
+              {
+                backgroundColor: colors.bg.card,
+                borderColor: colors.border.default,
+              },
+            ]}
+          >
+            <Text style={[styles.deviceSectionTitle, { color: colors.text.ink }]}>
+              我的 Mira 设备
+            </Text>
+            <Text style={[styles.description, { color: colors.text.base }]}>
+              仅显示 Mira Cloud 返回的当前账户设备。Mira Mobile
+              不能可靠识别哪一台是当前设备，也不会为任何一行添加“此设备”标记。
+            </Text>
+
+            {devicesStatus === 'idle' || devicesStatus === 'loading' ? (
+              <View style={styles.busyRow}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={[styles.muted, { color: colors.text.soft }]}>
+                  正在读取设备列表…
+                </Text>
+              </View>
+            ) : null}
+
+            {devicesMessage ? (
+              <Text
+                style={[styles.deviceMessage, { color: colors.status.error }]}
+              >
+                {devicesMessage}
+              </Text>
+            ) : null}
+
+            {devicesStatus === 'unavailable' ? (
+              <ActionButton
+                icon={RefreshCw}
+                label="重试读取设备列表"
+                tone="secondary"
+                onPress={() => void loadDevices()}
+                disabled={busy || revokingDeviceId !== null}
+              />
+            ) : null}
+
+            {devicesStatus === 'loaded' && devices.length === 0 ? (
+              <Text style={[styles.muted, { color: colors.text.soft }]}>
+                Mira Cloud 尚未返回任何设备。
+              </Text>
+            ) : null}
+
+            {devicesStatus === 'loaded'
+              ? devices.map(device => (
+                  <View
+                    key={device.id}
+                    style={[
+                      styles.deviceRow,
+                      { borderColor: colors.border.default },
+                    ]}
+                  >
+                    <View style={styles.deviceRowHeader}>
+                      <Text
+                        style={[styles.deviceTitle, { color: colors.text.ink }]}
+                      >
+                        {deviceTitle(device)}
+                      </Text>
+                      {device.revokedAt ? (
+                        <Text
+                          style={[
+                            styles.deviceBadge,
+                            {
+                              backgroundColor: colors.status.errorBg,
+                              color: colors.status.error,
+                            },
+                          ]}
+                        >
+                          已撤销
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      style={[styles.deviceMeta, { color: colors.text.soft }]}
+                    >
+                      {[
+                        devicePlatformLabel(device.platform),
+                        device.clientVersion
+                          ? `版本 ${device.clientVersion}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                    <Text
+                      style={[styles.deviceMeta, { color: colors.text.muted }]}
+                    >
+                      创建于 {dateLabel(device.createdAt)} · 最近活动{' '}
+                      {dateLabel(device.lastSeenAt)}
+                    </Text>
+                    {device.revokedAt ? (
+                      <Text
+                        style={[styles.deviceMeta, { color: colors.text.muted }]}
+                      >
+                        撤销于 {dateLabel(device.revokedAt)}
+                      </Text>
+                    ) : (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`撤销设备 ${deviceTitle(device)}`}
+                        accessibilityState={{
+                          disabled:
+                            busy || revokingDeviceId !== null,
+                        }}
+                        disabled={busy || revokingDeviceId !== null}
+                        onPress={() => requestRevoke(device)}
+                        style={({ pressed }) => [
+                          styles.deviceRevokeButton,
+                          { borderColor: colors.status.error },
+                          pressed && styles.pressed,
+                          (busy || revokingDeviceId !== null) &&
+                            styles.disabled,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.deviceRevokeLabel,
+                            { color: colors.status.error },
+                          ]}
+                        >
+                          {revokingDeviceId === device.id
+                            ? '正在撤销…'
+                            : '撤销'}
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ))
+              : null}
+          </View>
+        ) : null}
+
         {status === 'session_rejected' ? (
           <View style={styles.section}>
             <Text style={[styles.description, { color: colors.text.base }]}>
@@ -400,6 +590,58 @@ const styles = StyleSheet.create({
   muted: {
     fontSize: fontSize.button,
     flex: 1,
+  },
+  deviceSection: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  deviceSectionTitle: {
+    fontSize: fontSize.titleMd,
+    fontWeight: '700',
+  },
+  deviceMessage: {
+    fontSize: fontSize.button,
+    lineHeight: 21,
+  },
+  deviceRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: spacing.md,
+    gap: spacing.xs,
+  },
+  deviceRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  deviceTitle: {
+    flex: 1,
+    fontSize: fontSize.bodyMd,
+    fontWeight: '600',
+  },
+  deviceBadge: {
+    fontSize: fontSize.caption,
+    fontWeight: '600',
+    borderRadius: radius.full,
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
+  deviceMeta: {
+    fontSize: fontSize.caption,
+  },
+  deviceRevokeButton: {
+    alignSelf: 'flex-start',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  deviceRevokeLabel: {
+    fontSize: fontSize.button,
+    fontWeight: '600',
   },
   actionButton: {
     minHeight: sizing.touchTarget,

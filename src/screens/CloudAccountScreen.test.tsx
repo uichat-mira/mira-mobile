@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text } from 'react-native';
+import { Alert, Text } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
@@ -38,6 +38,10 @@ const baseState = {
   message: null,
   busy: false,
   initialized: true,
+  devices: [],
+  devicesStatus: 'idle' as const,
+  devicesMessage: null,
+  revokingDeviceId: null,
 };
 
 let currentTree: ReactTestRenderer | null = null;
@@ -87,6 +91,7 @@ describe('CloudAccountScreen baseline states', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     act(() => {
       currentTree?.unmount();
       currentTree = null;
@@ -148,6 +153,155 @@ describe('CloudAccountScreen baseline states', () => {
     const strings = renderedStrings(tree);
 
     expect(strings).toContain('Mira Cloud 登录已失效');
+    expect(labels(tree)).toContain('重新登录 Mira Cloud');
+  });
+
+  it('shows server-returned devices and their revoked state without guessing the current device', async () => {
+    const revokedDesktop = {
+      id: 'desktop-1',
+      platform: 'desktop' as const,
+      clientName: 'Mira Desktop',
+      clientVersion: '1.0.0',
+      createdAt: '2026-10-18T08:00:00.000Z',
+      lastSeenAt: '2026-10-24T09:00:00.000Z',
+      revokedAt: '2026-10-25T10:00:00.000Z',
+    };
+    setCloudState({
+      ...baseState,
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devices: [
+        {
+          id: 'mobile-1',
+          platform: 'mobile',
+          clientName: 'Mira Mobile',
+          clientVersion: '0.3.17',
+          createdAt: '2026-10-20T08:00:00.000Z',
+          lastSeenAt: '2026-10-25T09:00:00.000Z',
+          revokedAt: null,
+        },
+        revokedDesktop,
+      ],
+      devicesStatus: 'loaded',
+    });
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+
+    expect(strings).toContain('我的 Mira 设备');
+    expect(strings).toContain('Mira Mobile');
+    expect(strings).toContain('Mira Desktop');
+    expect(strings).toContain('已撤销');
+    expect(strings).toContain('撤销于 2026-10-25');
+    expect(strings).not.toContain('此设备');
+    expect(labels(tree)).toContain('撤销设备 Mira Mobile');
+    expect(labels(tree)).not.toContain('撤销设备 Mira Desktop');
+  });
+
+  it('renders a clear empty device list state', async () => {
+    setCloudState({
+      ...baseState,
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devices: [],
+      devicesStatus: 'loaded',
+    });
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+
+    expect(strings).toContain('Mira Cloud 尚未返回任何设备。');
+    expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
+  });
+
+  it('keeps a retryable device-list outage distinct from account and revoke failures', async () => {
+    setCloudState({
+      ...baseState,
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devicesStatus: 'unavailable',
+      devicesMessage: '无法连接 Mira Cloud，暂时无法读取设备列表。',
+    });
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+
+    expect(strings).toContain('无法连接 Mira Cloud，暂时无法读取设备列表。');
+    expect(labels(tree)).toContain('重试读取设备列表');
+    expect(strings).not.toContain('Mira Cloud 已确认撤销这台设备。');
+  });
+
+  it('requires explicit confirmation that revoking may remove this installation', async () => {
+    const revokeDevice = jest.fn();
+    const device = {
+      id: 'mobile-1',
+      platform: 'mobile' as const,
+      clientName: 'Mira Mobile',
+      clientVersion: '0.3.17',
+      createdAt: '2026-10-20T08:00:00.000Z',
+      lastSeenAt: '2026-10-25T09:00:00.000Z',
+      revokedAt: null,
+    };
+    setCloudState({
+      ...baseState,
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devices: [device],
+      devicesStatus: 'loaded',
+      revokeDevice,
+    });
+    const alertSpy = jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation(() => undefined);
+    const tree = await renderScreen();
+
+    expect(renderedStrings(tree)).not.toContain('Mira Cloud 已确认撤销这台设备。');
+    const button = tree.root.findAll(
+      node =>
+        typeof node.props.onPress === 'function' &&
+        node.props.accessibilityLabel === '撤销设备 Mira Mobile',
+    )[0];
+    expect(button).toBeDefined();
+    act(() => {
+      button?.props.onPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    const [title, body, buttons] = alertSpy.mock.calls[0] as [
+      string,
+      string,
+      Array<{ text: string; onPress?: () => void }>,
+    ];
+    expect(title).toContain('撤销');
+    expect(body).toContain('如果撤销的是本机');
+    expect(body).toContain('需要重新登录');
+    expect(revokeDevice).not.toHaveBeenCalled();
+
+    const confirm = buttons.find(item => item.text === '撤销设备');
+    act(() => {
+      confirm?.onPress?.();
+    });
+    expect(revokeDevice).toHaveBeenCalledWith('mobile-1');
+    expect(renderedStrings(tree)).not.toContain('Mira Cloud 已确认撤销这台设备。');
+  });
+
+  it('shows a confirmed current-device revoke as reauthentication, never as a valid session', async () => {
+    setCloudState({
+      ...baseState,
+      status: 'session_rejected',
+      account: null,
+      expiresAt: null,
+      message:
+        'Mira Cloud 已确认撤销这台设备；本机 Cloud 登录已失效，请重新登录。',
+    });
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+
+    expect(strings).toContain('Mira Cloud 登录已失效');
+    expect(strings).toContain(
+      'Mira Cloud 已确认撤销这台设备；本机 Cloud 登录已失效，请重新登录。',
+    );
     expect(labels(tree)).toContain('重新登录 Mira Cloud');
   });
 });

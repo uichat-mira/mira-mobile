@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CloudAccountIdentity } from './cloudAuthApi';
+import type { CloudAccountIdentity, MiraDevice } from './cloudAuthApi';
 import {
   cloudAuthService,
   CloudAuthServiceError,
@@ -15,6 +15,12 @@ export type CloudAccountStatus =
   | 'cloud_unavailable'
   | 'session_rejected';
 
+export type CloudDevicesStatus =
+  | 'idle'
+  | 'loading'
+  | 'loaded'
+  | 'unavailable';
+
 interface CloudAccountStore {
   status: CloudAccountStatus;
   account: CloudAccountIdentity | null;
@@ -22,8 +28,14 @@ interface CloudAccountStore {
   message: string | null;
   busy: boolean;
   initialized: boolean;
+  devices: MiraDevice[];
+  devicesStatus: CloudDevicesStatus;
+  devicesMessage: string | null;
+  revokingDeviceId: string | null;
   initialize: () => Promise<void>;
   refresh: () => Promise<void>;
+  loadDevices: () => Promise<void>;
+  revokeDevice: (deviceId: string) => Promise<void>;
   signIn: () => Promise<void>;
   cancelSignIn: () => Promise<void>;
   completeSignIn: (params: OAuthCallbackParams) => Promise<CloudAccountStatus>;
@@ -35,6 +47,17 @@ let initialization: Promise<void> | null = null;
 const unavailableMessage =
   'Mira Cloud 暂时不可用。本地模型和 Tailscale 直连不受影响。';
 const rejectedMessage = 'Mira Cloud 登录已失效，请重新登录。';
+const deviceListFailureMessage = '无法读取 Mira Cloud 设备列表，请稍后重试。';
+
+const deviceReset = () => ({
+  devices: [] as MiraDevice[],
+  devicesStatus: 'idle' as CloudDevicesStatus,
+  devicesMessage: null as string | null,
+  revokingDeviceId: null as string | null,
+});
+
+const keepsAccountDevices = (state: CloudAuthSessionState): boolean =>
+  state.status === 'signed_in' || state.status === 'cloud_unavailable';
 
 const resultStatus = (
   state: CloudAuthSessionState,
@@ -106,6 +129,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   message: null,
   busy: false,
   initialized: false,
+  ...deviceReset(),
 
   initialize: async () => {
     if (get().initialized) return;
@@ -113,13 +137,14 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       initialization = (async () => {
         try {
           const state = await cloudAuthService.restoreSession();
-          set({ ...resultStatus(state), initialized: true });
+          set({ ...resultStatus(state), ...deviceReset(), initialized: true });
         } catch {
           set({
             status: 'signed_out',
             account: null,
             expiresAt: null,
             message: '无法读取 Mira Cloud 登录状态。',
+            ...deviceReset(),
             initialized: true,
           });
         }
@@ -133,7 +158,11 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ busy: true });
     try {
       const state = await cloudAuthService.restoreSession();
-      set(resultStatus(state));
+      const next = resultStatus(state);
+      set({
+        ...next,
+        ...(keepsAccountDevices(state) ? {} : deviceReset()),
+      });
     } catch {
       set({
         status: 'cloud_unavailable',
@@ -188,6 +217,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const state = resultStatus(restored);
       set({
         ...state,
+        ...(keepsAccountDevices(restored) ? {} : deviceReset()),
         busy: false,
         message:
           restored.status === 'session_rejected'
@@ -208,7 +238,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ busy: true, message: null });
     try {
       const state = await cloudAuthService.completeSignIn(params);
-      set({ ...resultStatus(state), busy: false });
+      set({ ...resultStatus(state), ...deviceReset(), busy: false });
     } catch (error) {
       // An invalid/duplicate deep link must not sign out an existing account.
       // On cold start, let the initial secure-store restore finish first.
@@ -222,6 +252,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           const previous = await cloudAuthService.restoreSession();
           set({
             ...resultStatus(previous),
+            ...(keepsAccountDevices(previous) ? {} : deviceReset()),
             message: failure.message,
             busy: false,
           });
@@ -245,6 +276,142 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     return get().status;
   },
 
+  loadDevices: async () => {
+    const current = get();
+    if (
+      !current.account ||
+      current.status !== 'signed_in' ||
+      current.devicesStatus === 'loading' ||
+      current.revokingDeviceId !== null
+    ) {
+      return;
+    }
+
+    set({ devicesStatus: 'loading', devicesMessage: null });
+    try {
+      const result = await cloudAuthService.listDevices();
+      switch (result.status) {
+        case 'listed':
+          set({
+            devices: result.devices,
+            devicesStatus: 'loaded',
+            devicesMessage: null,
+          });
+          return;
+        case 'signed_out':
+          set({
+            status: 'signed_out',
+            account: null,
+            expiresAt: null,
+            message: null,
+            ...deviceReset(),
+          });
+          return;
+        case 'rejected':
+          set({
+            status: 'session_rejected',
+            account: null,
+            expiresAt: null,
+            message: result.message,
+            ...deviceReset(),
+          });
+          return;
+        default:
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: result.message,
+          });
+      }
+    } catch {
+      set({
+        devicesStatus: 'unavailable',
+        devicesMessage: deviceListFailureMessage,
+      });
+    }
+  },
+
+  revokeDevice: async (deviceId: string) => {
+    const current = get();
+    if (!current.account || current.revokingDeviceId !== null) return;
+
+    set({ revokingDeviceId: deviceId, devicesMessage: null, message: null });
+    try {
+      const result = await cloudAuthService.revokeDevice(deviceId);
+      switch (result.status) {
+        case 'signed_out':
+          set({
+            status: 'signed_out',
+            account: null,
+            expiresAt: null,
+            message: 'Mira Cloud 已确认撤销这台设备。',
+            ...deviceReset(),
+          });
+          return;
+        case 'rejected':
+          set({
+            status: 'session_rejected',
+            account: null,
+            expiresAt: null,
+            message: result.message,
+            ...deviceReset(),
+          });
+          return;
+        case 'failed':
+          set({
+            revokingDeviceId: null,
+            devicesMessage: result.message,
+          });
+          return;
+        default:
+          break;
+      }
+
+      const devices = current.devices.some(
+        device => device.id === result.device.id,
+      )
+        ? current.devices.map(device =>
+            device.id === result.device.id ? result.device : device,
+          )
+        : [...current.devices, result.device];
+      const session = resultStatus(result.session);
+      let message: string;
+      switch (result.session.status) {
+        case 'cloud_unavailable':
+          message =
+            'Mira Cloud 已确认撤销这台设备，但暂时无法确认本机登录状态；本机登录记录仍保留，请稍后重试检查。';
+          break;
+        case 'session_rejected':
+          message =
+            result.session.message ??
+            'Mira Cloud 已确认撤销这台设备；本机 Cloud 登录已失效，请重新登录。';
+          break;
+        default:
+          message = 'Mira Cloud 已确认撤销这台设备。';
+      }
+
+      if (
+        result.session.status === 'session_rejected' ||
+        result.session.status === 'signed_out'
+      ) {
+        set({ ...session, message, ...deviceReset() });
+        return;
+      }
+      set({
+        ...session,
+        message,
+        devices,
+        devicesStatus: 'loaded',
+        devicesMessage: null,
+        revokingDeviceId: null,
+      });
+    } catch {
+      set({
+        revokingDeviceId: null,
+        devicesMessage: '设备撤销结果未确认，请稍后重试。',
+      });
+    }
+  },
+
   signOut: async () => {
     if (get().busy) return;
     set({ busy: true, message: null });
@@ -256,6 +423,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           account: null,
           expiresAt: null,
           message: result.message,
+          ...deviceReset(),
           busy: false,
         });
         return;

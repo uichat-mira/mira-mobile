@@ -16,6 +16,8 @@ jest.mock('./cloudAuthService', () => ({
     cancelPendingSignIn: jest.fn(),
     completeSignIn: jest.fn(),
     logout: jest.fn(),
+    listDevices: jest.fn(),
+    revokeDevice: jest.fn(),
   },
 }));
 
@@ -32,6 +34,10 @@ const setState = (
     message: null,
     busy: false,
     initialized: true,
+    devices: [],
+    devicesStatus: 'idle',
+    devicesMessage: null,
+    revokingDeviceId: null,
     ...overrides,
   });
 };
@@ -153,5 +159,219 @@ describe('Cloud Account reauthentication and renewal UI state', () => {
       account: null,
       message: '无法保存已续期的 Mira Cloud 登录状态，请重新登录。',
     });
+  });
+});
+
+const mobileDevice = {
+  id: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11',
+  platform: 'mobile' as const,
+  clientName: 'Mira Mobile',
+  clientVersion: '0.3.17',
+  createdAt: '2026-10-20T08:00:00.000Z',
+  lastSeenAt: '2026-10-25T09:00:00.000Z',
+  revokedAt: null,
+};
+
+const desktopDevice = {
+  id: '4d6f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a22',
+  platform: 'desktop' as const,
+  clientName: 'Mira Desktop',
+  clientVersion: '1.0.0',
+  createdAt: '2026-10-18T08:00:00.000Z',
+  lastSeenAt: '2026-10-24T09:00:00.000Z',
+  revokedAt: null,
+};
+
+describe('Cloud Account device list and revoke state', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    setState();
+  });
+
+  it('stores only the server-returned device list', async () => {
+    (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
+      status: 'listed',
+      devices: [mobileDevice, desktopDevice],
+    });
+
+    await useCloudAccountStore.getState().loadDevices();
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      devices: [mobileDevice, desktopDevice],
+      devicesStatus: 'loaded',
+      devicesMessage: null,
+    });
+  });
+
+  it('keeps the signed-in account and exposes a retryable device-list outage', async () => {
+    (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
+      status: 'unavailable',
+      reason: 'network',
+      message: '无法连接 Mira Cloud，暂时无法读取设备列表。',
+    });
+
+    await useCloudAccountStore.getState().loadDevices();
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account,
+      devices: [],
+      devicesStatus: 'unavailable',
+      devicesMessage: '无法连接 Mira Cloud，暂时无法读取设备列表。',
+    });
+  });
+
+  it('clears local authority when listing devices is rejected', async () => {
+    (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
+      status: 'rejected',
+      message: 'Mira Cloud 登录已失效，请重新登录。',
+    });
+
+    await useCloudAccountStore.getState().loadDevices();
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'session_rejected',
+      account: null,
+      devices: [],
+      message: 'Mira Cloud 登录已失效，请重新登录。',
+    });
+  });
+
+  it('updates only the revoked other device and keeps this installation signed in', async () => {
+    setState({
+      devices: [mobileDevice, desktopDevice],
+      devicesStatus: 'loaded',
+    });
+    const revokedDesktop = {
+      ...desktopDevice,
+      revokedAt: '2026-10-25T10:00:00.000Z',
+    };
+    (cloudAuthService.revokeDevice as jest.Mock).mockResolvedValueOnce({
+      status: 'revoked',
+      device: revokedDesktop,
+      session: {
+        status: 'signed_in',
+        account,
+        expiresAt,
+      },
+    });
+
+    await useCloudAccountStore.getState().revokeDevice(desktopDevice.id);
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account,
+      expiresAt,
+      message: 'Mira Cloud 已确认撤销这台设备。',
+      devices: [mobileDevice, revokedDesktop],
+      devicesStatus: 'loaded',
+      revokingDeviceId: null,
+    });
+    expect(cloudAuthService.revokeDevice).toHaveBeenCalledWith(
+      desktopDevice.id,
+    );
+  });
+
+  it('invalidates local Cloud authority when the confirmed revoke removed the current session', async () => {
+    setState({
+      devices: [mobileDevice],
+      devicesStatus: 'loaded',
+    });
+    const revokedMobile = {
+      ...mobileDevice,
+      revokedAt: '2026-10-25T10:00:00.000Z',
+    };
+    (cloudAuthService.revokeDevice as jest.Mock).mockResolvedValueOnce({
+      status: 'revoked',
+      device: revokedMobile,
+      session: { status: 'session_rejected' },
+    });
+
+    await useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'session_rejected',
+      account: null,
+      devices: [],
+      message: 'Mira Cloud 已确认撤销这台设备；本机 Cloud 登录已失效，请重新登录。',
+    });
+  });
+
+  it('keeps the confirmed revoke visible without claiming the local session is valid or signed out', async () => {
+    setState({
+      devices: [mobileDevice],
+      devicesStatus: 'loaded',
+    });
+    const revokedMobile = {
+      ...mobileDevice,
+      revokedAt: '2026-10-25T10:00:00.000Z',
+    };
+    (cloudAuthService.revokeDevice as jest.Mock).mockResolvedValueOnce({
+      status: 'revoked',
+      device: revokedMobile,
+      session: {
+        status: 'cloud_unavailable',
+        account,
+        expiresAt,
+      },
+    });
+
+    await useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+
+    const state = useCloudAccountStore.getState();
+    expect(state).toMatchObject({
+      status: 'cloud_unavailable',
+      account,
+      expiresAt,
+      devices: [revokedMobile],
+      devicesStatus: 'loaded',
+      devicesMessage: null,
+      revokingDeviceId: null,
+    });
+    expect(state.message).toContain('已确认撤销');
+    expect(state.message).toContain('暂时无法确认本机登录状态');
+  });
+
+  it('does not mark a device revoked or claim success when the server rejects or cannot confirm the revoke', async () => {
+    setState({
+      devices: [mobileDevice],
+      devicesStatus: 'loaded',
+      message: 'Mira Cloud 已确认撤销这台设备。',
+    });
+    (cloudAuthService.revokeDevice as jest.Mock).mockResolvedValueOnce({
+      status: 'failed',
+      reason: 'network',
+      message: '无法连接 Mira Cloud，设备撤销未确认；本机登录状态保持不变。',
+    });
+
+    await useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+
+    const state = useCloudAccountStore.getState();
+    expect(state.devices).toEqual([mobileDevice]);
+    expect(state.message).toBeNull();
+    expect(state.devicesMessage).toContain('撤销未确认');
+    expect(state.devicesMessage).not.toContain('已确认撤销');
+    expect(state.revokingDeviceId).toBeNull();
+  });
+
+  it('reports an unexpected revoke exception without changing the device list', async () => {
+    setState({
+      devices: [mobileDevice],
+      devicesStatus: 'loaded',
+    });
+    (cloudAuthService.revokeDevice as jest.Mock).mockRejectedValueOnce(
+      new Error('unexpected'),
+    );
+
+    await useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+
+    const state = useCloudAccountStore.getState();
+    expect(state).toMatchObject({
+      status: 'signed_in',
+      devices: [mobileDevice],
+      revokingDeviceId: null,
+    });
+    expect(state.devicesMessage).toBe('设备撤销结果未确认，请稍后重试。');
   });
 });

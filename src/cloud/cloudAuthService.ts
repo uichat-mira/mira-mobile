@@ -5,6 +5,7 @@ import {
   type CloudAccountIdentity,
   type CloudAuthApiLike,
   type IssuedCloudSession,
+  type MiraDevice,
 } from './cloudAuthApi';
 import {
   buildCloudAuthorizationUrl,
@@ -89,6 +90,46 @@ export interface CloudLogoutResult {
   message: string | null;
 }
 
+export type CloudDeviceListResult =
+  | { status: 'listed'; devices: MiraDevice[] }
+  | { status: 'signed_out' }
+  | { status: 'rejected'; message: string }
+  | {
+      status: 'unavailable';
+      reason: 'network' | 'unavailable' | 'invalid_response' | 'storage';
+      message: string;
+    };
+
+export type CloudDeviceRevokeResult =
+  | {
+      status: 'revoked';
+      device: MiraDevice;
+      session: CloudAuthSessionState;
+    }
+  | { status: 'signed_out' }
+  | { status: 'rejected'; message: string }
+  | {
+      status: 'failed';
+      reason:
+        | 'network'
+        | 'unavailable'
+        | 'invalid_response'
+        | 'not_found'
+        | 'storage';
+      message: string;
+    };
+
+type DeviceRevokeRemoteResult =
+  | {
+      status: 'revoked';
+      device: MiraDevice;
+      account: CloudAccountIdentity;
+      expiresAt: string;
+    }
+  | Exclude<CloudDeviceRevokeResult, { status: 'revoked' }>;
+
+type DeviceFailureReason = 'network' | 'unavailable' | 'invalid_response';
+
 interface CloudAuthServiceOptions {
   sessionStore?: CloudSessionStore;
   installationIdentity?: CloudInstallationIdentity;
@@ -137,6 +178,46 @@ const requestError = (error: unknown): CloudAuthServiceError => {
 
 const storageError = (): CloudAuthServiceError =>
   new CloudAuthServiceError('storage', '无法访问设备安全存储，请稍后重试。');
+
+const deviceFailureReason = (error: unknown): DeviceFailureReason => {
+  if (error instanceof CloudAuthRequestError) {
+    if (error.kind === 'network') return 'network';
+    if (error.kind === 'unavailable') return 'unavailable';
+  }
+  return 'invalid_response';
+};
+
+const deviceListFailureMessage = (
+  reason: 'network' | 'unavailable' | 'invalid_response' | 'storage',
+): string => {
+  switch (reason) {
+    case 'network':
+      return '无法连接 Mira Cloud，暂时无法读取设备列表。';
+    case 'unavailable':
+      return 'Mira Cloud 暂时不可用，暂时无法读取设备列表。';
+    case 'storage':
+      return '无法读取本机 Mira Cloud 登录状态，暂时无法读取设备列表。';
+    default:
+      return 'Mira Cloud 返回了无法识别的设备列表。';
+  }
+};
+
+const deviceRevokeFailureMessage = (
+  reason: DeviceFailureReason | 'not_found' | 'storage',
+): string => {
+  switch (reason) {
+    case 'network':
+      return '无法连接 Mira Cloud，设备撤销未确认；本机登录状态保持不变。';
+    case 'unavailable':
+      return 'Mira Cloud 暂时不可用，设备撤销未确认；本机登录状态保持不变。';
+    case 'not_found':
+      return 'Mira Cloud 未找到这台设备，撤销未确认；设备列表可能已过期。';
+    case 'storage':
+      return '无法读取本机 Mira Cloud 登录状态，设备撤销未执行。';
+    default:
+      return 'Mira Cloud 返回了无法识别的撤销结果，设备撤销未确认。';
+  }
+};
 
 const clearSessionQuietly = async (
   store: CloudSessionStore,
@@ -550,6 +631,112 @@ export class MiraCloudAuthService {
       };
     }
     });
+  }
+
+  listDevices(): Promise<CloudDeviceListResult> {
+    return this.serializeSession(() => this.listDevicesOnce());
+  }
+
+  private async listDevicesOnce(): Promise<CloudDeviceListResult> {
+    let stored: StoredCloudSession | null;
+    try {
+      stored = await this.store.load();
+    } catch {
+      return {
+        status: 'unavailable',
+        reason: 'storage',
+        message: deviceListFailureMessage('storage'),
+      };
+    }
+    if (!stored) return { status: 'signed_out' };
+
+    try {
+      const devices = await this.api.listDevices(stored.sessionToken);
+      return { status: 'listed', devices };
+    } catch (error) {
+      if (error instanceof CloudAuthRequestError && error.kind === 'rejected') {
+        await clearSessionQuietly(this.store);
+        return {
+          status: 'rejected',
+          message: 'Mira Cloud 登录已失效，请重新登录。',
+        };
+      }
+      const reason = deviceFailureReason(error);
+      return {
+        status: 'unavailable',
+        reason,
+        message: deviceListFailureMessage(reason),
+      };
+    }
+  }
+
+  async revokeDevice(deviceId: string): Promise<CloudDeviceRevokeResult> {
+    const remote = await this.serializeSession(() =>
+      this.revokeDeviceOnce(deviceId),
+    );
+    if (remote.status !== 'revoked') return remote;
+
+    let session: CloudAuthSessionState;
+    try {
+      // A revoke can invalidate this installation's session. Validate against
+      // the server after the confirmed DELETE instead of joining a restore
+      // that may have started before the revoke.
+      session = await this.serializeSession(() => this.restoreSessionOnce());
+    } catch {
+      session = {
+        status: 'cloud_unavailable',
+        account: remote.account,
+        expiresAt: remote.expiresAt,
+      };
+    }
+    return { status: 'revoked', device: remote.device, session };
+  }
+
+  private async revokeDeviceOnce(
+    deviceId: string,
+  ): Promise<DeviceRevokeRemoteResult> {
+    let stored: StoredCloudSession | null;
+    try {
+      stored = await this.store.load();
+    } catch {
+      return {
+        status: 'failed',
+        reason: 'storage',
+        message: deviceRevokeFailureMessage('storage'),
+      };
+    }
+    if (!stored) return { status: 'signed_out' };
+
+    try {
+      const device = await this.api.revokeDevice(stored.sessionToken, deviceId);
+      return {
+        status: 'revoked',
+        device,
+        account: stored.account,
+        expiresAt: stored.expiresAt,
+      };
+    } catch (error) {
+      if (error instanceof CloudAuthRequestError && error.kind === 'rejected') {
+        await clearSessionQuietly(this.store);
+        return {
+          status: 'rejected',
+          message: 'Mira Cloud 登录已失效，设备撤销未执行，请重新登录。',
+        };
+      }
+      if (error instanceof CloudAuthRequestError && error.kind === 'not_found') {
+        return {
+          status: 'failed',
+          reason: 'not_found',
+          message: deviceRevokeFailureMessage('not_found'),
+        };
+      }
+      const reason = deviceFailureReason(error);
+      return {
+        status: 'failed',
+        reason,
+        message: deviceRevokeFailureMessage(reason),
+      };
+    }
   }
 
   async cancelPendingSignIn(): Promise<void> {

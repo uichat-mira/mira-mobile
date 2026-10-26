@@ -2,6 +2,7 @@ import {
   CloudAuthApi,
   CloudAuthRequestError,
   parseIssuedCloudSession,
+  parseMiraDevice,
 } from './cloudAuthApi';
 
 const issued = {
@@ -289,5 +290,154 @@ describe('Mira Cloud OAuth/API contract', () => {
     await expect(api.renewSession(issued.sessionToken)).rejects.toMatchObject({
       kind: 'invalid_response',
     });
+  });
+});
+
+const device = {
+  id: '9f4f1c9a-8bd9-4f36-b6b8-9f7b0e5f8a11',
+  platform: 'mobile',
+  clientName: 'Mira Mobile',
+  clientVersion: '0.3.17',
+  createdAt: '2026-10-20T08:00:00.000Z',
+  lastSeenAt: '2026-10-25T09:00:00.000Z',
+  revokedAt: null,
+};
+
+describe('Mira Cloud device API contract', () => {
+  it('lists account devices with the stored bearer and validates every summary field', async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse(200, { devices: [device, { ...device, id: 'other-device' }] }),
+    );
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(api.listDevices(issued.sessionToken)).resolves.toEqual([
+      device,
+      { ...device, id: 'other-device' },
+    ]);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/devices');
+    expect(init.method).toBe('GET');
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer ' + issued.sessionToken,
+    });
+  });
+
+  it.each([
+    ['missing devices', {}],
+    ['non-array devices', { devices: {} }],
+    ['missing revoked state', { devices: [{ ...device, revokedAt: undefined }] }],
+    ['invalid platform', { devices: [{ ...device, platform: 'server' }] }],
+    ['invalid timestamp', { devices: [{ ...device, lastSeenAt: 'not-a-time' }] }],
+    ['blank client name', { devices: [{ ...device, clientName: '   ' }] }],
+  ])('rejects an invalid device list: %s', async (_name, body) => {
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      (async () => jsonResponse(200, body)) as unknown as typeof fetch,
+    );
+
+    await expect(api.listDevices(issued.sessionToken)).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+  });
+
+  it('accepts nullable optional device labels without inventing values', () => {
+    expect(
+      parseMiraDevice({
+        ...device,
+        clientName: null,
+        clientVersion: null,
+      }),
+    ).toEqual({ ...device, clientName: null, clientVersion: null });
+  });
+
+  it('revokes exactly the requested device and requires the server-confirmed revoked device', async () => {
+    const revoked = {
+      ...device,
+      revokedAt: '2026-10-25T10:00:00.000Z',
+    };
+    const fetchMock = jest.fn(async () => jsonResponse(200, revoked));
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.revokeDevice(issued.sessionToken, device.id),
+    ).resolves.toEqual(revoked);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(
+      `https://test.cloud-auth.tomzlab.cn/v1/devices/${device.id}`,
+    );
+    expect(init.method).toBe('DELETE');
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer ' + issued.sessionToken,
+    });
+  });
+
+  it.each([
+    ['an unrevoked device', { ...device }],
+    ['a different device', { ...device, id: 'other-device', revokedAt: '2026-10-25T10:00:00.000Z' }],
+    ['a malformed timestamp', { ...device, revokedAt: 'not-a-time' }],
+  ])('never reports success for %s', async (_name, body) => {
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      (async () => jsonResponse(200, body)) as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.revokeDevice(issued.sessionToken, device.id),
+    ).rejects.toMatchObject({ kind: 'invalid_response' });
+  });
+
+  it('classifies a missing or cross-account device as not found, not success', async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse(404, {
+        error: { code: 'DEVICE_NOT_FOUND', message: 'Mira Device not found' },
+      }),
+    );
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.revokeDevice(issued.sessionToken, device.id),
+    ).rejects.toMatchObject({
+      kind: 'not_found',
+      code: 'DEVICE_NOT_FOUND',
+    });
+  });
+
+  it('classifies a device-list 401 as rejection and a 503 as unavailable', async () => {
+    const rejectedApi = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      (async () =>
+        jsonResponse(401, {
+          error: { code: 'AUTH_REAUTH_REQUIRED' },
+        })) as unknown as typeof fetch,
+    );
+    await expect(
+      rejectedApi.listDevices(issued.sessionToken),
+    ).rejects.toMatchObject({ kind: 'rejected' });
+
+    const unavailableApi = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      (async () =>
+        jsonResponse(503, {
+          error: { code: 'DEVICE_INTERNAL_ERROR' },
+        })) as unknown as typeof fetch,
+    );
+    await expect(
+      unavailableApi.listDevices(issued.sessionToken),
+    ).rejects.toMatchObject({ kind: 'unavailable' });
   });
 });
