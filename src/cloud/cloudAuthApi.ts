@@ -1,4 +1,5 @@
 import { releaseChannel } from 'mira-release-channel';
+import { NativeModules, Platform } from 'react-native';
 import {
   CLOUD_AUTH_CLIENT_ID,
   CLOUD_AUTH_PLATFORM,
@@ -57,6 +58,7 @@ export class CloudAuthRequestError extends Error {
     readonly kind: CloudAuthFailureKind,
     message: string,
     readonly code?: string,
+    readonly detail?: string,
   ) {
     super(message);
     this.name = 'CloudAuthRequestError';
@@ -289,19 +291,80 @@ const defaultFetch: typeof fetch = (input, init) => {
   return globalThis.fetch(input, init);
 };
 
+const SAFE_ANDROID_REASONS = new Set([
+  'CERTIFICATE_REJECTED', 'DNS_FAILURE', 'CONNECTION_RESET',
+  'NETWORK_UNREACHABLE', 'CONNECTION_REFUSED', 'TIMEOUT',
+  'TLS_HANDSHAKE', 'CONNECT_FAILED', 'EARLY_EOF', 'UNCLASSIFIED',
+]);
+
+// No native raw errors, URLs, OAuth code, verifier or credentials reach the UI.
+const formatAndroidTransportDetail = (raw: unknown): string => {
+  if (!isRecord(raw)) return 'Android OkHttp: PROBE_FAILED';
+  if (raw.outcome === 'HTTP' && typeof raw.httpStatus === 'number' &&
+      Number.isInteger(raw.httpStatus) && raw.httpStatus >= 100 && raw.httpStatus <= 599) {
+    return 'Android OkHttp: HTTP ' + raw.httpStatus;
+  }
+  if (raw.outcome === 'NETWORK' && typeof raw.exceptionChain === 'string' &&
+      /^(?:[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error))(?:>[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error)){0,2}$/.test(raw.exceptionChain) &&
+      typeof raw.reason === 'string' && SAFE_ANDROID_REASONS.has(raw.reason)) {
+    return 'Android OkHttp: NETWORK ' + raw.exceptionChain + ' (' + raw.reason + ')';
+  }
+  return 'Android OkHttp: PROBE_FAILED';
+};
+
+const diagnoseAndroidCloudAuthTls = async (): Promise<string> => {
+  if (Platform.OS !== 'android') return 'Android OkHttp: UNAVAILABLE';
+  const module = NativeModules.MiraNetworkMonitor as
+    | { diagnoseCloudAuthTls?: () => Promise<unknown> }
+    | undefined;
+  if (typeof module?.diagnoseCloudAuthTls !== 'function') {
+    return 'Android OkHttp: UNAVAILABLE';
+  }
+  try {
+    return formatAndroidTransportDetail(await module.diagnoseCloudAuthTls());
+  } catch {
+    return 'Android OkHttp: PROBE_FAILED';
+  }
+};
+
 const CLOUD_AUTH_REQUEST_TIMEOUT_MS = 15_000;
 const OAUTH_DEV_PROBE_TIMEOUT_MS = 3_000;
+const OAUTH_NATIVE_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+
+const withNativeDiagnosticDeadline = async (
+  probe: () => Promise<string>,
+): Promise<string> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>(resolve => {
+    timer = setTimeout(
+      () => resolve('Android OkHttp: PROBE_FAILED'),
+      OAUTH_NATIVE_DIAGNOSTIC_TIMEOUT_MS,
+    );
+  });
+  try {
+    // A stalled RN native bridge must not leave the OAuth callback spinning.
+    return await Promise.race([
+      Promise.resolve().then(probe).catch(() => 'Android OkHttp: PROBE_FAILED'),
+      deadline,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 export class CloudAuthApi implements CloudAuthApiLike {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly nativeTransportDiagnostic: () => Promise<string>;
 
   constructor(
     baseUrl: string = resolveCloudAuthBaseUrl(),
     fetchImpl?: typeof fetch,
+    nativeTransportDiagnostic: () => Promise<string> = diagnoseAndroidCloudAuthTls,
   ) {
     this.baseUrl = normalizeCloudAuthBaseUrl(baseUrl);
     this.fetchImpl = fetchImpl ?? defaultFetch;
+    this.nativeTransportDiagnostic = nativeTransportDiagnostic;
   }
 
   private async send<T>(
@@ -409,11 +472,13 @@ export class CloudAuthApi implements CloudAuthApiLike {
         throw error;
       }
       const probe = await this.probeNativeHealth();
+      const detail = await withNativeDiagnosticDeadline(this.nativeTransportDiagnostic);
       const stage = error.code === 'MIRA_REQUEST_TIMEOUT' ? 'TIMEOUT' : 'FETCH';
       throw new CloudAuthRequestError(
         'network',
         'Mira Cloud token exchange transport failure',
         `MOB081_${stage}_HEALTH_${probe.toUpperCase()}`,
+        detail,
       );
     });
   }

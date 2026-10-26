@@ -187,6 +187,43 @@ describe('Mira Cloud OAuth service', () => {
     expect(harness.pendingStore.peek()).toBeNull();
   });
 
+  it('surfaces a safe native error detail but not arbitrary exception content', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw code_verifier=secret',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET)',
+      ),
+    );
+    await expect(harness.service.completeSignIn({ code, state: pending.state }))
+      .rejects.toMatchObject({
+        message: expect.stringContaining('错误详情：Android OkHttp: NETWORK SocketException (CONNECTION_RESET)'),
+      });
+
+    await harness.service.beginSignIn();
+    const next = harness.pendingStore.peek();
+    if (!next) throw new Error('Expected another OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw error',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET) code_verifier=private',
+      ),
+    );
+    try {
+      await harness.service.completeSignIn({ code, state: next.state });
+      throw new Error('Expected network failure');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).not.toContain('code_verifier');
+      expect(message).not.toContain('错误详情：');
+    }
+  });
+
   it('rejects a mismatched state before redeeming the code', async () => {
     const harness = createHarness();
     await harness.service.beginSignIn();

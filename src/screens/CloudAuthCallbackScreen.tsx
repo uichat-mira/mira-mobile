@@ -53,6 +53,10 @@ export function CloudAuthCallbackScreen() {
   }, [code, completeSignIn, error, state]);
 
   const succeeded = result === 'signed_in' && !message;
+  const detailMarker = '\n错误详情：';
+  const detailAt = message?.indexOf(detailMarker) ?? -1;
+  const summary = detailAt >= 0 ? message?.slice(0, detailAt) : message;
+  const diagnosticDetail = detailAt >= 0 ? message?.slice(detailAt + detailMarker.length) : null;
 
   const returnToAccount = async () => {
     const routes = navigation.getState().routes;
@@ -114,8 +118,18 @@ export function CloudAuthCallbackScreen() {
               未完成 Mira Cloud 登录
             </Text>
             <Text style={[styles.description, { color: colors.text.soft }]}>
-              {message ?? '登录回调未通过校验，请重新发起登录。'}
+              {summary ?? '登录回调未通过校验，请重新发起登录。'}
             </Text>
+            {diagnosticDetail ? (
+              <View style={[styles.diagnostic, { backgroundColor: colors.bg.card }]}>
+                <Text style={[styles.diagnosticLabel, { color: colors.text.soft }]}>
+                  错误详情（可截图）
+                </Text>
+                <Text selectable style={[styles.diagnosticText, { color: colors.text.ink }]}>
+                  {diagnosticDetail}
+                </Text>
+              </View>
+            ) : null}
           </>
         )}
 
@@ -166,6 +180,14 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlign: 'center',
   },
+  diagnostic: {
+    alignSelf: 'stretch',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
+  diagnosticLabel: { fontSize: fontSize.bodyMd },
+  diagnosticText: { fontSize: fontSize.bodyMd, lineHeight: 22 },
   button: {
     marginTop: spacing.lg,
     minHeight: sizing.touchTarget,

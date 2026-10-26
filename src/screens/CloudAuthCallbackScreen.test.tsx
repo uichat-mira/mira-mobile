@@ -264,6 +264,18 @@ describe('CloudAuthCallbackScreen', () => {
     expect(authMocks.restoreSession).toHaveBeenCalledTimes(1);
   });
 
+  it('renders an independently selectable Android error detail', async () => {
+    authMocks.completeSignIn.mockRejectedValue(
+      new authModule.CloudAuthServiceError(
+        'network',
+        'Cloud login failed.\n错误详情：Android OkHttp: NETWORK SocketException (CONNECTION_RESET)',
+      ),
+    );
+    const tree = await renderScreen();
+    expect(renderedStrings(tree)).toContain('错误详情（可截图）');
+    expect(renderedStrings(tree)).toContain('Android OkHttp: NETWORK SocketException (CONNECTION_RESET)');
+  });
+
   it('reports a failed callback without hiding the reason', async () => {
     authMocks.completeSignIn.mockRejectedValue(
       new authModule.CloudAuthServiceError(

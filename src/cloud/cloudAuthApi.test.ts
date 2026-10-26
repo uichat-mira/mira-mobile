@@ -119,6 +119,54 @@ describe('Mira Cloud OAuth/API contract', () => {
     );
   });
 
+  it('attaches a bounded Android OkHttp exception chain without replaying OAuth code', async () => {
+    const fetchMock = jest.fn().mockRejectedValue(new Error('sensitive code_verifier=abc'));
+    const diagnostic = jest.fn().mockResolvedValue(
+      'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
+    );
+    const api = new CloudAuthApi(
+      'https://cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+      diagnostic,
+    );
+    await expect(api.exchangeAuthorizationCode({
+      code: 'one-use-code', codeVerifier: 'secret-verifier', installationId,
+    })).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_NETWORK',
+      detail: 'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out a stalled native diagnostic instead of hanging the OAuth callback', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchMock = jest.fn().mockRejectedValue(new Error('native fetch failure'));
+      const diagnostic = jest.fn(() => new Promise<string>(() => {}));
+      const api = new CloudAuthApi(
+        'https://cloud-auth.tomzlab.cn',
+        fetchMock as unknown as typeof fetch,
+        diagnostic,
+      );
+      const pending = api.exchangeAuthorizationCode({
+        code: 'one-use-code', codeVerifier: 'private-verifier', installationId,
+      });
+      const assertion = expect(pending).rejects.toMatchObject({
+        kind: 'network',
+        code: 'MOB081_FETCH_HEALTH_NETWORK',
+        detail: 'Android OkHttp: PROBE_FAILED',
+      });
+      await jest.advanceTimersByTimeAsync(5_100);
+      await assertion;
+      expect(diagnostic).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('maps wrong-verifier/replayed-code invalid_grant to a bounded rejection', async () => {
     const fetchMock = jest.fn(async () =>
       jsonResponse(400, {
