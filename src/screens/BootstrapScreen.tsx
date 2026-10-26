@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronRight, Cpu, Monitor, Puzzle } from 'lucide-react-native';
+import { ChevronRight, Cloud, Cpu, Monitor, Puzzle } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../types/navigation';
@@ -43,6 +43,28 @@ export function BootstrapScreen() {
           <View style={styles.actionText}>
             <Text style={[styles.actionTitle, { color: colors.text.ink }]}>连接 Desktop</Text>
             <Text style={[styles.actionDescription, { color: colors.text.soft }]}>配对本机 Mira Host，进入远程会话与项目。</Text>
+          </View>
+          <ChevronRight size={20} color={colors.text.soft} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Mira Cloud 账户"
+          onPress={() => navigation.navigate('CloudAccount')}
+          style={({ pressed }) => [
+            styles.action,
+            {
+              backgroundColor: pressed ? colors.bg.soft : colors.bg.card,
+              borderColor: colors.border.default,
+            },
+          ]}
+        >
+          <View style={[styles.iconWrap, { backgroundColor: colors.bg.soft }]}>
+            <Cloud size={22} color={colors.primary} />
+          </View>
+          <View style={styles.actionText}>
+            <Text style={[styles.actionTitle, { color: colors.text.ink }]}>Mira Cloud 账户</Text>
+            <Text style={[styles.actionDescription, { color: colors.text.soft }]}>可选登录，使用 Mira 云服务；不影响本地模型与直连。</Text>
           </View>
           <ChevronRight size={20} color={colors.text.soft} />
         </Pressable>

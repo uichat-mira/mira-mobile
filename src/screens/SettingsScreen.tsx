@@ -29,6 +29,7 @@ import {
   LogOut,
   MessageCircle,
   Palette,
+  Cloud,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme, type AccentColor, type ThemeMode } from '../theme/ThemeContext';
@@ -44,6 +45,7 @@ import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsCh
 import { ConnectionStatusDot, type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
@@ -78,6 +80,8 @@ export function SettingsScreen() {
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
   const [localConfigured, setLocalConfigured] = useState(false);
+  const cloudStatus = useCloudAccountStore((state) => state.status);
+  const cloudAccount = useCloudAccountStore((state) => state.account);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -162,6 +166,9 @@ export function SettingsScreen() {
       case 'disconnect-host':
         requestDisconnect();
         break;
+      case 'cloud-account':
+        navigation.navigate('CloudAccount');
+        break;
       case 'plugins':
         navigation.navigate('Plugins');
         break;
@@ -188,6 +195,18 @@ export function SettingsScreen() {
     accentOptionDefinitions.find((option) => option.value === accentColor) ??
     accentOptionDefinitions[0];
   const persistenceSuffix = persistenceError ? ' · 本次设置未保存' : '';
+  const cloudSubtitle =
+    cloudStatus === 'signed_in'
+      ? `已登录 ${cloudAccount?.username ?? ''}`.trim()
+      : cloudStatus === 'authorizing'
+        ? '等待浏览器完成登录'
+        : cloudStatus === 'cloud_unavailable'
+          ? 'Cloud 暂时不可用'
+          : cloudStatus === 'session_rejected'
+            ? '登录已失效，点击重新登录'
+            : cloudStatus === 'loading'
+              ? '正在读取…'
+              : '未登录（可选）';
 
   return (
     <SafeAreaView
@@ -251,7 +270,15 @@ export function SettingsScreen() {
 
         <SectionHeader>我的 Mira</SectionHeader>
         <RowGroup onAction={handleSettingAction}>
-          <Row icon={Smile} title="个性化" actionId="personalization" isFirst isLast={false} />
+          <Row
+            icon={Cloud}
+            title="Mira Cloud 账户"
+            subtitle={cloudSubtitle}
+            actionId="cloud-account"
+            isFirst
+            isLast={false}
+          />
+          <Row icon={Smile} title="个性化" actionId="personalization" isLast={false} />
           <Row icon={BookOpen} title="记忆" actionId="memory" isLast={false} />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
         </RowGroup>
