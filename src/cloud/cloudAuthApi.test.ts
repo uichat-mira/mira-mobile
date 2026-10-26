@@ -61,6 +61,63 @@ describe('Mira Cloud OAuth/API contract', () => {
     expect(JSON.stringify(init.body)).not.toContain('password');
   });
 
+  it('diagnoses immediate dev token fetch failure using only a credential-free native health GET', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('sensitive native failure payload'))
+      .mockResolvedValueOnce(jsonResponse(200, { status: 'ok' }));
+    const api = new CloudAuthApi(
+      'https://cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.exchangeAuthorizationCode({
+        code: 'single-use-secret',
+        codeVerifier: 'secret-verifier',
+        installationId,
+      }),
+    ).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_OK',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [probeUrl, probeInit] = fetchMock.mock.calls[1] as [
+      string,
+      RequestInit,
+    ];
+    expect(probeUrl).toBe('https://cloud-auth.tomzlab.cn/health');
+    expect(probeInit.method).toBe('GET');
+    expect(probeInit.body).toBeUndefined();
+    expect(probeInit.headers).toBeUndefined();
+    expect(probeUrl).not.toContain('single-use-secret');
+    expect(probeUrl).not.toContain('secret-verifier');
+  });
+
+  it('distinguishes a failed native health probe from a failed token POST without replaying the code', async () => {
+    const fetchMock = jest.fn().mockRejectedValue(new Error('native network error'));
+    const api = new CloudAuthApi(
+      'https://cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.exchangeAuthorizationCode({
+        code: 'single-use-secret',
+        codeVerifier: 'secret-verifier',
+        installationId,
+      }),
+    ).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_NETWORK',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://cloud-auth.tomzlab.cn/health',
+    );
+  });
+
   it('maps wrong-verifier/replayed-code invalid_grant to a bounded rejection', async () => {
     const fetchMock = jest.fn(async () =>
       jsonResponse(400, {
