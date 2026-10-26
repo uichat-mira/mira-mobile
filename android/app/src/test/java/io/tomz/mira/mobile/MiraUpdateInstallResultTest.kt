@@ -1,10 +1,21 @@
 package io.tomz.mira.mobile
 
+import android.app.NotificationManager
 import android.content.pm.PackageInstaller
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MiraUpdateInstallResultTest {
+  @Test
+  fun disabledAppOrChannelNotificationsCannotSilentlyStallInstallation() {
+    val canShow = MiraUpdateInstallReceiver::canPresentConfirmationNotification
+    assertEquals(false, canShow(false, null))
+    assertEquals(false, canShow(false, NotificationManager.IMPORTANCE_HIGH))
+    assertEquals(false, canShow(true, NotificationManager.IMPORTANCE_NONE))
+    assertEquals(true, canShow(true, NotificationManager.IMPORTANCE_HIGH))
+    assertEquals(true, canShow(true, null)) // Android pre-O has no channels.
+  }
+
   @Test
   fun classifiesSystemInstallFailuresWithoutClaimingSuccess() {
     val message: (Int) -> String = { status -> MiraUpdateInstallReceiver.installFailureText(status) }
