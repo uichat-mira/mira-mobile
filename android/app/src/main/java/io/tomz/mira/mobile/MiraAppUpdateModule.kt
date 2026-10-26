@@ -1,14 +1,20 @@
 package io.tomz.mira.mobile
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -16,6 +22,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableNativeMap
 import java.io.File
 import java.io.IOException
+import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -36,6 +43,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MiraAppUpdateModule(
   reactContext: ReactApplicationContext,
 ) : ReactContextBaseJavaModule(reactContext) {
+
+  init { activeReactContext = WeakReference(reactContext) }
 
   override fun getName(): String = MODULE_NAME
 
@@ -186,7 +195,7 @@ class MiraAppUpdateModule(
       } finally {
         if (!committed) runCatching { installer.abandonSession(sessionId) }
       }
-      promise.resolve(null)
+      promise.resolve(sessionId)
     } catch (error: Exception) {
       promise.reject("UPDATE_INSTALL_FAILED", error.message ?: "Unable to stage the APK with the system installer", error)
     }
@@ -329,6 +338,20 @@ class MiraAppUpdateModule(
   companion object {
     private const val MODULE_NAME = "MiraAppUpdate"
     private const val PROGRESS_EVENT = "MiraAppUpdateProgress"
+    private const val INSTALL_FAILURE_EVENT = "MiraAppUpdateInstallFailure"
+    @Volatile private var activeReactContext: WeakReference<ReactApplicationContext>? = null
+
+    fun hasForegroundActivity(): Boolean =
+      activeReactContext?.get()?.currentActivity?.hasWindowFocus() == true
+
+    fun publishInstallFailure(sessionId: Int, message: String) {
+      val reactContext = activeReactContext?.get() ?: return
+      if (!reactContext.hasActiveReactInstance()) return
+      reactContext.emitDeviceEvent(INSTALL_FAILURE_EVENT, Arguments.createMap().apply {
+        putInt("sessionId", sessionId)
+        putString("message", message)
+      })
+    }
     private const val UPDATE_DIRECTORY_NAME = "mira-update"
     private const val UPDATE_FILE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
     private const val CONNECT_TIMEOUT_MS = 15_000
@@ -362,23 +385,70 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
         intent.getParcelableExtra(Intent.EXTRA_INTENT)
       }
       if (confirmation == null) {
-        Toast.makeText(context, "系统未提供安装确认界面", Toast.LENGTH_LONG).show()
-        return
-      }
-      try {
-        // This callback is from an update explicitly initiated in the app.
-        // The confirmation UI still belongs to the system and the user.
-        confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(confirmation)
-      } catch (_: Exception) {
-        Toast.makeText(context, "无法打开系统安装确认界面", Toast.LENGTH_LONG).show()
+        reportFailure(context, sessionId, "系统未提供安装确认界面")
+      } else {
+        launchOrNotify(context, sessionId, confirmation)
       }
       return
     }
 
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    manager.cancel(sessionId)
     if (status != PackageInstaller.STATUS_SUCCESS) {
-      Toast.makeText(context, installFailureText(status), Toast.LENGTH_LONG).show()
+      reportFailure(context, sessionId, installFailureText(status))
     }
+  }
+
+  // Android 10+ can disallow launching UI directly from a background
+  // BroadcastReceiver. In that case, let a user-tapped notification launch
+  // the system's confirmation intent instead of relying on OEM-specific BAL.
+  private fun launchOrNotify(context: Context, sessionId: Int, confirmation: Intent) {
+    confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (MiraAppUpdateModule.hasForegroundActivity()) {
+      try {
+        context.startActivity(confirmation)
+        return
+      } catch (_: Exception) {
+        // A foreground OEM may still refuse the launch; offer user gesture.
+      }
+    }
+    if (
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+      context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    ) {
+      reportFailure(context, sessionId, "请打开 Mira 并允许通知后重新发起安装")
+      return
+    }
+    try {
+      val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        manager.createNotificationChannel(
+          NotificationChannel("mira_update_install", "Mira 安装确认", NotificationManager.IMPORTANCE_HIGH),
+        )
+      }
+      val action = PendingIntent.getActivity(
+        context,
+        sessionId,
+        confirmation,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
+      val notification = NotificationCompat.Builder(context, "mira_update_install")
+        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+        .setContentTitle("继续安装 Mira 更新")
+        .setContentText("点击此通知，在系统安装器中确认更新")
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .setContentIntent(action)
+        .build()
+      manager.notify(sessionId, notification)
+    } catch (_: Exception) {
+      reportFailure(context, sessionId, "无法启动安装确认，请返回 Mira 重试")
+    }
+  }
+
+  private fun reportFailure(context: Context, sessionId: Int, message: String) {
+    MiraAppUpdateModule.publishInstallFailure(sessionId, message)
+    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
   }
 
   companion object {
