@@ -7,6 +7,8 @@ import { CloudAuthCallbackScreen } from './CloudAuthCallbackScreen';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
 var mockReplace: jest.Mock;
+var mockReset: jest.Mock;
+var mockRoutes: Array<{ name: string }>;
 var mockRouteParams:
   | { code?: string; state?: string; error?: string }
   | undefined;
@@ -16,6 +18,8 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({
     popTo: (...args: unknown[]) => mockReplace(...args),
     replace: (...args: unknown[]) => mockReplace(...args),
+    reset: (...args: unknown[]) => mockReset(...args),
+    getState: () => ({ routes: mockRoutes }),
   }),
 }));
 
@@ -90,6 +94,8 @@ const renderedStrings = (tree: ReactTestRenderer): string[] =>
 describe('CloudAuthCallbackScreen', () => {
   beforeEach(() => {
     mockReplace = jest.fn();
+    mockReset = jest.fn();
+    mockRoutes = [{ name: 'CloudAuthCallback' }];
     mockRouteParams = {
       code: `mca_v1.${'a'.repeat(22)}.${'b'.repeat(43)}`,
       state: 'state-0123456789-abcdef',
@@ -128,6 +134,46 @@ describe('CloudAuthCallbackScreen', () => {
       error: undefined,
     });
     expect(renderedStrings(tree)).toContain('已登录 Mira Cloud');
+  });
+
+  it('restores a usable application root when launched by a cold OAuth callback', async () => {
+    authMocks.completeSignIn.mockResolvedValue({
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+    });
+    const tree = await renderScreen();
+    const returnButton = tree.root.findByProps({
+      accessibilityLabel: '返回 Mira Cloud 账户',
+    });
+    act(() => { returnButton.props.onPress(); });
+
+    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockReset).toHaveBeenCalledWith({
+      index: 1,
+      routes: [{ name: 'Bootstrap' }, { name: 'CloudAccount' }],
+    });
+  });
+
+  it('preserves the existing Cloud Account route in a warm callback', async () => {
+    mockRoutes = [
+      { name: 'SessionList' },
+      { name: 'CloudAccount' },
+      { name: 'CloudAuthCallback' },
+    ];
+    authMocks.completeSignIn.mockResolvedValue({
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+    });
+    const tree = await renderScreen();
+    const returnButton = tree.root.findByProps({
+      accessibilityLabel: '返回 Mira Cloud 账户',
+    });
+    act(() => { returnButton.props.onPress(); });
+
+    expect(mockReplace).toHaveBeenCalledWith('CloudAccount');
+    expect(mockReset).not.toHaveBeenCalled();
   });
 
   it('reports a failed callback without hiding the reason', async () => {
