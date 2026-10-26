@@ -207,6 +207,59 @@ describe('Mira Cloud OAuth service', () => {
     expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
   });
 
+  it('preserves a newly exchanged session after the old cold-start restore rejects', async () => {
+    const harness = createHarness();
+    const oldToken = 'mcs_v1.old-id.old-secret';
+    await harness.sessionStore.save(storedSession({ sessionToken: oldToken }));
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+
+    let rejectOld!: (error: unknown) => void;
+    (harness.api.getSession as jest.Mock).mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectOld = reject; }),
+    );
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(
+      issued,
+    );
+
+    const restoring = harness.service.restoreSession();
+    const signingIn = harness.service.completeSignIn({
+      code,
+      state: pending.state,
+    });
+
+    expect(harness.api.getSession).toHaveBeenCalledWith(oldToken);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    rejectOld(new CloudAuthRequestError('rejected', 'Old session revoked'));
+
+    await expect(restoring).resolves.toEqual({ status: 'session_rejected' });
+    await expect(signingIn).resolves.toMatchObject({
+      status: 'signed_in',
+      account: issued.account,
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('makes a restore started during code exchange observe the new session', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(issued);
+
+    const signingIn = harness.service.completeSignIn({
+      code,
+      state: pending.state,
+    });
+    const restoring = harness.service.restoreSession();
+
+    await expect(signingIn).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(restoring).resolves.toMatchObject({ status: 'signed_in' });
+    expect(harness.api.getSession).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
   it('clears local authority when the server explicitly rejects the session', async () => {
     const harness = createHarness();
     await harness.sessionStore.save(storedSession());
