@@ -164,7 +164,10 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       // unknown-identity transition (or a different account).
       const priorAccountId = get().account?.id;
       const sameAccount =
-        state.account !== null && state.account.id === priorAccountId;
+        (state.status === 'signed_in' ||
+          state.status === 'cloud_unavailable') &&
+        state.account !== null &&
+        state.account.id === priorAccountId;
       set({
         ...next,
         ...(keepsAccountDevices(state) && sameAccount ? {} : deviceReset()),
