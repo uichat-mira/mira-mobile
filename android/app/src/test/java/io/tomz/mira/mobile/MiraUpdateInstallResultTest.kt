@@ -8,7 +8,9 @@ import org.junit.Test
 class MiraUpdateInstallResultTest {
   @Test
   fun disabledAppOrChannelNotificationsCannotSilentlyStallInstallation() {
-    val canShow = MiraUpdateInstallReceiver::canPresentConfirmationNotification
+    val canShow: (Boolean, Int?) -> Boolean = { enabled, importance ->
+      MiraUpdateInstallReceiver.canPresentConfirmationNotification(enabled, importance)
+    }
     assertEquals(false, canShow(false, null))
     assertEquals(false, canShow(false, NotificationManager.IMPORTANCE_HIGH))
     assertEquals(false, canShow(true, NotificationManager.IMPORTANCE_NONE))
