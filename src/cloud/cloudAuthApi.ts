@@ -4,6 +4,7 @@ import {
   CLOUD_AUTH_REDIRECT_URI,
   cloudAuthLogoutUrl,
   cloudAuthSessionUrl,
+  cloudAuthSessionRenewUrl,
   cloudAuthTokenUrl,
   normalizeCloudAuthBaseUrl,
   resolveCloudAuthBaseUrl,
@@ -51,6 +52,7 @@ export interface CloudAuthApiLike {
     request: OAuthCodeExchangeRequest,
   ): Promise<IssuedCloudSession>;
   getSession(sessionToken: string): Promise<CloudSessionSummary>;
+  renewSession(sessionToken: string): Promise<IssuedCloudSession>;
   logout(sessionToken: string): Promise<void>;
 }
 
@@ -288,6 +290,28 @@ export class CloudAuthApi implements CloudAuthApiLike {
         );
       }
       return parseCloudSessionSummary(body);
+    });
+  }
+
+  async renewSession(sessionToken: string): Promise<IssuedCloudSession> {
+    return this.send(cloudAuthSessionRenewUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid renewed session',
+        );
+      }
+      return parseIssuedCloudSession(body);
     });
   }
 
