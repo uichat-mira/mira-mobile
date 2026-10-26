@@ -256,7 +256,7 @@ describe('Mira Cloud OAuth/API contract', () => {
     expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/auth/session/renew');
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({
-      authorization: \`Bearer \${issued.sessionToken}\`,
+      authorization: 'Bearer ' + issued.sessionToken,
     });
     expect(init.body).toBeUndefined();
   });
