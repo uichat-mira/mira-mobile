@@ -17,6 +17,7 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
+import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import {
   useCloudAccountStore,
   type CloudAccountStatus,
@@ -53,7 +54,7 @@ export function CloudAuthCallbackScreen() {
 
   const succeeded = result === 'signed_in';
 
-  const returnToAccount = () => {
+  const returnToAccount = async () => {
     const routes = navigation.getState().routes;
     if (routes.some(item => item.name === 'CloudAccount')) {
       navigation.popTo('CloudAccount');
@@ -62,9 +63,10 @@ export function CloudAuthCallbackScreen() {
 
     // A cold OAuth deep link can have only the callback in history. Restore
     // a usable entry route so Back still reaches Local Provider/Host choices.
-    const root = routes.some(item => item.name === 'SessionList')
-      ? 'SessionList'
-      : 'Bootstrap';
+    const hasRemoteCredential = routes.some(item => item.name === 'SessionList')
+      ? true
+      : await deviceCredentialStore.load().then(Boolean).catch(() => false);
+    const root = hasRemoteCredential ? 'SessionList' : 'Bootstrap';
     navigation.reset({
       index: 1,
       routes: [{ name: root }, { name: 'CloudAccount' }],
