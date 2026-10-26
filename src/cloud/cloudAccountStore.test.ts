@@ -273,6 +273,28 @@ describe('Cloud Account device list and revoke state', () => {
     );
   });
 
+  it('does not claim a device revoke succeeded when no stored session allowed DELETE', async () => {
+    setState({
+      devices: [mobileDevice],
+      devicesStatus: 'loaded',
+    });
+    (cloudAuthService.revokeDevice as jest.Mock).mockResolvedValueOnce({
+      status: 'signed_out',
+    });
+
+    await useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+
+    const state = useCloudAccountStore.getState();
+    expect(state).toMatchObject({
+      status: 'signed_out',
+      account: null,
+      devices: [],
+      revokingDeviceId: null,
+    });
+    expect(state.message).toContain('撤销未执行');
+    expect(state.message).not.toContain('已确认撤销');
+  });
+
   it('invalidates local Cloud authority when the confirmed revoke removed the current session', async () => {
     setState({
       devices: [mobileDevice],
