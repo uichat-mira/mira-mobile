@@ -178,7 +178,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const next = resultStatus(state);
       set({
         ...next,
-        ...(keepsAccountDevices(state) && get().account?.id === state.account?.id
+        ...(keepsAccountDevices(state) && get().account?.id === next.account?.id
           ? {}
           : deviceReset()),
       });
@@ -263,14 +263,18 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   },
 
   completeSignIn: async (params: OAuthCallbackParams) => {
+    const version = nextLifecycle();
     set({ busy: true, message: null });
     try {
       const state = await cloudAuthService.completeSignIn(params);
+      if (!ownsLifecycle(version)) return get().status;
       set({ ...resultStatus(state), ...deviceReset(), busy: false });
     } catch (error) {
+      if (!ownsLifecycle(version)) return get().status;
       // An invalid/duplicate deep link must not sign out an existing account.
       // On cold start, let the initial secure-store restore finish first.
       if (!get().initialized) await get().initialize();
+      if (!ownsLifecycle(version)) return get().status;
       const current = get();
       const failure = failureStatus(error, current.account);
       if (current.account && current.status === 'authorizing') {
@@ -278,6 +282,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         // Re-check the secure record instead of presenting a false sign-out.
         try {
           const previous = await cloudAuthService.restoreSession();
+          if (!ownsLifecycle(version)) return get().status;
           set({
             ...resultStatus(previous),
             ...(keepsAccountDevices(previous) ? {} : deviceReset()),
@@ -285,6 +290,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
             busy: false,
           });
         } catch {
+          if (!ownsLifecycle(version)) return get().status;
           set({
             status: 'cloud_unavailable',
             message: failure.message,
@@ -306,6 +312,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   loadDevices: async () => {
     const current = get();
+    const version = lifecycleVersion;
     if (
       !current.account ||
       current.status !== 'signed_in' ||
@@ -318,6 +325,9 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ devicesStatus: 'loading', devicesMessage: null });
     try {
       const result = await cloudAuthService.listDevices();
+      if (!ownsLifecycle(version) || get().account?.id !== current.account?.id) {
+        return;
+      }
       switch (result.status) {
         case 'listed':
           set({
@@ -351,6 +361,9 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           });
       }
     } catch {
+      if (!ownsLifecycle(version) || get().account?.id !== current.account?.id) {
+        return;
+      }
       set({
         devicesStatus: 'unavailable',
         devicesMessage: deviceListFailureMessage,
@@ -360,11 +373,14 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   revokeDevice: async (deviceId: string) => {
     const current = get();
-    if (!current.account || current.revokingDeviceId !== null) return;
-
+    if (!current.account || current.revokingDeviceId !== null || current.busy) {
+      return;
+    }
+    const version = nextLifecycle();
     set({ revokingDeviceId: deviceId, devicesMessage: null, message: null });
     try {
       const result = await cloudAuthService.revokeDevice(deviceId);
+      if (!ownsLifecycle(version)) return;
       switch (result.status) {
         case 'signed_out':
           // There was no stored Cloud credential, so the service never sent
@@ -435,6 +451,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         revokingDeviceId: null,
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       set({
         revokingDeviceId: null,
         devicesMessage: '设备撤销结果未确认，请稍后重试。',
@@ -444,9 +461,11 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   signOut: async () => {
     if (get().busy) return;
+    const version = nextLifecycle();
     set({ busy: true, message: null });
     try {
       const result = await cloudAuthService.logout();
+      if (!ownsLifecycle(version)) return;
       if (result.cleared) {
         set({
           status: 'signed_out',
@@ -463,6 +482,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         busy: false,
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       set({
         message: '退出 Mira Cloud 未完成，请稍后重试。',
         busy: false,
