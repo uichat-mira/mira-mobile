@@ -52,7 +52,7 @@ export function CloudAuthCallbackScreen() {
       });
   }, [code, completeSignIn, error, state]);
 
-  const succeeded = result === 'signed_in';
+  const succeeded = result === 'signed_in' && !message;
 
   const returnToAccount = async () => {
     const routes = navigation.getState().routes;
