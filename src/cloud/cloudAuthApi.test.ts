@@ -122,6 +122,56 @@ describe('Mira Cloud OAuth/API contract', () => {
     });
   });
 
+  it('times out a Cloud request stalled before response headers', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchMock = jest.fn((_url: string, _init: RequestInit) =>
+        new Promise<Response>(() => {}),
+      );
+      const api = new CloudAuthApi(
+        'https://test.cloud-auth.tomzlab.cn',
+        fetchMock as unknown as typeof fetch,
+      );
+      const pending = api.getSession(issued.sessionToken);
+      const assertion = expect(pending).rejects.toMatchObject({
+        kind: 'network',
+      });
+
+      jest.advanceTimersByTime(15_000);
+      await assertion;
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(init.signal?.aborted).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('also times out if JSON response-body reading never completes', async () => {
+    jest.useFakeTimers();
+    try {
+      const body = jest.fn(() => new Promise<unknown>(() => {}));
+      const fetchMock = jest.fn(async () =>
+        ({ ok: true, status: 200, json: body }) as unknown as Response,
+      );
+      const api = new CloudAuthApi(
+        'https://test.cloud-auth.tomzlab.cn',
+        fetchMock as unknown as typeof fetch,
+      );
+      const pending = api.getSession(issued.sessionToken);
+      const assertion = expect(pending).rejects.toMatchObject({
+        kind: 'network',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(body).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(15_000);
+      await assertion;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps network failure distinct and never includes the session token', async () => {
     const api = new CloudAuthApi(
       'https://test.cloud-auth.tomzlab.cn',
