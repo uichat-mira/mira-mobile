@@ -184,6 +184,8 @@ const defaultFetch: typeof fetch = (input, init) => {
   return globalThis.fetch(input, init);
 };
 
+const CLOUD_AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
 export class CloudAuthApi implements CloudAuthApiLike {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -196,18 +198,48 @@ export class CloudAuthApi implements CloudAuthApiLike {
     this.fetchImpl = fetchImpl ?? defaultFetch;
   }
 
-  private async send(url: string, init: RequestInit): Promise<Response> {
+  private async send<T>(
+    url: string,
+    init: RequestInit,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(
+          new CloudAuthRequestError('network', 'Mira Cloud request timed out'),
+        );
+      }, CLOUD_AUTH_REQUEST_TIMEOUT_MS);
+    });
+
+    // The deadline stays active through response-body parsing, not only until
+    // headers arrive. React Native connections can stall at either boundary.
+    const request = (async () => {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          ...init,
+          signal: controller.signal,
+        });
+      } catch {
+        throw new CloudAuthRequestError('network', 'Mira Cloud is unreachable');
+      }
+      return read(response);
+    })();
+
     try {
-      return await this.fetchImpl(url, init);
-    } catch {
-      throw new CloudAuthRequestError('network', 'Mira Cloud is unreachable');
+      return await Promise.race([request, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
   async exchangeAuthorizationCode(
     request: OAuthCodeExchangeRequest,
   ): Promise<IssuedCloudSession> {
-    const response = await this.send(cloudAuthTokenUrl(this.baseUrl), {
+    return this.send(cloudAuthTokenUrl(this.baseUrl), {
       method: 'POST',
       headers: {
         accept: 'application/json',
@@ -222,60 +254,52 @@ export class CloudAuthApi implements CloudAuthApiLike {
         installation_id: request.installationId,
         platform: CLOUD_AUTH_PLATFORM,
       }),
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid session response',
+        );
+      }
+      return parseIssuedCloudSession(body);
     });
-
-    if (!response.ok) {
-      throw await failureForResponse(response, true);
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw new CloudAuthRequestError(
-        'invalid_response',
-        'Mira Cloud returned an invalid session response',
-      );
-    }
-    return parseIssuedCloudSession(body);
   }
 
   async getSession(sessionToken: string): Promise<CloudSessionSummary> {
-    const response = await this.send(cloudAuthSessionUrl(this.baseUrl), {
+    return this.send(cloudAuthSessionUrl(this.baseUrl), {
       method: 'GET',
       headers: {
         accept: 'application/json',
         authorization: `Bearer ${sessionToken}`,
       },
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid session response',
+        );
+      }
+      return parseCloudSessionSummary(body);
     });
-
-    if (!response.ok) {
-      throw await failureForResponse(response, false);
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw new CloudAuthRequestError(
-        'invalid_response',
-        'Mira Cloud returned an invalid session response',
-      );
-    }
-    return parseCloudSessionSummary(body);
   }
 
   async logout(sessionToken: string): Promise<void> {
-    const response = await this.send(cloudAuthLogoutUrl(this.baseUrl), {
+    return this.send(cloudAuthLogoutUrl(this.baseUrl), {
       method: 'POST',
       headers: {
         accept: 'application/json',
         authorization: `Bearer ${sessionToken}`,
       },
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
     });
-
-    if (!response.ok) {
-      throw await failureForResponse(response, false);
-    }
   }
 }
