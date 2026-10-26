@@ -290,6 +290,12 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ devicesStatus: 'loading', devicesMessage: null });
     try {
       const result = await cloudAuthService.listDevices();
+      // The request may finish after logout, revoke, or a different login.
+      // Its result belongs only to the account that initiated this load.
+      if (
+        get().status !== 'signed_in' ||
+        get().account?.id !== current.account.id
+      ) return;
       switch (result.status) {
         case 'listed':
           set({
@@ -323,10 +329,15 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           });
       }
     } catch {
-      set({
-        devicesStatus: 'unavailable',
-        devicesMessage: deviceListFailureMessage,
-      });
+      if (
+        get().status === 'signed_in' &&
+        get().account?.id === current.account.id
+      ) {
+        set({
+          devicesStatus: 'unavailable',
+          devicesMessage: deviceListFailureMessage,
+        });
+      }
     }
   },
 
