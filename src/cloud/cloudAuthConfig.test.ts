@@ -15,15 +15,15 @@ describe('Mira Cloud OAuth configuration', () => {
     expect(CLOUD_AUTH_REDIRECT_URI).toBe('mira-mobile://oauth/callback');
   });
 
-  it('selects the reviewed production and test origins without guessing a path', () => {
+  it('points this isolated, never-merge MOB-081 canary at production Cloud Auth', () => {
     expect(resolveCloudAuthBaseUrl('prod')).toBe(
       'https://cloud-auth.tomzlab.cn',
     );
     expect(resolveCloudAuthBaseUrl('test')).toBe(
-      'https://test.cloud-auth.tomzlab.cn',
+      'https://cloud-auth.tomzlab.cn',
     );
     expect(resolveCloudAuthBaseUrl('dev')).toBe(
-      'https://test.cloud-auth.tomzlab.cn',
+      'https://cloud-auth.tomzlab.cn',
     );
   });
 
