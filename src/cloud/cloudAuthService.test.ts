@@ -270,6 +270,33 @@ describe('Mira Cloud OAuth service', () => {
     expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
   });
 
+  it('recovers a saved session when an overlapping OAuth callback is invalid', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    await harness.service.beginSignIn();
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    const callback = harness.service.completeSignIn({
+      code,
+      state: 'invalid-oauth-state',
+    });
+    // This restore starts while the callback exchange is still queued.
+    const restoring = harness.service.restoreSession();
+
+    await expect(callback).rejects.toMatchObject({ kind: 'invalid_state' });
+    await expect(restoring).resolves.toEqual({
+      status: 'signed_in',
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
   it('clears local authority when the server explicitly rejects the session', async () => {
     const harness = createHarness();
     await harness.sessionStore.save(storedSession());
