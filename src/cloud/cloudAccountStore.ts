@@ -59,7 +59,7 @@ const resultStatus = (
         status: 'session_rejected',
         account: null,
         expiresAt: null,
-        message: rejectedMessage,
+        message: state.message ?? rejectedMessage,
       };
     default:
       return {
@@ -157,25 +157,49 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           '已在系统浏览器中打开 Mira Cloud 登录页，完成登录后返回 Mira。',
       });
     } catch (error) {
-      set({ ...failureStatus(error, get().account), busy: false });
+      const current = get();
+      const failure = failureStatus(error, current.account);
+      // A failed browser launch does not invalidate the session already saved
+      // for this installation.
+      if (current.account) {
+        set({ busy: false, message: failure.message });
+      } else {
+        set({ ...failure, busy: false });
+      }
       return;
     }
     set({ busy: false });
   },
 
   cancelSignIn: async () => {
+    if (get().busy) return;
+    set({ busy: true });
     try {
       await cloudAuthService.cancelPendingSignIn();
+    } catch {
+      // Pending state is not confirmed cleared; retain the authorizing
+      // screen and allow the user to retry cancellation.
+      set({ busy: false, message: '无法清除本次登录状态，请重试。' });
+      return;
+    }
+
+    try {
+      const restored = await cloudAuthService.restoreSession();
+      const state = resultStatus(restored);
       set({
-        status: 'signed_out',
-        account: null,
-        expiresAt: null,
-        message: '已取消 Mira Cloud 登录。',
+        ...state,
+        busy: false,
+        message:
+          restored.status === 'session_rejected'
+            ? state.message
+            : '已取消 Mira Cloud 登录。',
       });
-    } catch (error) {
+    } catch {
+      const current = get();
       set({
-        ...failureStatus(error, get().account),
-        message: '无法清除本次登录状态，请重试。',
+        status: current.account ? 'cloud_unavailable' : 'signed_out',
+        message: '已取消登录；暂时无法检查原有 Mira Cloud 会话。',
+        busy: false,
       });
     }
   },
@@ -191,7 +215,24 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       if (!get().initialized) await get().initialize();
       const current = get();
       const failure = failureStatus(error, current.account);
-      if (
+      if (current.account && current.status === 'authorizing') {
+        // Re-login may have started from an existing/offline Cloud session.
+        // Re-check the secure record instead of presenting a false sign-out.
+        try {
+          const previous = await cloudAuthService.restoreSession();
+          set({
+            ...resultStatus(previous),
+            message: failure.message,
+            busy: false,
+          });
+        } catch {
+          set({
+            status: 'cloud_unavailable',
+            message: failure.message,
+            busy: false,
+          });
+        }
+      } else if (
         current.account &&
         (current.status === 'signed_in' ||
           current.status === 'cloud_unavailable')
