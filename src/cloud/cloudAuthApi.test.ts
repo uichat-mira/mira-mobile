@@ -240,4 +240,54 @@ describe('Mira Cloud OAuth/API contract', () => {
       kind: 'rejected',
     });
   });
+
+  it('renews a bound Cloud Session by POST and validates the rotated token payload', async () => {
+    const rotated = { ...issued, sessionToken: 'mcs_v1.new-id.new-secret' };
+    const fetchMock = jest.fn(async () => jsonResponse(200, rotated));
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+    await expect(api.renewSession(issued.sessionToken)).resolves.toEqual(rotated);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/auth/session/renew');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer ' + issued.sessionToken,
+    });
+    expect(init.body).toBeUndefined();
+  });
+
+  it.each([
+    [401, 'rejected'],
+    [429, 'unavailable'],
+    [503, 'unavailable'],
+  ] as const)('classifies renewal HTTP %s as %s', async (status, kind) => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse(status, { error: { code: 'AUTH_REAUTH_REQUIRED' } }),
+    );
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+    await expect(api.renewSession(issued.sessionToken)).rejects.toMatchObject({
+      kind,
+    });
+  });
+
+  it('never treats an incomplete renewed credential as a valid Session', async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse(200, { account: issued.account, expiresAt: issued.expiresAt }),
+    );
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      fetchMock as unknown as typeof fetch,
+    );
+    await expect(api.renewSession(issued.sessionToken)).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+  });
 });

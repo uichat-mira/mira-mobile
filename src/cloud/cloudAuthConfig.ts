@@ -13,6 +13,7 @@ const CLOUD_AUTH_TEST_BASE_URL = 'https://test.cloud-auth.tomzlab.cn';
 const AUTHORIZE_PATH = '/v1/oauth/authorize';
 const TOKEN_PATH = '/v1/oauth/token';
 const SESSION_PATH = '/v1/auth/session';
+const SESSION_RENEW_PATH = '/v1/auth/session/renew';
 const LOGOUT_PATH = '/v1/auth/logout';
 
 export type CloudAuthReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
@@ -41,6 +42,9 @@ export const cloudAuthTokenUrl = (baseUrl: string): string =>
 
 export const cloudAuthSessionUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, SESSION_PATH);
+
+export const cloudAuthSessionRenewUrl = (baseUrl: string): string =>
+  cloudAuthUrl(baseUrl, SESSION_RENEW_PATH);
 
 export const cloudAuthLogoutUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, LOGOUT_PATH);
