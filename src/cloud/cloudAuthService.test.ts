@@ -217,8 +217,15 @@ describe('Mira Cloud OAuth service', () => {
     if (!pending) throw new Error('Expected pending OAuth transaction');
 
     let rejectOld!: (error: unknown) => void;
+    let markRestoreStarted!: () => void;
+    const restoreStarted = new Promise<void>(resolve => {
+      markRestoreStarted = resolve;
+    });
     (harness.api.getSession as jest.Mock).mockImplementation(
-      () => new Promise((_resolve, reject) => { rejectOld = reject; }),
+      () => new Promise((_resolve, reject) => {
+        rejectOld = reject;
+        markRestoreStarted();
+      }),
     );
     (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(
       issued,
@@ -230,8 +237,8 @@ describe('Mira Cloud OAuth service', () => {
       state: pending.state,
     });
 
-    // MemoryCloudSessionStore.load() resolves on a microtask, not synchronously.
-    await Promise.resolve();
+    // The serialized restore waits one extra microtask before reading storage.
+    await restoreStarted;
     expect(harness.api.getSession).toHaveBeenCalledWith(oldToken);
     expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
     rejectOld(new CloudAuthRequestError('rejected', 'Old session revoked'));
