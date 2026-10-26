@@ -186,7 +186,20 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const state = await cloudAuthService.completeSignIn(params);
       set({ ...resultStatus(state), busy: false });
     } catch (error) {
-      set({ ...failureStatus(error, get().account), busy: false });
+      // An invalid/duplicate deep link must not sign out an existing account.
+      // On cold start, let the initial secure-store restore finish first.
+      if (!get().initialized) await get().initialize();
+      const current = get();
+      const failure = failureStatus(error, current.account);
+      if (
+        current.account &&
+        (current.status === 'signed_in' ||
+          current.status === 'cloud_unavailable')
+      ) {
+        set({ busy: false, message: failure.message });
+      } else {
+        set({ ...failure, busy: false });
+      }
     }
     return get().status;
   },
