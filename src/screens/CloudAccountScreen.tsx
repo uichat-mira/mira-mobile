@@ -120,7 +120,6 @@ export function CloudAccountScreen() {
   const revokingDeviceId = useCloudAccountStore(
     state => state.revokingDeviceId,
   );
-  const loadDevices = useCloudAccountStore(state => state.loadDevices);
   const revokeDevice = useCloudAccountStore(state => state.revokeDevice);
 
   const refreshAndLoadDevices = useCallback(async () => {
