@@ -204,6 +204,53 @@ describe('Cloud Account device list and revoke state', () => {
     });
   });
 
+  it('does not repopulate revoked Cloud devices after a late list response', async () => {
+    setState({ devices: [mobileDevice], devicesStatus: 'loaded' });
+    let resolveList!: (value: unknown) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { resolveList = resolve; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    // An independent logout/revoke transition wins while the request is in flight.
+    setState({
+      status: 'session_rejected',
+      account: null,
+      expiresAt: null,
+      devices: [],
+      devicesStatus: 'idle',
+    });
+    resolveList({ status: 'listed', devices: [mobileDevice] });
+    await listing;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'session_rejected',
+      account: null,
+      devices: [],
+      devicesStatus: 'idle',
+    });
+  });
+
+  it('does not render an old account device list after account replacement', async () => {
+    let resolveList!: (value: unknown) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { resolveList = resolve; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    setState({
+      account: { id: 'account-2', username: 'bob' },
+      devices: [],
+      devicesStatus: 'idle',
+    });
+    resolveList({ status: 'listed', devices: [mobileDevice] });
+    await listing;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      account: { id: 'account-2', username: 'bob' },
+      devices: [],
+      devicesStatus: 'idle',
+    });
+  });
+
   it('keeps the signed-in account and exposes a retryable device-list outage', async () => {
     (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
       status: 'unavailable',
