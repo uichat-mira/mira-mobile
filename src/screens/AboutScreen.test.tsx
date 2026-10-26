@@ -93,8 +93,8 @@ describe('AboutScreen MOB-056D', () => {
   it('still surfaces a patch release through the manual check', async () => {
     const { parseSemver } = jest.requireActual('../update/semver');
     mockFetchLatestRelease.mockResolvedValue({
-      version: parseSemver('0.3.18'),
-      displayVersion: '0.3.18-dev',
+      version: parseSemver('0.3.19'),
+      displayVersion: '0.3.19-dev',
       notes: null,
       apkUrl:
         'https://assets.tomz.io/mira/mobile/dev/releases/0.3.18/uichat-mira-mobile-release.apk',
