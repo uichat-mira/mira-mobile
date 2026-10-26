@@ -3,11 +3,11 @@ import { useCloudAccountStore } from './cloudAccountStore';
 
 jest.mock('./cloudAuthService', () => ({
   CloudAuthServiceError: class CloudAuthServiceError extends Error {
-    constructor(
-      readonly kind: string,
-      message: string,
-    ) {
+    kind: string;
+
+    constructor(kind: string, message: string) {
       super(message);
+      this.kind = kind;
     }
   },
   cloudAuthService: {
