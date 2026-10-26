@@ -51,11 +51,12 @@ jest.mock('../theme/ThemeContext', () => ({
 jest.mock('../cloud/cloudAuthService', () => {
   const actual = jest.requireActual('../cloud/cloudAuthService');
   const completeSignIn = jest.fn();
+  const restoreSession = jest.fn();
   return {
     ...actual,
-    __cloudAuthMocks: { completeSignIn },
+    __cloudAuthMocks: { completeSignIn, restoreSession },
     cloudAuthService: {
-      restoreSession: jest.fn(),
+      restoreSession,
       beginSignIn: jest.fn(),
       completeSignIn,
       logout: jest.fn(),
@@ -65,7 +66,7 @@ jest.mock('../cloud/cloudAuthService', () => {
 });
 
 const authModule = jest.requireMock('../cloud/cloudAuthService') as {
-  __cloudAuthMocks: { completeSignIn: jest.Mock };
+  __cloudAuthMocks: { completeSignIn: jest.Mock; restoreSession: jest.Mock };
   CloudAuthServiceError: typeof import('../cloud/cloudAuthService').CloudAuthServiceError;
 };
 const authMocks = authModule.__cloudAuthMocks;
@@ -109,6 +110,7 @@ describe('CloudAuthCallbackScreen', () => {
       state: 'state-0123456789-abcdef',
     };
     authMocks.completeSignIn.mockReset();
+    authMocks.restoreSession.mockReset();
     act(() => {
       useCloudAccountStore.setState({
         status: 'loading',
@@ -206,6 +208,60 @@ describe('CloudAuthCallbackScreen', () => {
     expect(mockReplace).toHaveBeenCalledWith('CloudAccount');
     expect(mockReset).not.toHaveBeenCalled();
     expect(mockDeviceCredentialLoad).not.toHaveBeenCalled();
+  });
+
+  it('does not sign out an existing account when a duplicate callback is rejected', async () => {
+    const account = { id: 'account-1', username: 'alice' };
+    act(() => {
+      useCloudAccountStore.setState({
+        status: 'signed_in',
+        account,
+        expiresAt: '2026-11-25T11:00:00.000Z',
+      });
+    });
+    authMocks.completeSignIn.mockRejectedValue(
+      new authModule.CloudAuthServiceError(
+        'invalid_state',
+        '登录回调校验失败，请重新发起登录。',
+      ),
+    );
+
+    const tree = await renderScreen();
+    expect(renderedStrings(tree)).toContain('未完成 Mira Cloud 登录');
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account,
+      busy: false,
+    });
+    expect(authMocks.restoreSession).not.toHaveBeenCalled();
+  });
+
+  it('recovers a saved Cloud session before reporting a cold-start invalid callback', async () => {
+    const account = { id: 'account-1', username: 'alice' };
+    act(() => {
+      useCloudAccountStore.setState({ initialized: false, status: 'loading' });
+    });
+    authMocks.restoreSession.mockResolvedValue({
+      status: 'signed_in',
+      account,
+      expiresAt: '2026-11-25T11:00:00.000Z',
+    });
+    authMocks.completeSignIn.mockRejectedValue(
+      new authModule.CloudAuthServiceError(
+        'invalid_state',
+        '登录回调校验失败，请重新发起登录。',
+      ),
+    );
+
+    const tree = await renderScreen();
+    expect(renderedStrings(tree)).toContain('未完成 Mira Cloud 登录');
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account,
+      initialized: true,
+      busy: false,
+    });
+    expect(authMocks.restoreSession).toHaveBeenCalledTimes(1);
   });
 
   it('reports a failed callback without hiding the reason', async () => {
