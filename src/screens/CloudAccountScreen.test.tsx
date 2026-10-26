@@ -6,9 +6,19 @@ import renderer, { act } from 'react-test-renderer';
 import { CloudAccountScreen } from './CloudAccountScreen';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
-jest.mock('@react-navigation/native', () => ({
-  useFocusEffect: () => undefined,
-}));
+let mockFocusEnabled = false;
+
+jest.mock('@react-navigation/native', () => {
+  const ReactModule = jest.requireActual<typeof import('react')>('react');
+  return {
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      ReactModule.useEffect(() => {
+        if (!mockFocusEnabled) return undefined;
+        return callback();
+      }, [callback]);
+    },
+  };
+});
 
 jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
@@ -84,6 +94,7 @@ const labels = (tree: ReactTestRenderer): string[] =>
 
 describe('CloudAccountScreen baseline states', () => {
   beforeEach(() => {
+    mockFocusEnabled = false;
     setCloudState({
       ...baseState,
       status: 'signed_out',
@@ -229,6 +240,129 @@ describe('CloudAccountScreen baseline states', () => {
     expect(strings).toContain('无法连接 Mira Cloud，暂时无法读取设备列表。');
     expect(labels(tree)).toContain('重试读取设备列表');
     expect(strings).not.toContain('Mira Cloud 已确认撤销这台设备。');
+  });
+
+  it('loads devices when a focused screen finishes cold-start authentication', async () => {
+    mockFocusEnabled = true;
+    const refresh = jest.fn(async () => undefined);
+    const loadDevices = jest.fn(async () => {
+      useCloudAccountStore.setState({ devicesStatus: 'loaded' });
+    });
+    setCloudState({
+      ...baseState,
+      initialized: false,
+      status: 'loading',
+      refresh,
+      loadDevices,
+    });
+
+    const tree = await renderScreen();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(loadDevices).not.toHaveBeenCalled();
+
+    await act(async () => {
+      useCloudAccountStore.setState({
+        initialized: true,
+        status: 'signed_in',
+        account: { id: 'account-1', username: 'alice' },
+        expiresAt: '2026-11-25T11:00:00.000Z',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadDevices).toHaveBeenCalledTimes(1);
+    expect(renderedStrings(tree)).not.toContain('正在读取设备列表…');
+  });
+
+  it('retries Cloud connection and loads the devices without leaving the screen', async () => {
+    const refresh = jest.fn(async () => {
+      useCloudAccountStore.setState({ status: 'signed_in' });
+    });
+    const loadDevices = jest.fn(async () => {
+      useCloudAccountStore.setState({ devicesStatus: 'loaded' });
+    });
+    setCloudState({
+      ...baseState,
+      status: 'cloud_unavailable',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devicesStatus: 'loaded',
+      refresh,
+      loadDevices,
+    });
+    const tree = await renderScreen();
+    const retry = tree.root.findAll(
+      node => node.props.accessibilityLabel === '重试连接',
+    )[0];
+    expect(retry).toBeDefined();
+
+    await act(async () => {
+      retry?.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadDevices).toHaveBeenCalledTimes(1);
+    expect(useCloudAccountStore.getState().status).toBe('signed_in');
+  });
+
+  it('retries an unavailable device list through a fresh session check', async () => {
+    const refresh = jest.fn(async () => undefined);
+    const loadDevices = jest.fn(async () => {
+      useCloudAccountStore.setState({ devicesStatus: 'loaded' });
+    });
+    setCloudState({
+      ...baseState,
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      devicesStatus: 'unavailable',
+      devicesMessage: '暂时无法读取设备列表。',
+      refresh,
+      loadDevices,
+    });
+    const tree = await renderScreen();
+    const retry = tree.root.findAll(
+      node => node.props.accessibilityLabel === '重试读取设备列表',
+    )[0];
+    expect(retry).toBeDefined();
+
+    await act(async () => {
+      retry?.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadDevices).toHaveBeenCalledTimes(1);
+    expect(renderedStrings(tree)).not.toContain('正在读取设备列表…');
+  });
+
+  it('does not load devices if a Cloud retry remains unavailable', async () => {
+    const refresh = jest.fn(async () => undefined);
+    const loadDevices = jest.fn(async () => undefined);
+    setCloudState({
+      ...baseState,
+      status: 'cloud_unavailable',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+      refresh,
+      loadDevices,
+    });
+    const tree = await renderScreen();
+    const retry = tree.root.findAll(
+      node => node.props.accessibilityLabel === '重试连接',
+    )[0];
+
+    await act(async () => {
+      retry?.props.onPress();
+      await Promise.resolve();
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadDevices).not.toHaveBeenCalled();
   });
 
   it('requires explicit confirmation that revoking may remove this installation', async () => {
