@@ -7,7 +7,7 @@ import org.junit.Test
 class MiraUpdateInstallResultTest {
   @Test
   fun classifiesSystemInstallFailuresWithoutClaimingSuccess() {
-    val message = MiraUpdateInstallReceiver::installFailureText
+    val message: (Int) -> String = { status -> MiraUpdateInstallReceiver.installFailureText(status) }
     assertEquals("更新安装已取消", message(PackageInstaller.STATUS_FAILURE_ABORTED))
     assertEquals("系统安全策略阻止安装更新", message(PackageInstaller.STATUS_FAILURE_BLOCKED))
     assertEquals("更新包与已安装应用冲突", message(PackageInstaller.STATUS_FAILURE_CONFLICT))
