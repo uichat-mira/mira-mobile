@@ -14,6 +14,7 @@ import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -341,8 +342,13 @@ class MiraAppUpdateModule(
     private const val INSTALL_FAILURE_EVENT = "MiraAppUpdateInstallFailure"
     @Volatile private var activeReactContext: WeakReference<ReactApplicationContext>? = null
 
-    fun hasForegroundActivity(): Boolean =
-      activeReactContext?.get()?.currentActivity?.hasWindowFocus() == true
+    fun hasForegroundActivity(): Boolean {
+      val activity = activeReactContext?.get()?.currentActivity ?: return false
+      // A React Native Modal has its own focused Dialog window. Track
+      // onStart/onStop instead: focus would falsely classify a visible Mira
+      // as background and unnecessarily depend on notification permission.
+      return activity is MainActivity && MainActivity.isVisible && !activity.isFinishing
+    }
 
     fun publishInstallFailure(sessionId: Int, message: String) {
       val reactContext = activeReactContext?.get() ?: return
@@ -426,6 +432,15 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
           NotificationChannel("mira_update_install", "Mira 安装确认", NotificationManager.IMPORTANCE_HIGH),
         )
       }
+      val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+      val importance =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+          manager.getNotificationChannel("mira_update_install")?.importance
+        else null
+      if (!canPresentConfirmationNotification(enabled, importance)) {
+        reportFailure(context, sessionId, "Mira 安装确认通知已关闭，请允许通知后重新发起安装")
+        return
+      }
       val action = PendingIntent.getActivity(
         context,
         sessionId,
@@ -454,6 +469,14 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
   companion object {
     const val ACTION_INSTALL_RESULT = "io.tomz.mira.mobile.APP_UPDATE_INSTALL_RESULT"
     const val EXTRA_EXPECTED_SESSION_ID = "expectedSessionId"
+
+    /** A disabled app/channel cannot be trusted to deliver an install action. */
+    internal fun canPresentConfirmationNotification(
+      notificationsEnabled: Boolean,
+      channelImportance: Int?,
+    ): Boolean =
+      notificationsEnabled &&
+        (channelImportance == null || channelImportance != NotificationManager.IMPORTANCE_NONE)
 
     /** Bounded, credential-free explanations that can be unit tested. */
     internal fun installFailureText(status: Int): String = when (status) {
