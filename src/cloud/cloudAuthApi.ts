@@ -1,3 +1,4 @@
+import { releaseChannel } from 'mira-release-channel';
 import {
   CLOUD_AUTH_CLIENT_ID,
   CLOUD_AUTH_PLATFORM,
@@ -289,6 +290,7 @@ const defaultFetch: typeof fetch = (input, init) => {
 };
 
 const CLOUD_AUTH_REQUEST_TIMEOUT_MS = 15_000;
+const OAUTH_DEV_PROBE_TIMEOUT_MS = 3_000;
 
 export class CloudAuthApi implements CloudAuthApiLike {
   private readonly baseUrl: string;
@@ -313,7 +315,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
       timer = setTimeout(() => {
         controller.abort();
         reject(
-          new CloudAuthRequestError('network', 'Mira Cloud request timed out'),
+          new CloudAuthRequestError('network', 'Mira Cloud request timed out', 'MIRA_REQUEST_TIMEOUT'),
         );
       }, CLOUD_AUTH_REQUEST_TIMEOUT_MS);
     });
@@ -328,13 +330,40 @@ export class CloudAuthApi implements CloudAuthApiLike {
           signal: controller.signal,
         });
       } catch {
-        throw new CloudAuthRequestError('network', 'Mira Cloud is unreachable');
+        throw new CloudAuthRequestError('network', 'Mira Cloud is unreachable', 'MIRA_FETCH_FAILED');
       }
       return read(response);
     })();
 
     try {
       return await Promise.race([request, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  // A dev-only, credential-free probe after a failed token request.
+  // It uses the same React Native fetch stack as the failed POST, so a phone
+  // browser's successful /health check is not mistaken for native reachability.
+  // Never retry the one-use authorization code or surface raw native errors.
+  private async probeNativeHealth(): Promise<'ok' | 'http' | 'network' | 'timeout'> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const probe = this.fetchImpl(`${this.baseUrl}/health`, {
+      method: 'GET',
+      signal: controller.signal,
+    }).then(
+      response => (response.ok ? 'ok' : 'http') as 'ok' | 'http',
+      () => 'network' as const,
+    );
+    const deadline = new Promise<'timeout'>(resolve => {
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve('timeout');
+      }, OAUTH_DEV_PROBE_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([probe, deadline]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -370,6 +399,21 @@ export class CloudAuthApi implements CloudAuthApiLike {
         );
       }
       return parseIssuedCloudSession(body);
+    }).catch(async (error: unknown) => {
+      if (
+        releaseChannel !== 'dev' ||
+        !(error instanceof CloudAuthRequestError) ||
+        error.kind !== 'network'
+      ) {
+        throw error;
+      }
+      const probe = await this.probeNativeHealth();
+      const stage = error.code === 'MIRA_REQUEST_TIMEOUT' ? 'TIMEOUT' : 'FETCH';
+      throw new CloudAuthRequestError(
+        'network',
+        'Mira Cloud token exchange transport failure',
+        `MOB081_${stage}_HEALTH_${probe.toUpperCase()}`,
+      );
     });
   }
 
