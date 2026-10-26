@@ -7,6 +7,11 @@ const mockCancelUpdateDownload = jest.fn();
 const mockOpenInstallPermissionSettings = jest.fn();
 const mockCanInstallPackages = jest.fn();
 const mockIsInAppUpdateSupported = jest.fn();
+let installFailureHandler: ((event: { sessionId: number; message: string }) => void) | null = null;
+const mockObserveUpdateInstallFailures = jest.fn((callback: typeof installFailureHandler) => {
+  installFailureHandler = callback;
+  return { remove: () => { if (installFailureHandler === callback) installFailureHandler = null; } };
+});
 
 jest.mock('./appUpdateInstall', () => {
   const actual = jest.requireActual('./appUpdateInstall');
@@ -14,6 +19,7 @@ jest.mock('./appUpdateInstall', () => {
     ...actual,
     downloadUpdate: (...args: unknown[]) => mockDownloadUpdate(...args),
     installDownloadedUpdate: (...args: unknown[]) => mockInstallDownloadedUpdate(...args),
+    observeUpdateInstallFailures: (callback: unknown) => mockObserveUpdateInstallFailures(callback),
     cancelUpdateDownload: (...args: unknown[]) => mockCancelUpdateDownload(...args),
     openInstallPermissionSettings: (...args: unknown[]) =>
       mockOpenInstallPermissionSettings(...args),
@@ -68,6 +74,8 @@ beforeEach(() => {
   mockOpenInstallPermissionSettings.mockReset();
   mockCanInstallPackages.mockReset();
   mockIsInAppUpdateSupported.mockReset();
+  mockObserveUpdateInstallFailures.mockClear();
+  installFailureHandler = null;
   mockCancelUpdateDownload.mockResolvedValue(undefined);
   mockOpenInstallPermissionSettings.mockResolvedValue(undefined);
   mockCanInstallPackages.mockResolvedValue(true);
@@ -168,7 +176,7 @@ describe('completing an in-app update', () => {
   it('installs the verified file and then reports the hand-off', async () => {
     const download = deferred<string>();
     mockDownloadUpdate.mockReturnValue(download.promise);
-    mockInstallDownloadedUpdate.mockResolvedValue(undefined);
+    mockInstallDownloadedUpdate.mockResolvedValue(42);
 
     useAppUpdateStore.getState().start(release);
     await flush();
@@ -211,6 +219,46 @@ describe('completing an in-app update', () => {
     expect(currentFlow()).toMatchObject({ status: 'failed' });
     expect(currentFlow()?.errorMessage).toContain('校验');
     expect(mockInstallDownloadedUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('system installer terminal callbacks', () => {
+  it('shows a terminal failure for the active installer session rather than stale handoff', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    mockInstallDownloadedUpdate.mockResolvedValue(42);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    expect(currentFlow()?.status).toBe('handed-off');
+    installFailureHandler?.({ sessionId: 43, message: '旧安装会话错误' });
+    expect(currentFlow()?.status).toBe('handed-off');
+    installFailureHandler?.({ sessionId: 42, message: '系统安全策略阻止安装更新' });
+    expect(currentFlow()).toMatchObject({
+      status: 'failed',
+      errorMessage: '系统安全策略阻止安装更新',
+    });
+  });
+
+  it('handles a native failure racing the install Promise resolution', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    const install = deferred<number>();
+    mockInstallDownloadedUpdate.mockReturnValue(install.promise);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    installFailureHandler?.({ sessionId: 42, message: '更新安装已取消' });
+    install.resolve(42);
+    await flush();
+    expect(currentFlow()).toMatchObject({ status: 'failed', errorMessage: '更新安装已取消' });
+  });
+
+  it('ignores install failures after dismissing the flow', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    mockInstallDownloadedUpdate.mockResolvedValue(42);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    const oldHandler = installFailureHandler;
+    useAppUpdateStore.getState().dismiss();
+    oldHandler?.({ sessionId: 42, message: '旧事件' });
+    expect(currentFlow()).toBeNull();
   });
 });
 
