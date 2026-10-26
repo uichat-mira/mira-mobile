@@ -163,6 +163,30 @@ describe('Mira Cloud OAuth service', () => {
     expect(harness.pendingStore.peek()).toBeNull();
   });
 
+  it('shows only bounded dev transport evidence and never native exception details', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'network',
+        'sensitive native transport exception',
+        'MOB081_FETCH_HEALTH_NETWORK',
+      ),
+    );
+
+    await expect(
+      harness.service.completeSignIn({ code, state: pending.state }),
+    ).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_NETWORK',
+      message: expect.stringContaining('MOB081_FETCH_HEALTH_NETWORK'),
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.pendingStore.peek()).toBeNull();
+  });
+
   it('rejects a mismatched state before redeeming the code', async () => {
     const harness = createHarness();
     await harness.service.beginSignIn();
