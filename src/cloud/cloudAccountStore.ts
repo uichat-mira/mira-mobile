@@ -44,6 +44,12 @@ interface CloudAccountStore {
 
 let initialization: Promise<void> | null = null;
 
+// A newer Cloud account intent owns the visible result. Old async reads may
+// complete later, but must never overwrite a login, logout or revoke.
+let lifecycleVersion = 0;
+const nextLifecycle = () => ++lifecycleVersion;
+const ownsLifecycle = (version: number) => version === lifecycleVersion;
+
 const unavailableMessage =
   'Mira Cloud 暂时不可用。本地模型和 Tailscale 直连不受影响。';
 const rejectedMessage = 'Mira Cloud 登录已失效，请重新登录。';
@@ -134,19 +140,28 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   initialize: async () => {
     if (get().initialized) return;
     if (!initialization) {
+      const version = lifecycleVersion;
       initialization = (async () => {
         try {
           const state = await cloudAuthService.restoreSession();
-          set({ ...resultStatus(state), ...deviceReset(), initialized: true });
+          if (ownsLifecycle(version)) {
+            set({ ...resultStatus(state), ...deviceReset(), initialized: true });
+          } else {
+            set({ initialized: true });
+          }
         } catch {
-          set({
-            status: 'signed_out',
-            account: null,
-            expiresAt: null,
-            message: '无法读取 Mira Cloud 登录状态。',
-            ...deviceReset(),
-            initialized: true,
-          });
+          if (ownsLifecycle(version)) {
+            set({
+              status: 'signed_out',
+              account: null,
+              expiresAt: null,
+              message: '无法读取 Mira Cloud 登录状态。',
+              ...deviceReset(),
+              initialized: true,
+            });
+          } else {
+            set({ initialized: true });
+          }
         }
       })();
     }
@@ -154,16 +169,21 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   },
 
   refresh: async () => {
-    if (get().busy) return;
+    if (get().busy || get().revokingDeviceId !== null) return;
+    const version = lifecycleVersion;
     set({ busy: true });
     try {
       const state = await cloudAuthService.restoreSession();
+      if (!ownsLifecycle(version)) return;
       const next = resultStatus(state);
       set({
         ...next,
-        ...(keepsAccountDevices(state) ? {} : deviceReset()),
+        ...(keepsAccountDevices(state) && get().account?.id === state.account?.id
+          ? {}
+          : deviceReset()),
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       set({
         status: 'cloud_unavailable',
         account: get().account,
@@ -171,21 +191,24 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         message: unavailableMessage,
       });
     } finally {
-      set({ busy: false });
+      if (ownsLifecycle(version)) set({ busy: false });
     }
   },
 
   signIn: async () => {
     if (get().busy) return;
+    const version = nextLifecycle();
     set({ busy: true, message: null });
     try {
       await cloudAuthService.beginSignIn();
+      if (!ownsLifecycle(version)) return;
       set({
         status: 'authorizing',
         message:
           '已在系统浏览器中打开 Mira Cloud 登录页，完成登录后返回 Mira。',
       });
     } catch (error) {
+      if (!ownsLifecycle(version)) return;
       const current = get();
       const failure = failureStatus(error, current.account);
       // A failed browser launch does not invalidate the session already saved
@@ -202,10 +225,13 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   cancelSignIn: async () => {
     if (get().busy) return;
+    const version = nextLifecycle();
     set({ busy: true });
     try {
       await cloudAuthService.cancelPendingSignIn();
+      if (!ownsLifecycle(version)) return;
     } catch {
+      if (!ownsLifecycle(version)) return;
       // Pending state is not confirmed cleared; retain the authorizing
       // screen and allow the user to retry cancellation.
       set({ busy: false, message: '无法清除本次登录状态，请重试。' });
@@ -214,6 +240,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
     try {
       const restored = await cloudAuthService.restoreSession();
+      if (!ownsLifecycle(version)) return;
       const state = resultStatus(restored);
       set({
         ...state,
@@ -225,6 +252,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
             : '已取消 Mira Cloud 登录。',
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       const current = get();
       set({
         status: current.account ? 'cloud_unavailable' : 'signed_out',
