@@ -351,6 +351,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const probe = this.fetchImpl(`${this.baseUrl}/health`, {
       method: 'GET',
+      credentials: 'omit',
       signal: controller.signal,
     }).then(
       response => (response.ok ? 'ok' : 'http') as 'ok' | 'http',
