@@ -23,6 +23,9 @@ describe('Mira Cloud OAuth configuration', () => {
       'https://test.cloud-auth.tomzlab.cn',
     );
     expect(resolveCloudAuthBaseUrl('dev')).toBe(
+      'https://cloud-auth.tomzlab.cn',
+    );
+    expect(resolveCloudAuthBaseUrl('predev')).toBe(
       'https://test.cloud-auth.tomzlab.cn',
     );
   });

@@ -5,8 +5,9 @@ export const CLOUD_AUTH_CLIENT_ID = 'mira-mobile';
 export const CLOUD_AUTH_REDIRECT_URI = 'mira-mobile://oauth/callback';
 export const CLOUD_AUTH_PLATFORM = 'mobile';
 
-// Origins mirror cloud-auth/deploy/*.caddy; non-production channels use the
-// test service so a dev build never signs in against the production account DB.
+// MOB-081 acceptance: the test Cloud Auth service is unavailable, so dev
+// temporarily uses production Cloud Auth. Keep predev/test isolated; do not
+// change the production Mobile release or Cloud Auth server. Reassess after T4.
 const CLOUD_AUTH_PROD_BASE_URL = 'https://cloud-auth.tomzlab.cn';
 const CLOUD_AUTH_TEST_BASE_URL = 'https://test.cloud-auth.tomzlab.cn';
 
@@ -22,7 +23,9 @@ export type CloudAuthReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
 export const resolveCloudAuthBaseUrl = (
   channel: CloudAuthReleaseChannel = releaseChannel,
 ): string =>
-  channel === 'prod' ? CLOUD_AUTH_PROD_BASE_URL : CLOUD_AUTH_TEST_BASE_URL;
+  channel === 'prod' || channel === 'dev'
+    ? CLOUD_AUTH_PROD_BASE_URL
+    : CLOUD_AUTH_TEST_BASE_URL;
 
 export const normalizeCloudAuthBaseUrl = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/u, '');
