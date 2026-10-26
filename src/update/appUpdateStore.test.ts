@@ -19,7 +19,8 @@ jest.mock('./appUpdateInstall', () => {
     ...actual,
     downloadUpdate: (...args: unknown[]) => mockDownloadUpdate(...args),
     installDownloadedUpdate: (...args: unknown[]) => mockInstallDownloadedUpdate(...args),
-    observeUpdateInstallFailures: (callback: unknown) => mockObserveUpdateInstallFailures(callback),
+    observeUpdateInstallFailures: (callback: (event: { sessionId: number; message: string }) => void) =>
+      mockObserveUpdateInstallFailures(callback),
     cancelUpdateDownload: (...args: unknown[]) => mockCancelUpdateDownload(...args),
     openInstallPermissionSettings: (...args: unknown[]) =>
       mockOpenInstallPermissionSettings(...args),
