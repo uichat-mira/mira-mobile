@@ -33,6 +33,14 @@
 				<string>mira</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.tomz.mira.mobile.cloud-oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mira-mobile</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>20</string>
