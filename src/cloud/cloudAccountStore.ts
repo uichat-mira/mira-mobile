@@ -159,9 +159,18 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     try {
       const state = await cloudAuthService.restoreSession();
       const next = resultStatus(state);
+      // A storage failure can leave Cloud unavailable with no account identity.
+      // Never preserve an old account's devices or loading state across that
+      // unknown-identity transition (or a different account).
+      const priorAccountId = get().account?.id;
+      const sameAccount =
+        (state.status === 'signed_in' ||
+          state.status === 'cloud_unavailable') &&
+        state.account !== null &&
+        state.account.id === priorAccountId;
       set({
         ...next,
-        ...(keepsAccountDevices(state) ? {} : deviceReset()),
+        ...(keepsAccountDevices(state) && sameAccount ? {} : deviceReset()),
       });
     } catch {
       set({
@@ -290,6 +299,28 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ devicesStatus: 'loading', devicesMessage: null });
     try {
       const result = await cloudAuthService.listDevices();
+      // The request may finish after logout, revoke, or a different login.
+      // Its result belongs only to the account that initiated this load.
+      const latest = get();
+      if (latest.account?.id !== current.account.id) {
+        // A null identity must not retain the previous account's loader.
+        // A different signed-in account may have its own active request.
+        if (!latest.account && latest.devicesStatus === 'loading') {
+          set(deviceReset());
+        }
+        return;
+      }
+      if (latest.status !== 'signed_in') {
+        // Same account, but refresh has moved it offline/authorizing. Never
+        // publish the stale list, and do not strand the retry state on loading.
+        if (latest.devicesStatus === 'loading') {
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: deviceListFailureMessage,
+          });
+        }
+        return;
+      }
       switch (result.status) {
         case 'listed':
           set({
@@ -323,10 +354,17 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           });
       }
     } catch {
-      set({
-        devicesStatus: 'unavailable',
-        devicesMessage: deviceListFailureMessage,
-      });
+      const latest = get();
+      if (latest.devicesStatus === 'loading') {
+        if (!latest.account) {
+          set(deviceReset());
+        } else if (latest.account.id === current.account.id) {
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: deviceListFailureMessage,
+          });
+        }
+      }
     }
   },
 
