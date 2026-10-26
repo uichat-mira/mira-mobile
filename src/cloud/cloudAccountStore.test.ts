@@ -312,6 +312,78 @@ describe('Cloud Account device list and revoke state', () => {
     });
   });
 
+  it('resets stale device loading if session storage becomes unavailable and loses account identity', async () => {
+    setState({ devices: [mobileDevice], devicesStatus: 'loaded' });
+    let resolveList!: (value: unknown) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { resolveList = resolve; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    expect(useCloudAccountStore.getState().devicesStatus).toBe('loading');
+
+    // Exercise the actual refresh transition, not an artificial state write.
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'cloud_unavailable',
+      account: null,
+      expiresAt: null,
+    });
+    await useCloudAccountStore.getState().refresh();
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'cloud_unavailable',
+      account: null,
+      devices: [],
+      devicesStatus: 'idle',
+    });
+
+    resolveList({ status: 'listed', devices: [mobileDevice] });
+    await listing;
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      account: null,
+      devices: [],
+      devicesStatus: 'idle',
+    });
+
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'signed_in', account, expiresAt,
+    });
+    (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
+      status: 'listed', devices: [desktopDevice],
+    });
+    await useCloudAccountStore.getState().refresh();
+    await useCloudAccountStore.getState().loadDevices();
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account,
+      devices: [desktopDevice],
+      devicesStatus: 'loaded',
+    });
+  });
+
+  it('does not leave loading active after the old list rejects when account identity is unknown', async () => {
+    setState({ devices: [mobileDevice], devicesStatus: 'loaded' });
+    let rejectList!: (error: Error) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectList = reject; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'cloud_unavailable',
+      account: null,
+      expiresAt: null,
+    });
+    await useCloudAccountStore.getState().refresh();
+
+    rejectList(new Error('storage not available'));
+    await listing;
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'cloud_unavailable',
+      account: null,
+      devices: [],
+      devicesStatus: 'idle',
+      devicesMessage: null,
+    });
+  });
+
   it('keeps the signed-in account and exposes a retryable device-list outage', async () => {
     (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
       status: 'unavailable',
