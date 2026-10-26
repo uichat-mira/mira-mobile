@@ -329,6 +329,28 @@ const diagnoseAndroidCloudAuthTls = async (): Promise<string> => {
 
 const CLOUD_AUTH_REQUEST_TIMEOUT_MS = 15_000;
 const OAUTH_DEV_PROBE_TIMEOUT_MS = 3_000;
+const OAUTH_NATIVE_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+
+const withNativeDiagnosticDeadline = async (
+  probe: () => Promise<string>,
+): Promise<string> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>(resolve => {
+    timer = setTimeout(
+      () => resolve('Android OkHttp: PROBE_FAILED'),
+      OAUTH_NATIVE_DIAGNOSTIC_TIMEOUT_MS,
+    );
+  });
+  try {
+    // A stalled RN native bridge must not leave the OAuth callback spinning.
+    return await Promise.race([
+      Promise.resolve().then(probe).catch(() => 'Android OkHttp: PROBE_FAILED'),
+      deadline,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 export class CloudAuthApi implements CloudAuthApiLike {
   private readonly baseUrl: string;
@@ -450,7 +472,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
         throw error;
       }
       const probe = await this.probeNativeHealth();
-      const detail = await this.nativeTransportDiagnostic();
+      const detail = await withNativeDiagnosticDeadline(this.nativeTransportDiagnostic);
       const stage = error.code === 'MIRA_REQUEST_TIMEOUT' ? 'TIMEOUT' : 'FETCH';
       throw new CloudAuthRequestError(
         'network',
