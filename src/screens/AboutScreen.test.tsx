@@ -97,7 +97,7 @@ describe('AboutScreen MOB-056D', () => {
       displayVersion: '0.3.19-dev',
       notes: null,
       apkUrl:
-        'https://assets.tomz.io/mira/mobile/dev/releases/0.3.18/uichat-mira-mobile-release.apk',
+        'https://assets.tomz.io/mira/mobile/dev/releases/0.3.19/uichat-mira-mobile-release.apk',
       sha256: 'a'.repeat(64),
     });
 
