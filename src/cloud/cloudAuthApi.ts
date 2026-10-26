@@ -2,6 +2,8 @@ import {
   CLOUD_AUTH_CLIENT_ID,
   CLOUD_AUTH_PLATFORM,
   CLOUD_AUTH_REDIRECT_URI,
+  cloudAuthDeviceUrl,
+  cloudAuthDevicesUrl,
   cloudAuthLogoutUrl,
   cloudAuthSessionUrl,
   cloudAuthSessionRenewUrl,
@@ -24,6 +26,18 @@ export interface IssuedCloudSession extends CloudSessionSummary {
   sessionToken: string;
 }
 
+export type MiraDevicePlatform = 'desktop' | 'mobile';
+
+export interface MiraDevice {
+  id: string;
+  platform: MiraDevicePlatform;
+  clientName: string | null;
+  clientVersion: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  revokedAt: string | null;
+}
+
 export interface OAuthCodeExchangeRequest {
   code: string;
   codeVerifier: string;
@@ -34,6 +48,7 @@ export type CloudAuthFailureKind =
   | 'network'
   | 'unavailable'
   | 'rejected'
+  | 'not_found'
   | 'invalid_response';
 
 export class CloudAuthRequestError extends Error {
@@ -54,6 +69,8 @@ export interface CloudAuthApiLike {
   getSession(sessionToken: string): Promise<CloudSessionSummary>;
   renewSession(sessionToken: string): Promise<IssuedCloudSession>;
   logout(sessionToken: string): Promise<void>;
+  listDevices(sessionToken: string): Promise<MiraDevice[]>;
+  revokeDevice(sessionToken: string, deviceId: string): Promise<MiraDevice>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -128,6 +145,83 @@ export const parseCloudSessionSummary = (
   };
 };
 
+const parseDeviceTimestamp = (value: unknown): string => {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid device response',
+    );
+  }
+  return new Date(value).toISOString();
+};
+
+const parseOptionalDeviceLabel = (value: unknown): string | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid device response',
+    );
+  }
+  return value;
+};
+
+export const parseMiraDevice = (value: unknown): MiraDevice => {
+  if (!isRecord(value)) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid device response',
+    );
+  }
+  if (
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    (value.platform !== 'desktop' && value.platform !== 'mobile') ||
+    value.revokedAt === undefined
+  ) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid device response',
+    );
+  }
+  return {
+    id: value.id,
+    platform: value.platform,
+    clientName: parseOptionalDeviceLabel(value.clientName),
+    clientVersion: parseOptionalDeviceLabel(value.clientVersion),
+    createdAt: parseDeviceTimestamp(value.createdAt),
+    lastSeenAt: parseDeviceTimestamp(value.lastSeenAt),
+    revokedAt:
+      value.revokedAt === null
+        ? null
+        : parseDeviceTimestamp(value.revokedAt),
+  };
+};
+
+export const parseMiraDeviceList = (value: unknown): MiraDevice[] => {
+  if (!isRecord(value) || !Array.isArray(value.devices)) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid device list',
+    );
+  }
+  return value.devices.map(parseMiraDevice);
+};
+
+export const parseRevokedMiraDevice = (
+  value: unknown,
+  expectedDeviceId: string,
+): MiraDevice => {
+  const device = parseMiraDevice(value);
+  if (device.id !== expectedDeviceId || device.revokedAt === null) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud did not confirm the device revocation',
+    );
+  }
+  return device;
+};
+
 const readErrorCode = async (
   response: Response,
 ): Promise<string | undefined> => {
@@ -149,6 +243,7 @@ const readErrorCode = async (
 const failureForResponse = async (
   response: Response,
   rejectClientErrors: boolean,
+  notFoundIsExpected = false,
 ): Promise<CloudAuthRequestError> => {
   const code = await readErrorCode(response);
   if (response.status === 401) {
@@ -162,6 +257,13 @@ const failureForResponse = async (
     return new CloudAuthRequestError(
       'unavailable',
       'Mira Cloud is temporarily unavailable',
+      code,
+    );
+  }
+  if (notFoundIsExpected && response.status === 404) {
+    return new CloudAuthRequestError(
+      'not_found',
+      'Mira Cloud could not find the requested resource',
       code,
     );
   }
@@ -324,6 +426,55 @@ export class CloudAuthApi implements CloudAuthApiLike {
       },
     }, async response => {
       if (!response.ok) throw await failureForResponse(response, false);
+    });
+  }
+
+  async listDevices(sessionToken: string): Promise<MiraDevice[]> {
+    return this.send(cloudAuthDevicesUrl(this.baseUrl), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid device list',
+        );
+      }
+      return parseMiraDeviceList(body);
+    });
+  }
+
+  async revokeDevice(
+    sessionToken: string,
+    deviceId: string,
+  ): Promise<MiraDevice> {
+    return this.send(cloudAuthDeviceUrl(this.baseUrl, deviceId), {
+      method: 'DELETE',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+    }, async response => {
+      if (!response.ok) {
+        throw await failureForResponse(response, false, true);
+      }
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid device revocation response',
+        );
+      }
+      return parseRevokedMiraDevice(body, deviceId);
     });
   }
 }

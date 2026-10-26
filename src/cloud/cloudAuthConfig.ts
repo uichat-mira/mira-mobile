@@ -15,6 +15,7 @@ const TOKEN_PATH = '/v1/oauth/token';
 const SESSION_PATH = '/v1/auth/session';
 const SESSION_RENEW_PATH = '/v1/auth/session/renew';
 const LOGOUT_PATH = '/v1/auth/logout';
+const DEVICES_PATH = '/v1/devices';
 
 export type CloudAuthReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
 
@@ -48,6 +49,15 @@ export const cloudAuthSessionRenewUrl = (baseUrl: string): string =>
 
 export const cloudAuthLogoutUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, LOGOUT_PATH);
+
+export const cloudAuthDevicesUrl = (baseUrl: string): string =>
+  cloudAuthUrl(baseUrl, DEVICES_PATH);
+
+export const cloudAuthDeviceUrl = (
+  baseUrl: string,
+  deviceId: string,
+): string =>
+  cloudAuthUrl(baseUrl, `${DEVICES_PATH}/${encodeURIComponent(deviceId)}`);
 
 export interface AuthorizationUrlInput {
   state: string;

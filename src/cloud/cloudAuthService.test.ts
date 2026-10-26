@@ -62,6 +62,8 @@ const createHarness = () => {
     getSession: jest.fn(),
     renewSession: jest.fn(),
     logout: jest.fn(),
+    listDevices: jest.fn(),
+    revokeDevice: jest.fn(),
   };
   const service = new MiraCloudAuthService({
     sessionStore,
@@ -539,4 +541,225 @@ describe('Mira Cloud OAuth service', () => {
       expect(harness.sessionStore.peek() !== null).toBe(keep);
     },
   );
+});
+
+const device = {
+  id: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11',
+  platform: 'mobile' as const,
+  clientName: 'Mira Mobile',
+  clientVersion: '0.3.17',
+  createdAt: '2026-10-20T08:00:00.000Z',
+  lastSeenAt: '2026-10-25T09:00:00.000Z',
+  revokedAt: null,
+};
+
+const revokedDevice = {
+  ...device,
+  id: '4d6f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a22',
+  clientName: 'Mira Desktop',
+  platform: 'desktop' as const,
+  revokedAt: '2026-10-25T10:00:00.000Z',
+};
+
+describe('Mira Cloud device service', () => {
+  it('lists devices with the authoritative stored session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toEqual({
+      status: 'listed',
+      devices: [device],
+    });
+    expect(harness.api.listDevices).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('clears local Cloud authority when the device list is rejected', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Mira Cloud session was rejected'),
+    );
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'rejected',
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps the saved session when the device list is temporarily unavailable', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'unavailable',
+      reason: 'network',
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('revokes another device without changing this installation session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(revokedDevice);
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    const result = await harness.service.revokeDevice(revokedDevice.id);
+
+    expect(result).toMatchObject({
+      status: 'revoked',
+      device: revokedDevice,
+      session: {
+        status: 'signed_in',
+        account: issued.account,
+        expiresAt: issued.expiresAt,
+      },
+    });
+    expect(harness.api.revokeDevice).toHaveBeenCalledWith(
+      issued.sessionToken,
+      revokedDevice.id,
+    );
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('invalidates local Cloud authority when the confirmed revoke removed this session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'rejected',
+        'Mira Cloud session was rejected',
+        'AUTH_REAUTH_REQUIRED',
+      ),
+    );
+
+    await expect(
+      harness.service.revokeDevice(device.id),
+    ).resolves.toMatchObject({
+      status: 'revoked',
+      device,
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps a confirmed revoke result but reports unknown local session when verification cannot reach Cloud', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(revokedDevice);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud request timed out'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'revoked',
+      device: revokedDevice,
+      session: {
+        status: 'cloud_unavailable',
+        account: issued.account,
+        expiresAt: issued.expiresAt,
+      },
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('does not treat a failed DELETE as revoked and leaves the session intact', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'network',
+    });
+    expect(harness.api.getSession).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('reports a missing device separately from an unconfirmed revoke', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'not_found',
+        'Mira Cloud could not find the requested resource',
+        'DEVICE_NOT_FOUND',
+      ),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'not_found',
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('clears local authority when DELETE itself is rejected', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Mira Cloud session was rejected'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({ status: 'rejected' });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('runs a fresh authoritative session check after revoke instead of reusing a pre-revoke restore', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    let resolveOldRestore!: (value: {
+      account: typeof issued.account;
+      expiresAt: string;
+    }) => void;
+    let markOldRestoreStarted!: () => void;
+    const oldRestoreStarted = new Promise<void>(resolve => {
+      markOldRestoreStarted = resolve;
+    });
+    (harness.api.getSession as jest.Mock)
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveOldRestore = resolve;
+            markOldRestoreStarted();
+          }),
+      )
+      .mockRejectedValueOnce(
+        new CloudAuthRequestError('rejected', 'New revoke invalidated session'),
+      );
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+
+    const restoring = harness.service.restoreSession();
+    await oldRestoreStarted;
+    const revoking = harness.service.revokeDevice(device.id);
+    resolveOldRestore({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    await expect(restoring).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(revoking).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.api.getSession).toHaveBeenCalledTimes(2);
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
 });
