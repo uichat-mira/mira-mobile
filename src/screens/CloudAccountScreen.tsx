@@ -109,6 +109,7 @@ export function CloudAccountScreen() {
   const expiresAt = useCloudAccountStore(state => state.expiresAt);
   const message = useCloudAccountStore(state => state.message);
   const busy = useCloudAccountStore(state => state.busy);
+  const initialized = useCloudAccountStore(state => state.initialized);
   const signIn = useCloudAccountStore(state => state.signIn);
   const cancelSignIn = useCloudAccountStore(state => state.cancelSignIn);
   const signOut = useCloudAccountStore(state => state.signOut);
@@ -122,18 +123,32 @@ export function CloudAccountScreen() {
   const loadDevices = useCloudAccountStore(state => state.loadDevices);
   const revokeDevice = useCloudAccountStore(state => state.revokeDevice);
 
+  const refreshAndLoadDevices = useCallback(async () => {
+    await refresh();
+    const next = useCloudAccountStore.getState();
+    if (next.status === 'signed_in') {
+      await next.loadDevices();
+    }
+  }, [refresh]);
+
   useFocusEffect(
     useCallback(() => {
-      const current = useCloudAccountStore.getState();
-      if (current.initialized && current.status !== 'authorizing') {
-        void current.refresh().then(() => {
-          const next = useCloudAccountStore.getState();
-          if (next.status === 'signed_in') {
-            void next.loadDevices();
-          }
-        });
+      if (
+        !initialized ||
+        useCloudAccountStore.getState().status === 'authorizing'
+      ) {
+        return;
       }
-    }, []),
+      let focused = true;
+      void refresh().then(() => {
+        if (focused && useCloudAccountStore.getState().status === 'signed_in') {
+          void useCloudAccountStore.getState().loadDevices();
+        }
+      });
+      return () => {
+        focused = false;
+      };
+    }, [initialized, refresh]),
   );
 
   const requestSignOut = () => {
@@ -316,7 +331,7 @@ export function CloudAccountScreen() {
               icon={RefreshCw}
               label={busy ? '正在检查…' : '检查登录状态'}
               tone="secondary"
-              onPress={() => void refresh()}
+              onPress={() => void refreshAndLoadDevices()}
               disabled={busy}
             />
             <ActionButton
@@ -343,7 +358,7 @@ export function CloudAccountScreen() {
               icon={RefreshCw}
               label={busy ? '正在重试…' : '重试连接'}
               tone="secondary"
-              onPress={() => void refresh()}
+              onPress={() => void refreshAndLoadDevices()}
               disabled={busy}
             />
             <ActionButton
@@ -402,7 +417,7 @@ export function CloudAccountScreen() {
                 icon={RefreshCw}
                 label="重试读取设备列表"
                 tone="secondary"
-                onPress={() => void loadDevices()}
+                onPress={() => void refreshAndLoadDevices()}
                 disabled={busy || revokingDeviceId !== null}
               />
             ) : null}
