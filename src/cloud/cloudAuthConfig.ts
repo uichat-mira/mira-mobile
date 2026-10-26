@@ -5,10 +5,12 @@ export const CLOUD_AUTH_CLIENT_ID = 'mira-mobile';
 export const CLOUD_AUTH_REDIRECT_URI = 'mira-mobile://oauth/callback';
 export const CLOUD_AUTH_PLATFORM = 'mobile';
 
-// Origins mirror cloud-auth/deploy/*.caddy; non-production channels use the
-// test service so a dev build never signs in against the production account DB.
+// MOB-081 ONE-OFF PRODUCTION BACKEND CANARY — DO NOT MERGE.
+// Only this isolated validation branch routes non-production APKs to Cloud Auth
+// production for real-device tests with disposable identities. The shared dev,
+// test and prod branches must retain their usual separate backend routing.
 const CLOUD_AUTH_PROD_BASE_URL = 'https://cloud-auth.tomzlab.cn';
-const CLOUD_AUTH_TEST_BASE_URL = 'https://test.cloud-auth.tomzlab.cn';
+const CLOUD_AUTH_TEST_BASE_URL = CLOUD_AUTH_PROD_BASE_URL;
 
 const AUTHORIZE_PATH = '/v1/oauth/authorize';
 const TOKEN_PATH = '/v1/oauth/token';
