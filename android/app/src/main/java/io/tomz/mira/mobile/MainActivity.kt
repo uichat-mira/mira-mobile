@@ -8,6 +8,22 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import com.swmansion.rnscreens.fragment.restoration.RNScreensFragmentFactory
 
 class MainActivity : ReactActivity() {
+  companion object {
+    // Activity window focus is not a valid app visibility signal when a
+    // React Native Modal (Android Dialog) owns the foreground window.
+    @Volatile var isVisible: Boolean = false
+      private set
+  }
+
+  override fun onStart() {
+    super.onStart()
+    isVisible = true
+  }
+
+  override fun onStop() {
+    isVisible = false
+    super.onStop()
+  }
 
   /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule
