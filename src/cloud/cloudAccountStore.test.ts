@@ -397,3 +397,148 @@ describe('Cloud Account device list and revoke state', () => {
     expect(state.devicesMessage).toBe('设备撤销结果未确认，请稍后重试。');
   });
 });
+
+const deferredResult = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
+const replacementAccount = { id: 'account-2', username: 'bob' };
+
+describe('MOB-081-C stale Cloud Account completions', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    setState();
+  });
+
+  it('does not regress to authorizing when a browser launch completes after OAuth login', async () => {
+    const browser = deferredResult<void>();
+    setState({ status: 'signed_out', account: null, expiresAt: null });
+    (cloudAuthService.beginSignIn as jest.Mock).mockReturnValue(browser.promise);
+    (cloudAuthService.completeSignIn as jest.Mock).mockResolvedValue({
+      status: 'signed_in',
+      account: replacementAccount,
+      expiresAt,
+    });
+
+    const starting = useCloudAccountStore.getState().signIn();
+    await useCloudAccountStore.getState().completeSignIn({ code: 'valid' });
+    browser.resolve();
+    await starting;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: replacementAccount,
+      busy: false,
+    });
+  });
+
+  it('ignores an old refresh that resolves after a different account signs in', async () => {
+    const oldRefresh = deferredResult<{
+      status: 'signed_in';
+      account: typeof account;
+      expiresAt: string;
+    }>();
+    (cloudAuthService.restoreSession as jest.Mock).mockReturnValue(oldRefresh.promise);
+    (cloudAuthService.completeSignIn as jest.Mock).mockResolvedValue({
+      status: 'signed_in',
+      account: replacementAccount,
+      expiresAt,
+    });
+
+    const refreshing = useCloudAccountStore.getState().refresh();
+    await useCloudAccountStore.getState().completeSignIn({ code: 'valid' });
+    oldRefresh.resolve({ status: 'signed_in', account, expiresAt });
+    await refreshing;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: replacementAccount,
+      busy: false,
+    });
+  });
+
+  it('does not inject an old account device list after a new login', async () => {
+    const oldList = deferredResult<{
+      status: 'listed';
+      devices: typeof mobileDevice[];
+    }>();
+    (cloudAuthService.listDevices as jest.Mock).mockReturnValue(oldList.promise);
+    (cloudAuthService.completeSignIn as jest.Mock).mockResolvedValue({
+      status: 'signed_in',
+      account: replacementAccount,
+      expiresAt,
+    });
+
+    const listing = useCloudAccountStore.getState().loadDevices();
+    await useCloudAccountStore.getState().completeSignIn({ code: 'valid' });
+    oldList.resolve({ status: 'listed', devices: [mobileDevice] });
+    await listing;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: replacementAccount,
+      devices: [],
+      devicesStatus: 'idle',
+    });
+  });
+
+  it('does not resurrect an old account after a late revoke completes', async () => {
+    const oldRevoke = deferredResult<{
+      status: 'revoked';
+      device: typeof mobileDevice;
+      session: { status: 'signed_in'; account: typeof account; expiresAt: string };
+    }>();
+    (cloudAuthService.revokeDevice as jest.Mock).mockReturnValue(oldRevoke.promise);
+    (cloudAuthService.completeSignIn as jest.Mock).mockResolvedValue({
+      status: 'signed_in',
+      account: replacementAccount,
+      expiresAt,
+    });
+
+    const revoking = useCloudAccountStore.getState().revokeDevice(mobileDevice.id);
+    await useCloudAccountStore.getState().completeSignIn({ code: 'valid' });
+    oldRevoke.resolve({
+      status: 'revoked',
+      device: mobileDevice,
+      session: { status: 'signed_in', account, expiresAt },
+    });
+    await revoking;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: replacementAccount,
+      devices: [],
+      revokingDeviceId: null,
+    });
+  });
+
+  it('does not restore an old device list after a newer successful logout', async () => {
+    const oldList = deferredResult<{
+      status: 'listed';
+      devices: typeof mobileDevice[];
+    }>();
+    (cloudAuthService.listDevices as jest.Mock).mockReturnValue(oldList.promise);
+    (cloudAuthService.logout as jest.Mock).mockResolvedValue({
+      remote: 'revoked',
+      cleared: true,
+      message: null,
+    });
+
+    const listing = useCloudAccountStore.getState().loadDevices();
+    await useCloudAccountStore.getState().signOut();
+    oldList.resolve({ status: 'listed', devices: [mobileDevice] });
+    await listing;
+
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_out',
+      account: null,
+      devices: [],
+      devicesStatus: 'idle',
+      busy: false,
+    });
+  });
+});
