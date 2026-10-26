@@ -229,6 +229,8 @@ describe('Mira Cloud OAuth service', () => {
       state: pending.state,
     });
 
+    // MemoryCloudSessionStore.load() resolves on a microtask, not synchronously.
+    await Promise.resolve();
     expect(harness.api.getSession).toHaveBeenCalledWith(oldToken);
     expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
     rejectOld(new CloudAuthRequestError('rejected', 'Old session revoked'));
