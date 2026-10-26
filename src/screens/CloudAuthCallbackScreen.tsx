@@ -186,8 +186,8 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     gap: spacing.xs,
   },
-  diagnosticLabel: { fontSize: fontSize.bodySm },
-  diagnosticText: { fontSize: fontSize.bodySm, lineHeight: 22 },
+  diagnosticLabel: { fontSize: fontSize.bodyMd },
+  diagnosticText: { fontSize: fontSize.bodyMd, lineHeight: 22 },
   button: {
     marginTop: spacing.lg,
     minHeight: sizing.touchTarget,
