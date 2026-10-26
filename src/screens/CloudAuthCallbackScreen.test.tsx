@@ -8,6 +8,7 @@ import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
 var mockReplace: jest.Mock;
 var mockReset: jest.Mock;
+var mockDeviceCredentialLoad: jest.Mock;
 var mockRoutes: Array<{ name: string }>;
 var mockRouteParams:
   | { code?: string; state?: string; error?: string }
@@ -21,6 +22,12 @@ jest.mock('@react-navigation/native', () => ({
     reset: (...args: unknown[]) => mockReset(...args),
     getState: () => ({ routes: mockRoutes }),
   }),
+}));
+
+jest.mock('../security/deviceCredentialStore', () => ({
+  deviceCredentialStore: {
+    load: (...args: unknown[]) => mockDeviceCredentialLoad(...args),
+  },
 }));
 
 jest.mock('../theme/ThemeContext', () => ({
@@ -95,6 +102,7 @@ describe('CloudAuthCallbackScreen', () => {
   beforeEach(() => {
     mockReplace = jest.fn();
     mockReset = jest.fn();
+    mockDeviceCredentialLoad = jest.fn().mockResolvedValue(null);
     mockRoutes = [{ name: 'CloudAuthCallback' }];
     mockRouteParams = {
       code: `mca_v1.${'a'.repeat(22)}.${'b'.repeat(43)}`,
@@ -146,12 +154,35 @@ describe('CloudAuthCallbackScreen', () => {
     const returnButton = tree.root.findByProps({
       accessibilityLabel: '返回 Mira Cloud 账户',
     });
-    act(() => { returnButton.props.onPress(); });
+    await act(async () => { await returnButton.props.onPress(); });
 
     expect(mockReplace).not.toHaveBeenCalled();
     expect(mockReset).toHaveBeenCalledWith({
       index: 1,
       routes: [{ name: 'Bootstrap' }, { name: 'CloudAccount' }],
+    });
+  });
+
+  it('returns a paired device to SessionList after a cold OAuth callback', async () => {
+    mockDeviceCredentialLoad.mockResolvedValue({
+      deviceId: 'device-1',
+      credential: 'test-remote-credential',
+    });
+    authMocks.completeSignIn.mockResolvedValue({
+      status: 'signed_in',
+      account: { id: 'account-1', username: 'alice' },
+      expiresAt: '2026-11-25T11:00:00.000Z',
+    });
+    const tree = await renderScreen();
+    const button = tree.root.findByProps({
+      accessibilityLabel: '返回 Mira Cloud 账户',
+    });
+    await act(async () => { await button.props.onPress(); });
+
+    expect(mockDeviceCredentialLoad).toHaveBeenCalledTimes(1);
+    expect(mockReset).toHaveBeenCalledWith({
+      index: 1,
+      routes: [{ name: 'SessionList' }, { name: 'CloudAccount' }],
     });
   });
 
@@ -170,10 +201,11 @@ describe('CloudAuthCallbackScreen', () => {
     const returnButton = tree.root.findByProps({
       accessibilityLabel: '返回 Mira Cloud 账户',
     });
-    act(() => { returnButton.props.onPress(); });
+    await act(async () => { await returnButton.props.onPress(); });
 
     expect(mockReplace).toHaveBeenCalledWith('CloudAccount');
     expect(mockReset).not.toHaveBeenCalled();
+    expect(mockDeviceCredentialLoad).not.toHaveBeenCalled();
   });
 
   it('reports a failed callback without hiding the reason', async () => {
