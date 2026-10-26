@@ -722,6 +722,53 @@ describe('Mira Cloud device service', () => {
     expect(harness.sessionStore.peek()).toBeNull();
   });
 
+  it('serializes logout before a later revoke and does not send DELETE with a cleared token', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    let releaseLogout!: () => void;
+    let logoutStarted!: () => void;
+    const started = new Promise<void>(resolve => { logoutStarted = resolve; });
+    (harness.api.logout as jest.Mock).mockImplementationOnce(
+      () => new Promise<void>(resolve => {
+        releaseLogout = resolve;
+        logoutStarted();
+      }),
+    );
+
+    const logout = harness.service.logout();
+    await started;
+    const revoke = harness.service.revokeDevice(device.id);
+    releaseLogout();
+
+    await expect(logout).resolves.toMatchObject({
+      remote: 'revoked', cleared: true,
+    });
+    await expect(revoke).resolves.toEqual({ status: 'signed_out' });
+    expect(harness.api.revokeDevice).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()).toBeNull();
+  });
+
+  it('keeps the installation identity when this device is revoked', async () => {
+    const harness = createHarness();
+    const id = await harness.service.beginSignIn().then(
+      () => harness.installationStore.peek()?.installationId,
+    );
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Session revoked'),
+    );
+
+    await expect(harness.service.revokeDevice(device.id)).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(id);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+  });
+
   it('runs a fresh authoritative session check after revoke instead of reusing a pre-revoke restore', async () => {
     const harness = createHarness();
     await harness.sessionStore.save(storedSession());
