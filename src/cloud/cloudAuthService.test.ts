@@ -763,3 +763,65 @@ describe('Mira Cloud device service', () => {
     expect(harness.sessionStore.peek()).toBeNull();
   });
 });
+
+describe('MOB-081-C revocation and installation identity closeout', () => {
+  it('does not re-register or change installation ID after revoked-device rejection', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const originalInstallationId = harness.installationStore.peek()?.installationId;
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue({
+      ...device,
+      revokedAt: '2026-10-25T11:00:00.000Z',
+    });
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Device session was revoked'),
+    );
+
+    await expect(harness.service.revokeDevice(device.id)).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    await expect(harness.service.revokeDevice(device.id)).resolves.toEqual({
+      status: 'signed_out',
+    });
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'signed_out',
+    });
+    expect(harness.api.revokeDevice).toHaveBeenCalledTimes(1);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.api.renewSession).not.toHaveBeenCalled();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+  });
+
+  it('repeated logout is idempotent and preserves the independent installation identity', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const originalInstallationId = harness.installationStore.peek()?.installationId;
+    await harness.sessionStore.save(storedSession());
+    (harness.api.logout as jest.Mock).mockResolvedValue(undefined);
+
+    const first = harness.service.logout();
+    const second = harness.service.logout();
+    await expect(first).resolves.toMatchObject({
+      remote: 'revoked',
+      cleared: true,
+    });
+    await expect(second).resolves.toMatchObject({
+      remote: 'already_signed_out',
+      cleared: true,
+    });
+    expect(harness.api.logout).toHaveBeenCalledTimes(1);
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+
+    // A stray invalid callback after logout is never an implicit login.
+    await expect(harness.service.completeSignIn({
+      code,
+      state: 'invalid-oauth-state',
+    })).rejects.toMatchObject({ kind: 'invalid_state' });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+  });
+});
