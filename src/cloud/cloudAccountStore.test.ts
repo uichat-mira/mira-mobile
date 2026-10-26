@@ -251,6 +251,67 @@ describe('Cloud Account device list and revoke state', () => {
     });
   });
 
+  it('settles a pending list after the same Cloud account goes offline and retries after recovery', async () => {
+    setState({ devices: [mobileDevice], devicesStatus: 'loaded' });
+    let resolveList!: (result: unknown) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { resolveList = resolve; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    expect(useCloudAccountStore.getState().devicesStatus).toBe('loading');
+
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'cloud_unavailable', account, expiresAt,
+    });
+    await useCloudAccountStore.getState().refresh();
+    expect(useCloudAccountStore.getState().status).toBe('cloud_unavailable');
+
+    resolveList({ status: 'listed', devices: [desktopDevice] });
+    await listing;
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'cloud_unavailable',
+      account,
+      devices: [mobileDevice],
+      devicesStatus: 'unavailable',
+      devicesMessage: expect.stringContaining('无法读取 Mira Cloud 设备列表'),
+    });
+
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'signed_in', account, expiresAt,
+    });
+    (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
+      status: 'listed', devices: [desktopDevice],
+    });
+    await useCloudAccountStore.getState().refresh();
+    await useCloudAccountStore.getState().loadDevices();
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      devicesStatus: 'loaded',
+      devices: [desktopDevice],
+    });
+    expect(cloudAuthService.listDevices).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases pending device-list loading if the same account goes offline and the request throws', async () => {
+    let rejectList!: (error: Error) => void;
+    (cloudAuthService.listDevices as jest.Mock).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectList = reject; }),
+    );
+    const listing = useCloudAccountStore.getState().loadDevices();
+    (cloudAuthService.restoreSession as jest.Mock).mockResolvedValueOnce({
+      status: 'cloud_unavailable', account, expiresAt,
+    });
+    await useCloudAccountStore.getState().refresh();
+    rejectList(new Error('connection dropped'));
+    await listing;
+    expect(useCloudAccountStore.getState()).toMatchObject({
+      status: 'cloud_unavailable',
+      account,
+      devicesStatus: 'unavailable',
+      devicesMessage: expect.stringContaining('无法读取 Mira Cloud 设备列表'),
+    });
+  });
+
   it('keeps the signed-in account and exposes a retryable device-list outage', async () => {
     (cloudAuthService.listDevices as jest.Mock).mockResolvedValueOnce({
       status: 'unavailable',
