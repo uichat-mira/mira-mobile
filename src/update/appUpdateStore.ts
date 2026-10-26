@@ -8,6 +8,8 @@ import {
   installDownloadedUpdate,
   isInAppUpdateSupported,
   openInstallPermissionSettings,
+  observeUpdateInstallFailures,
+  type UpdateInstallFailure,
   toAppUpdateError,
   updateInstallErrorMessage,
 } from './appUpdateInstall';
@@ -47,6 +49,11 @@ interface AppUpdateState {
  * reopen the sheet or overwrite a newer progress value.
  */
 let activeRun = 0;
+let activeInstallFailureListener: { remove(): void } | null = null;
+const stopListeningForInstallFailure = (): void => {
+  activeInstallFailureListener?.remove();
+  activeInstallFailureListener = null;
+};
 
 export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
   const markStopped = (
@@ -61,6 +68,7 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
   };
 
   const beginRun = (release: AppRelease): void => {
+    stopListeningForInstallFailure();
     activeRun += 1;
     const run = activeRun;
 
@@ -110,13 +118,32 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
           state.flow === null ? state : { flow: { ...state.flow, status: 'installing' } },
         );
 
-        await installDownloadedUpdate(filePath, release.sha256);
+        let sessionId: number | null = null;
+        const earlyFailures: UpdateInstallFailure[] = [];
+        activeInstallFailureListener = observeUpdateInstallFailures((failure) => {
+          if (run !== activeRun) return;
+          if (sessionId === null) {
+            // The native callback can precede the install() Promise result.
+            if (earlyFailures.length < 4) earlyFailures.push(failure);
+            return;
+          }
+          if (failure.sessionId !== sessionId) return;
+          stopListeningForInstallFailure();
+          markStopped(run, 'failed', failure.message);
+        });
+        sessionId = await installDownloadedUpdate(filePath, release.sha256);
         if (run !== activeRun) return;
         set((state) =>
           state.flow === null ? state : { flow: { ...state.flow, status: 'handed-off' } },
         );
+        const early = earlyFailures.find((failure) => failure.sessionId === sessionId);
+        if (early !== undefined) {
+          stopListeningForInstallFailure();
+          markStopped(run, 'failed', early.message);
+        }
       } catch (error) {
         if (run !== activeRun) return;
+        stopListeningForInstallFailure();
         const code = toAppUpdateError(error).code;
         if (code === 'UPDATE_CANCELLED') {
           set({ flow: null });
@@ -145,6 +172,7 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
     cancel: () => {
       const { flow } = get();
       if (flow === null) return;
+      stopListeningForInstallFailure();
       activeRun += 1;
       set({ flow: null });
       void cancelUpdateDownload();
@@ -165,6 +193,7 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
 
     dismiss: () => {
       if (get().flow === null) return;
+      stopListeningForInstallFailure();
       activeRun += 1;
       set({ flow: null });
     },
