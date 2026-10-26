@@ -20,7 +20,7 @@
 	<string>APPL</string>
 	<!-- Mirrored from package.json; buildTruth.contract.test.js prevents drift. -->
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.17</string>
+	<string>0.3.18</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
