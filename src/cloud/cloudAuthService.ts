@@ -52,7 +52,7 @@ export type CloudAuthSessionState =
       account: CloudAccountIdentity | null;
       expiresAt: string | null;
     }
-  | { status: 'session_rejected' };
+  | { status: 'session_rejected'; message?: string };
 
 const OAUTH_CALLBACK_ERRORS = new Set([
   'invalid_request',
@@ -149,6 +149,20 @@ const clearSessionQuietly = async (
   }
 };
 
+const shouldRenewSession = (
+  stored: StoredCloudSession,
+  serverExpiresAt: string,
+  now: number,
+): boolean => {
+  const expiry = Date.parse(serverExpiresAt);
+  const lifetime = expiry - Date.parse(stored.savedAt);
+  if (!Number.isFinite(lifetime) || lifetime <= 0) return false;
+  // Relative to the actual session lifetime, capped at 24 hours. Avoid
+  // rotating on each account-screen focus, especially with short server TTLs.
+  const windowMs = Math.min(24 * 60 * 60 * 1000, lifetime / 10);
+  return expiry - now <= windowMs;
+};
+
 const clearPendingQuietly = async (
   store: CloudOAuthPendingStore,
 ): Promise<void> => {
@@ -170,6 +184,18 @@ export class MiraCloudAuthService {
   private readonly baseUrl: string;
   private pendingRestore: Promise<CloudAuthSessionState> | null = null;
   private pendingExchange: Promise<CloudAuthSessionState> | null = null;
+  private sessionQueue: Promise<void> = Promise.resolve();
+
+  // Token rotation, restore, code exchange and logout must never write or
+  // clear the same secure record out of order.
+  private serializeSession<T>(operation: () => Promise<T>): Promise<T> {
+    const scheduled = this.sessionQueue.then(operation, operation);
+    this.sessionQueue = scheduled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return scheduled;
+  }
 
   constructor(options: CloudAuthServiceOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -195,7 +221,7 @@ export class MiraCloudAuthService {
     if (this.pendingExchange) return this.pendingExchange;
     if (this.pendingRestore) return this.pendingRestore;
 
-    const operation = this.restoreSessionOnce();
+    const operation = this.serializeSession(() => this.restoreSessionOnce());
     this.pendingRestore = operation;
     const release = () => {
       if (this.pendingRestore === operation) this.pendingRestore = null;
@@ -232,6 +258,58 @@ export class MiraCloudAuthService {
 
     try {
       const session = await this.api.getSession(stored.sessionToken);
+      if (session.account.id !== stored.account.id) {
+        await clearSessionQuietly(this.store);
+        return { status: 'session_rejected' };
+      }
+
+      if (shouldRenewSession(stored, session.expiresAt, this.now().getTime())) {
+        let renewed: IssuedCloudSession;
+        try {
+          renewed = await this.api.renewSession(stored.sessionToken);
+        } catch (error) {
+          if (error instanceof CloudAuthRequestError && error.kind === 'rejected') {
+            await clearSessionQuietly(this.store);
+            return { status: 'session_rejected' };
+          }
+          // A timeout may have happened after the server rotated the secret.
+          // Keep the old record for later validation, but don't claim renewed
+          // authority or blindly retry the non-idempotent renewal.
+          return {
+            status: 'cloud_unavailable',
+            account: stored.account,
+            expiresAt: stored.expiresAt,
+          };
+        }
+
+        if (renewed.account.id !== stored.account.id) {
+          await clearSessionQuietly(this.store);
+          return { status: 'session_rejected' };
+        }
+        try {
+          await this.store.save({
+            schemaVersion: 1,
+            sessionToken: renewed.sessionToken,
+            account: renewed.account,
+            expiresAt: renewed.expiresAt,
+            savedAt: this.now().toISOString(),
+          });
+        } catch {
+          // Server rotation already invalidated the old token. No cross-device
+          // atomic commit exists: fail closed and ask for reauthentication.
+          await clearSessionQuietly(this.store);
+          return {
+            status: 'session_rejected',
+            message: '无法保存已续期的 Mira Cloud 登录状态，请重新登录。',
+          };
+        }
+        return {
+          status: 'signed_in',
+          account: renewed.account,
+          expiresAt: renewed.expiresAt,
+        };
+      }
+
       return {
         status: 'signed_in',
         account: session.account,
@@ -303,12 +381,7 @@ export class MiraCloudAuthService {
   completeSignIn(params: OAuthCallbackParams): Promise<CloudAuthSessionState> {
     if (this.pendingExchange) return this.pendingExchange;
 
-    const operation = (async () => {
-      // An old-token rejection may clear storage: finish it before saving
-      // the newly exchanged Cloud Session.
-      if (this.pendingRestore) await this.pendingRestore;
-      return this.completeSignInOnce(params);
-    })();
+    const operation = this.serializeSession(() => this.completeSignInOnce(params));
     this.pendingExchange = operation;
     const release = () => {
       if (this.pendingExchange === operation) this.pendingExchange = null;
@@ -420,7 +493,8 @@ export class MiraCloudAuthService {
     };
   }
 
-  async logout(): Promise<CloudLogoutResult> {
+  logout(): Promise<CloudLogoutResult> {
+    return this.serializeSession(async () => {
     let stored: StoredCloudSession | null;
     try {
       stored = await this.store.load();
@@ -469,6 +543,7 @@ export class MiraCloudAuthService {
           '无法连接 Mira Cloud，退出登录未完成；本机保存的登录状态仍然保留。',
       };
     }
+    });
   }
 
   async cancelPendingSignIn(): Promise<void> {
