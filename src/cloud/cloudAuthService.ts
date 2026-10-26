@@ -218,7 +218,13 @@ export class MiraCloudAuthService {
 
   restoreSession(): Promise<CloudAuthSessionState> {
     // Keep restores and OAuth callback completion from racing over one token.
-    if (this.pendingExchange) return this.pendingExchange;
+    if (this.pendingExchange) {
+      // A failed/invalid callback does not invalidate a saved Cloud Session.
+      // Wait for exchange to finish before reading the authoritative record.
+      return this.pendingExchange.catch(() =>
+        this.serializeSession(() => this.restoreSessionOnce()),
+      );
+    }
     if (this.pendingRestore) return this.pendingRestore;
 
     const operation = this.serializeSession(() => this.restoreSessionOnce());
