@@ -516,28 +516,28 @@ describe('MOB-081-C stale Cloud Account completions', () => {
     });
   });
 
-  it('does not resurrect a signed-in callback after a newer successful logout', async () => {
-    const callback = deferredResult<{
-      status: 'signed_in';
-      account: typeof account;
-      expiresAt: string;
+  it('does not restore an old device list after a newer successful logout', async () => {
+    const oldList = deferredResult<{
+      status: 'listed';
+      devices: typeof mobileDevice[];
     }>();
-    (cloudAuthService.completeSignIn as jest.Mock).mockReturnValue(callback.promise);
+    (cloudAuthService.listDevices as jest.Mock).mockReturnValue(oldList.promise);
     (cloudAuthService.logout as jest.Mock).mockResolvedValue({
       remote: 'revoked',
       cleared: true,
       message: null,
     });
 
-    const completing = useCloudAccountStore.getState().completeSignIn({ code: 'valid' });
-    const loggingOut = useCloudAccountStore.getState().signOut();
-    await loggingOut;
-    callback.resolve({ status: 'signed_in', account, expiresAt });
-    await completing;
+    const listing = useCloudAccountStore.getState().loadDevices();
+    await useCloudAccountStore.getState().signOut();
+    oldList.resolve({ status: 'listed', devices: [mobileDevice] });
+    await listing;
 
     expect(useCloudAccountStore.getState()).toMatchObject({
       status: 'signed_out',
       account: null,
+      devices: [],
+      devicesStatus: 'idle',
       busy: false,
     });
   });
