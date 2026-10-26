@@ -168,6 +168,8 @@ export class MiraCloudAuthService {
   private readonly now: () => Date;
   private readonly randomBytes: (length: number) => Promise<string>;
   private readonly baseUrl: string;
+  private pendingRestore: Promise<CloudAuthSessionState> | null = null;
+  private pendingExchange: Promise<CloudAuthSessionState> | null = null;
 
   constructor(options: CloudAuthServiceOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -188,7 +190,21 @@ export class MiraCloudAuthService {
       ((length: number) => requireNativeSecureRandom().randomBytes(length));
   }
 
-  async restoreSession(): Promise<CloudAuthSessionState> {
+  restoreSession(): Promise<CloudAuthSessionState> {
+    // Keep restores and OAuth callback completion from racing over one token.
+    if (this.pendingExchange) return this.pendingExchange;
+    if (this.pendingRestore) return this.pendingRestore;
+
+    const operation = this.restoreSessionOnce();
+    this.pendingRestore = operation;
+    const release = () => {
+      if (this.pendingRestore === operation) this.pendingRestore = null;
+    };
+    operation.then(release, release);
+    return operation;
+  }
+
+  private async restoreSessionOnce(): Promise<CloudAuthSessionState> {
     let stored: StoredCloudSession | null;
     try {
       stored = await this.store.load();
@@ -284,7 +300,24 @@ export class MiraCloudAuthService {
     }
   }
 
-  async completeSignIn(
+  completeSignIn(params: OAuthCallbackParams): Promise<CloudAuthSessionState> {
+    if (this.pendingExchange) return this.pendingExchange;
+
+    const operation = (async () => {
+      // An old-token rejection may clear storage: finish it before saving
+      // the newly exchanged Cloud Session.
+      if (this.pendingRestore) await this.pendingRestore;
+      return this.completeSignInOnce(params);
+    })();
+    this.pendingExchange = operation;
+    const release = () => {
+      if (this.pendingExchange === operation) this.pendingExchange = null;
+    };
+    operation.then(release, release);
+    return operation;
+  }
+
+  private async completeSignInOnce(
     params: OAuthCallbackParams,
   ): Promise<CloudAuthSessionState> {
     let pending;
