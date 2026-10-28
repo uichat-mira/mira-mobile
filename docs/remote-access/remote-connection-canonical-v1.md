@@ -1,14 +1,45 @@
 # Mira Mobile 远程连接唯一真相源 V1
 
-状态：Current canonical contract
+状态：Current implementation truth for legacy Remote V1; Phase III cloud-target decision is frozen in §0 / #315, pending implementation
 
 适用分支：`dev`
 
-最近修订：2026-08-29
+最近修订：2026-10-25（产品合同修订；旧实现尚在 dev）
 
 本文定义 Mira Mobile 首次配对、配对后远程连接与 Remote capability discovery 的权威行为。其他移动端远程连接文档必须引用本文；如有冲突，以本文为准。
 
-## 1. Transport 边界
+## 0. 三期云端远程连接新合同（2026-10-25，覆盖冲突的旧混合选路语义）
+
+**产品决策权威**：[mira-desktop #315](https://github.com/uichat-mira/mira-desktop/issues/315)；**组织云身份设计变更**：[.github Cloud Auth 设计 PR](https://github.com/uichat-mira/.github/pull/65)。以下是待实施的三期产品合同，不表示旧 `remoteMiraHost.ts` 代码已经完成迁移。
+
+### 两条绝不隐式混合的入口
+
+| 入口 | 身份/关联 | 授权 | 传输 | 应用能力 |
+| --- | --- | --- | --- | --- |
+| 官方云路径 | Mobile 与 Desktop 登录同一个 Mira Cloud Account，注册为两个 Mira Device，自动关联/发现有 Remote Host 能力的 Desktop；无需二维码、claim 或现场批准 | Desktop 云登录阶段明确预设 Mobile 可用的 Host scope，通过 OAuth 2.0 授权合同形成 Cloud Host grant；Cloud Auth Portal 可远程修改、撤销；日常调用不逐次发起在线 OAuth 授权 | **仅官方 hosted Relay**，带独立 audience/room/role ticket | 复用现有 Remote Gateway + manifest + Harness / Tool Gateway，Host 执行具体高风险 Tool 审批 |
+| 独立无云路径 | Tailscale Direct 可达、使用原 `mira://pair` 二维码/claim/Host 批准 | 原 `mira_device_*` device credential + Host scopes | **仅 Tailscale Direct** | 同一 Host canonical business routes / scopes / Harness |
+
+**禁止跨入口 fallback、回退重放、混合身份或传输凭证复用。** Cloud Auth 凭证、Relay ticket 与 Host 业务 grant 是不同权限层。Cloud 设备列表不能代替可连接 Host 的真实在线/readiness 状态。原 V1 credential 可继续服务明确的 Tailscale 配对；云 Host grant 如何投影到现有 Host scope 由 #315 G 合同裁决，不重造第二套 Tool 系统。
+
+### 授权、可靠性和数据边界
+
+- 两台设备同账号登录即自动关联；Desktop 在云登录时设定使用范围，Mobile 无须返回 Desktop 现场确认。Cloud Portal 可随时修改或解除，Host 按明确时效执行已同步或经验证的授权。**这是设备能力授权，不等于具体高风险 Tool 的 Harness Approval**。
+- 维持 Mobile Local Provider / Local Agent 安装即用，不依赖云登录。设备能力仅允许 Mobile → Desktop；**不开放 Desktop/其它 Agent 反向调用 Mobile 相机、定位、文件或其它本地设备能力**。
+- Mobile Cloud Shiyan 复用云身份及面向 Shiyan 的 audience 令牌，通过 Shiyan 服务自身 API 访问，按 Cloud Account 资源隔离；不迁移旧拾言用户数据。未来 Cloud MCP 参考该模式，但不属于三期交付。
+- 原 Remote V1 `/remote/v1/manifest`、Gateway method/path→scope 映射、canonical Host route、Tool Gateway、AgentRun 和 Artifact 真相继续成立。Host-owned 长任务的网络断开不得等于显式取消；有副作用的未知请求不得重放。
+- 当前线上/代码仍含旧混合 Relay-first pairing 与 Direct-first fallback；**以下第 1～6 节的 mixed transport 流程仅作历史实现/迁移定位，不是三期云端新产品验收要求**。未有真实历史用户群，无须另起历史数据/配对迁移工程；Tailscale 本身必须可独立用。
+
+### 必须的真机验收
+
+1. 不登录云账号，Local Provider 及 Tailscale 扫码连接独立可用。
+2. 两端同账号登录，云端设备自动关联并发现可用 Host，不再现场扫码批准。
+3. 在 Desktop 云登录设定的 scope 内，经官方 Relay 调用受控 Host 能力；超 scope 被拒绝。Mobile 的具体 Tool 审批仍绑定 exact invocation。
+4. 在 Cloud Auth Portal 改权、撤权后 Host 按合同生效；离线/授权失效/Host 离线准确报错，不静默切 Tailscale。
+5. 不产生 Desktop → Mobile 的相机/位置/文件远程调用接口。
+
+---
+
+## 1. Transport 边界（历史 V1 实现快照，非新云路径规范）
 
 Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope。Relay 与 Tailscale Direct 都只是 Transport，不负责业务授权、scope 判定、Agent、Provider 或消息事实。
 
@@ -19,9 +50,9 @@ Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope�
 
 必须至少存在一种可达 endpoint。Relay-only 配对不要求 Tailscale 已开启。
 
-对用户而言，Relay 与 Tailscale Direct 不是两种需要选择的连接模式，而是客户端内部自动选择的传输路径。
+**历史实现事实（已被 §0 新决定覆盖）**：旧版将 Relay / Tailscale Direct 当成自动选路。新云端产品明确把两者分为独立入口，客户端不得跨入口自动选择。
 
-## 2. 首次配对：Relay-first
+## 2. 历史首次混合配对：Relay-first（仅旧 V1 实现记录；新云路径不采用）
 
 ```text
 有 Relay endpoint
@@ -48,7 +79,7 @@ Mobile 可在 `/remote/pairing/claim` body 中发送：
 
 允许值为 `relay`、`direct`。字段只用于 Desktop 展示和诊断，不参与认证、poll token、设备凭据、scope、审批或 endpoint 判定。旧版 Mobile 缺少该字段时，Desktop 显示“未知”，并继续完成配对。
 
-## 4. 配对后日常请求
+## 4. 历史配对后混合选路（仅旧 V1 实现记录；新云路径不采用）
 
 配对完成后的业务请求使用 Direct-first：
 
@@ -60,7 +91,7 @@ Direct 网络/传输失败 -> Relay
 
 Transport 切换不能删除、重建或改变已经批准的 `mira_device_*` 身份。
 
-## 5. Mobile 界面流程与文案
+## 5. 历史扫码配对 Mobile 界面流程与文案（新云路径使用自动关联）
 
 ### 5.1 交互原则
 
@@ -105,7 +136,7 @@ claim 已发出但响应不确定时：
 
 “连接详情”可以显示当前尝试的 Transport、备用 Transport、失败阶段和可操作建议，例如“当前尝试：Mira Relay”“备用连接：Tailscale Direct”。这些信息不得被设计成用户必须选择的设置。
 
-## 6. Desktop 对应要求
+## 6. 历史二维码 Desktop 对应要求（新云路径使用登录预授权）
 
 Desktop 创建配对挑战时，只要 Relay connected 或 Direct ready 任一成立即可；二维码同时携带当前可用 endpoint。收到 claim 后展示实际申请通道：Mira Relay、Tailscale Direct 或未知。
 
@@ -162,7 +193,7 @@ Workspace create / update / delete
 
 后续若新增语义更精确的 `threads:write`，必须提供显式 scope 迁移方案，不能让旧设备在无感知情况下获得新的权限集合。
 
-## 8. 验收
+## 8. 历史 Remote V1 验收清单（新三期云路径验收以 §0 为准）
 
 - Relay + Direct：先 Relay `/health`，成功后只发 Relay claim；
 - Relay preflight 失败：claim 前才切 Direct；
