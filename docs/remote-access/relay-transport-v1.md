@@ -99,6 +99,33 @@ complete
 
 Mobile 复用现有 `SseFrameDecoder` 解析 Desktop 原始 SSE bytes。用户 cancel 时发送 Relay `cancel`。
 
+## Cloud Relay entry (MOB-080, staged consumer slice)
+
+The official Cloud path is separate from the Legacy pairing-token Relay entry:
+
+- It consumes the device-bound Mobile Cloud Session, discovers an
+  account-owned Desktop Host through `GET /v1/hosts`, and requests one
+  `mira:cloud-relay-transport` Client ticket for the server-owned room through
+  `POST /v1/service-credentials`.
+- The Relay hello sends `{role:"client", relayId:<room>, token:<Client JWT>}`
+  and never sends Legacy `clientToken`.
+- A new ticket is acquired for every new WebSocket. An already healthy socket
+  is not closed merely because a ticket expires.
+- A Client ticket is transport-only. It is never used as
+  `Authorization: Bearer mira_device_*`, a Cloud Host grant, or Host business
+  authority. Desktop derives business authority from Relay provenance plus its
+  own trusted Cloud Host grant snapshot.
+- The Cloud entry has no default Relay URL. Callers must supply an explicitly
+  approved isolated Cloud Worker; this slice neither hardcodes a staging Worker
+  nor switches the Legacy production `relay.tomz.io` service.
+- Cloud and Legacy/Tailscale entries do not fall back to each other.
+
+Current implementation slice: Cloud Auth Host discovery and Client-ticket
+issuance parsers, `CloudRelayEntry` Host selection/ticket source, and the
+Cloud Relay socket transport. Host business adapter integration and real
+Mobile -> hosted Relay -> Desktop T3/T4 evidence remain pending the separately
+owned Cloud Host grant/Gateway bridge and an approved live endpoint.
+
 ## 边界
 
 - 不修改 Desktop 业务 API。
