@@ -9,9 +9,10 @@ import {
   cloudSessionStore,
   type CloudSessionStore,
 } from './cloudSessionStore';
-import type {
-  CloudRelayTicketProvider,
-  CloudRelayTransportTarget,
+import {
+  closeCloudRelayConnections,
+  type CloudRelayTicketProvider,
+  type CloudRelayTransportTarget,
 } from '../api/cloudRelay';
 import { RemoteHostError } from '../api/remoteHttp';
 
@@ -188,6 +189,11 @@ export class CloudRelayEntry {
     this.now = options.now ?? (() => new Date());
   }
 
+  reset() {
+    this.lastAccess = null;
+    closeCloudRelayConnections();
+  }
+
   async discover(): Promise<CloudRelayAccess> {
     let stored;
     try {
@@ -200,12 +206,14 @@ export class CloudRelayEntry {
       );
     }
     if (!stored) {
+      this.reset();
       throw failure(
         'CLOUD_RELAY_SESSION_REQUIRED',
         'Sign in to Mira Cloud before using the official Cloud Relay entry',
       );
     }
     if (Date.parse(stored.expiresAt) <= this.now().getTime()) {
+      this.reset();
       throw failure(
         'CLOUD_RELAY_SESSION_REJECTED',
         'Mira Cloud sign-in has expired',
@@ -246,6 +254,7 @@ export class CloudRelayEntry {
     const key = JSON.stringify([stored.account.id, stored.sessionToken,
       host.id, host.relayRoom, endpoint]);
     if (this.lastAccess?.key === key) return this.lastAccess.access;
+    if (this.lastAccess) this.reset();
     const context: CloudRelaySessionContext = {
       accountId: stored.account.id,
       sessionToken: stored.sessionToken,
