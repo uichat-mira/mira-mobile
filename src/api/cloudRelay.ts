@@ -101,8 +101,14 @@ export const closeCloudRelayConnections = () => {
   connections.clear();
 };
 
+const TICKET_ERRORS = new Set([
+  'CLOUD_RELAY_TICKET_DENIED',
+  'CLOUD_RELAY_TICKET_INVALID',
+  'CLOUD_RELAY_TICKET_REJECTED',
+]);
+
 export const isCloudRelayTicketError = (error: unknown) =>
-  error instanceof RemoteHostError && error.code.startsWith('CLOUD_RELAY_');
+  error instanceof RemoteHostError && TICKET_ERRORS.has(error.code);
 
 export const isCloudRelayTransportError = (error: unknown) =>
   error instanceof RemoteHostError && error.code.startsWith('RELAY_');
