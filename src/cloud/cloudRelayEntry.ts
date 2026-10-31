@@ -179,6 +179,7 @@ export class CloudRelayEntry {
   private readonly api: CloudRelayApiLike;
   private readonly relayEndpoint: string | null;
   private readonly now: () => Date;
+  private lastAccess: { key: string; access: CloudRelayAccess } | null = null;
 
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -242,12 +243,15 @@ export class CloudRelayEntry {
           );
     }
 
+    const key = JSON.stringify([stored.account.id, stored.sessionToken,
+      host.id, host.relayRoom, endpoint]);
+    if (this.lastAccess?.key === key) return this.lastAccess.access;
     const context: CloudRelaySessionContext = {
       accountId: stored.account.id,
       sessionToken: stored.sessionToken,
       room: host.relayRoom,
     };
-    return {
+    const access: CloudRelayAccess = {
       target: {
         endpoint,
         room: host.relayRoom,
@@ -257,5 +261,7 @@ export class CloudRelayEntry {
       // callers only receive the public transport target.
       tickets: new ApiCloudRelayTicketSource(this.api, context),
     };
+    this.lastAccess = { key, access };
+    return access;
   }
 }
