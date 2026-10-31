@@ -1,4 +1,6 @@
 import {
+  requestCloudRelayJson,
+  openCloudRelayPostSse,
   type CloudRelayTicketProvider,
   type CloudRelayTransportTarget,
 } from '../api/cloudRelay';
@@ -72,7 +74,11 @@ const harness = (scopes?: RemoteDeviceScope[]) => {
     events: (async function* () { yield { type: 'finish', finishReason: 'stop' } as unknown as T; })(),
     abort: jest.fn(),
   }));
-  const client = new CloudRemoteBusinessClient(entry, json, sse);
+  const client = new CloudRemoteBusinessClient(
+    entry,
+    json as unknown as typeof requestCloudRelayJson,
+    sse as unknown as typeof openCloudRelayPostSse,
+  );
   return { client, entry, json, sse, responses };
 };
 
