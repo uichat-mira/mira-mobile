@@ -205,6 +205,54 @@ describe('official Cloud Relay client transport', () => {
     await expect(second).resolves.toEqual({});
   });
 
+  it('times out when WebSocket never opens', async () => {
+    jest.useFakeTimers();
+    try {
+      const request = requestCloudRelayJson(target, {
+        acquireClientTicket: jest.fn(async () => 'unused'),
+      }, { hostUrl: target.endpoint, path: '/remote/v1/manifest',
+        parse: value => value });
+      const socket = FakeWebSocket.instances[0];
+      jest.advanceTimersByTime(10_001);
+      await expect(request).rejects.toMatchObject({
+        code: 'RELAY_CONNECT_TIMEOUT',
+      });
+      expect(socket.readyState).toBe(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not reuse an OPEN socket after admission network failure', async () => {
+    const provider = { acquireClientTicket: jest.fn(async () => 'ticket') };
+    const first = requestCloudRelayJson(target, provider, {
+      hostUrl: target.endpoint, path: '/remote/v1/manifest',
+      parse: value => value,
+    });
+    const oldSocket = FakeWebSocket.instances[0];
+    oldSocket.open();
+    await flush();
+    oldSocket.onerror?.({});
+    await expect(first).rejects.toMatchObject({ code: 'RELAY_NETWORK_ERROR' });
+    expect(oldSocket.readyState).toBe(3);
+    const second = requestCloudRelayJson(target, provider, {
+      hostUrl: target.endpoint, path: '/remote/v1/manifest',
+      parse: value => value,
+    });
+    const socket = FakeWebSocket.instances[1];
+    expect(socket).toBeDefined();
+    await connect(socket);
+    expect(parseSent(oldSocket).filter(x => x.type === 'request')).toHaveLength(0);
+    const req = parseSent(socket).find(x => x.type === 'request')!;
+    const requestId = String(req.requestId);
+    socket.message({ version: 1, type: 'response', requestId, status: 200, headers: {} });
+    socket.message({ version: 1, type: 'chunk', requestId,
+      encoding: 'base64',
+      data: base64(JSON.stringify({ success: true, data: {} })) });
+    socket.message({ version: 1, type: 'complete', requestId });
+    await expect(second).resolves.toEqual({});
+  });
+
   it('reuses a healthy socket without issuing another ticket', async () => {
     const tickets = jest.fn(async () => 'client-jwt-ticket');
     const provider = { acquireClientTicket: tickets };
