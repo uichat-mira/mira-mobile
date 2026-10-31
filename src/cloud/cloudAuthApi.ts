@@ -6,7 +6,9 @@ import {
   CLOUD_AUTH_REDIRECT_URI,
   cloudAuthDeviceUrl,
   cloudAuthDevicesUrl,
+  cloudAuthHostsUrl,
   cloudAuthLogoutUrl,
+  cloudAuthServiceCredentialsUrl,
   cloudAuthSessionUrl,
   cloudAuthSessionRenewUrl,
   cloudAuthTokenUrl,
@@ -38,6 +40,52 @@ export interface MiraDevice {
   createdAt: string;
   lastSeenAt: string;
   revokedAt: string | null;
+}
+
+export type CloudDesktopHostAvailability = 'available' | 'offline';
+
+/**
+ * Server-owned Cloud Host directory entry (OPS-018). `relayRoom` is derived by
+ * Cloud Auth and can never be supplied or overridden by Mobile.
+ */
+export interface CloudDesktopHost {
+  id: string;
+  deviceId: string;
+  displayName: string | null;
+  clientVersion: string | null;
+  availability: CloudDesktopHostAvailability;
+  relayRoom: string;
+  registeredAt: string;
+  lastAdvertisedAt: string;
+  leaseExpiresAt: string;
+}
+
+export const CLOUD_SERVICE_CREDENTIAL_ISSUER = 'mira:cloud-auth';
+export const CLOUD_RELAY_TRANSPORT_AUDIENCE = 'mira:cloud-relay-transport';
+export const CLOUD_RELAY_TRANSPORT_SCOPE = 'relay:transport';
+
+export interface CloudRelayTicketClaims {
+  accountId: string;
+  deviceId: string;
+  room: string;
+  role: 'client';
+  expiresAt: string;
+}
+
+export interface IssuedRelayTransportTicket {
+  token: string;
+  tokenType: 'Bearer';
+  audience: typeof CLOUD_RELAY_TRANSPORT_AUDIENCE;
+  expiresAt: string;
+  claims: CloudRelayTicketClaims;
+}
+
+export interface CloudRelayApiLike {
+  listHosts(sessionToken: string): Promise<CloudDesktopHost[]>;
+  issueRelayClientTicket(
+    sessionToken: string,
+    room: string,
+  ): Promise<IssuedRelayTransportTicket>;
 }
 
 export interface OAuthCodeExchangeRequest {
@@ -223,6 +271,266 @@ export const parseRevokedMiraDevice = (
     );
   }
   return device;
+};
+
+const CLOUD_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
+
+const parseCloudTimestamp = (value: unknown, context: string): string => {
+  if (
+    typeof value !== 'string' ||
+    !CLOUD_TIMESTAMP_PATTERN.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      `Mira Cloud returned an invalid ${context}`,
+    );
+  }
+  return new Date(value).toISOString();
+};
+
+const parseOptionalCloudLabel = (
+  value: unknown,
+  context: string,
+): string | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      `Mira Cloud returned an invalid ${context}`,
+    );
+  }
+  return value;
+};
+
+const CLOUD_RELAY_ROOM_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
+
+export const parseCloudDesktopHost = (value: unknown): CloudDesktopHost => {
+  if (!isRecord(value)) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid Host entry',
+    );
+  }
+  if (
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    typeof value.deviceId !== 'string' ||
+    value.deviceId.length === 0 ||
+    (value.availability !== 'available' && value.availability !== 'offline') ||
+    typeof value.relayRoom !== 'string' ||
+    !CLOUD_RELAY_ROOM_PATTERN.test(value.relayRoom)
+  ) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid Host entry',
+    );
+  }
+  return {
+    id: value.id,
+    deviceId: value.deviceId,
+    displayName: parseOptionalCloudLabel(value.displayName, 'Host name'),
+    clientVersion: parseOptionalCloudLabel(
+      value.clientVersion,
+      'Host version',
+    ),
+    availability: value.availability,
+    relayRoom: value.relayRoom,
+    registeredAt: parseCloudTimestamp(value.registeredAt, 'Host registration'),
+    lastAdvertisedAt: parseCloudTimestamp(
+      value.lastAdvertisedAt,
+      'Host presence',
+    ),
+    leaseExpiresAt: parseCloudTimestamp(value.leaseExpiresAt, 'Host lease'),
+  };
+};
+
+export const parseCloudDesktopHostList = (
+  value: unknown,
+): CloudDesktopHost[] => {
+  if (!isRecord(value) || !Array.isArray(value.hosts)) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid Host directory',
+    );
+  }
+  return value.hosts.map(parseCloudDesktopHost);
+};
+
+const BASE64URL_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+const invalidRelayTicket = (message: string): never => {
+  throw new CloudAuthRequestError(
+    'invalid_response',
+    message,
+    'CLOUD_RELAY_TICKET_INVALID',
+  );
+};
+
+// JWT claim values used by the Relay contract are bounded ASCII identifiers.
+// Decoding without Buffer/TextDecoder keeps this working on Hermes and rejects
+// non-ASCII payloads instead of guessing an encoding.
+const decodeBase64UrlAscii = (segment: string): string => {
+  const normalized = segment.replace(/-/gu, '+').replace(/_/gu, '/');
+  if (
+    normalized.length === 0 ||
+    !/^[A-Za-z0-9+\/]*={0,2}$/u.test(normalized) ||
+    normalized.length % 4 === 1
+  ) {
+    return invalidRelayTicket('Mira Cloud returned a malformed Relay ticket');
+  }
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    '=',
+  );
+  let output = '';
+  for (let index = 0; index < padded.length; index += 4) {
+    const chars = padded.slice(index, index + 4);
+    const values = [...chars].map(char =>
+      char === '=' ? 0 : BASE64URL_ALPHABET.indexOf(char),
+    );
+    if (values.some(item => item < 0)) {
+      return invalidRelayTicket(
+        'Mira Cloud returned a malformed Relay ticket',
+      );
+    }
+    const packed =
+      (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
+    const bytes = [
+      (packed >> 16) & 0xff,
+      (packed >> 8) & 0xff,
+      packed & 0xff,
+    ];
+    const length = chars[2] === '=' ? 1 : chars[3] === '=' ? 2 : 3;
+    for (let offset = 0; offset < length; offset += 1) {
+      const byte = bytes[offset];
+      if (byte > 0x7f) {
+        return invalidRelayTicket(
+          'Mira Cloud returned a malformed Relay ticket',
+        );
+      }
+      output += String.fromCharCode(byte);
+    }
+  }
+  return output;
+};
+
+const parseJsonSegment = (segment: string): Record<string, unknown> => {
+  const text = decodeBase64UrlAscii(segment);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return invalidRelayTicket('Mira Cloud returned a malformed Relay ticket');
+  }
+  if (!isRecord(parsed)) {
+    return invalidRelayTicket('Mira Cloud returned a malformed Relay ticket');
+  }
+  return parsed;
+};
+
+const isNumericDate = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0;
+
+/**
+ * Client-side structural check only. Relay remains the authority that verifies
+ * the Ed25519 signature and binds the ticket to the actual socket.
+ */
+export const parseRelayTransportTicketClaims = (
+  token: string,
+  expectedRoom: string,
+  nowMs: number = Date.now(),
+): CloudRelayTicketClaims => {
+  const segments = token.split('.');
+  if (segments.length !== 3 || segments.some(segment => segment.length === 0)) {
+    return invalidRelayTicket('Mira Cloud returned a malformed Relay ticket');
+  }
+
+  const header = parseJsonSegment(segments[0]);
+  if (
+    header.alg !== 'EdDSA' ||
+    header.typ !== 'JWT' ||
+    typeof header.kid !== 'string' ||
+    !/^[A-Za-z0-9._-]{1,64}$/u.test(header.kid)
+  ) {
+    return invalidRelayTicket('Mira Cloud returned an invalid Relay ticket');
+  }
+
+  const claims = parseJsonSegment(segments[1]);
+  const relay = claims.relay;
+  if (
+    claims.iss !== CLOUD_SERVICE_CREDENTIAL_ISSUER ||
+    claims.aud !== CLOUD_RELAY_TRANSPORT_AUDIENCE ||
+    !Array.isArray(claims.scope) ||
+    claims.scope.length !== 1 ||
+    claims.scope[0] !== CLOUD_RELAY_TRANSPORT_SCOPE ||
+    typeof claims.sub !== 'string' ||
+    claims.sub.length === 0 ||
+    typeof claims.device_id !== 'string' ||
+    claims.device_id.length === 0 ||
+    !isRecord(relay) ||
+    typeof relay.room !== 'string' ||
+    relay.role !== 'client' ||
+    !isNumericDate(claims.iat) ||
+    !isNumericDate(claims.nbf) ||
+    !isNumericDate(claims.exp)
+  ) {
+    return invalidRelayTicket('Mira Cloud returned an invalid Relay ticket');
+  }
+  if (relay.room !== expectedRoom) {
+    return invalidRelayTicket(
+      'Mira Cloud Relay ticket is bound to a different room',
+    );
+  }
+  if (claims.nbf < claims.iat || claims.exp <= claims.nbf) {
+    return invalidRelayTicket('Mira Cloud returned an invalid Relay ticket');
+  }
+  const nowSeconds = Math.floor(nowMs / 1000);
+  if (claims.nbf > nowSeconds || claims.exp <= nowSeconds) {
+    return invalidRelayTicket('Mira Cloud Relay ticket is expired');
+  }
+
+  return {
+    accountId: claims.sub,
+    deviceId: claims.device_id,
+    room: relay.room,
+    role: 'client',
+    expiresAt: new Date(claims.exp * 1000).toISOString(),
+  };
+};
+
+export const parseIssuedRelayTransportTicket = (
+  value: unknown,
+  expectedRoom: string,
+  nowMs: number = Date.now(),
+): IssuedRelayTransportTicket => {
+  if (
+    !isRecord(value) ||
+    typeof value.token !== 'string' ||
+    value.token.length === 0 ||
+    value.tokenType !== 'Bearer' ||
+    value.audience !== CLOUD_RELAY_TRANSPORT_AUDIENCE
+  ) {
+    throw new CloudAuthRequestError(
+      'invalid_response',
+      'Mira Cloud returned an invalid Relay ticket response',
+    );
+  }
+  const expiresAt = parseCloudTimestamp(value.expiresAt, 'Relay ticket expiry');
+  const claims = parseRelayTransportTicketClaims(
+    value.token,
+    expectedRoom,
+    nowMs,
+  );
+  return {
+    token: value.token,
+    tokenType: 'Bearer',
+    audience: CLOUD_RELAY_TRANSPORT_AUDIENCE,
+    expiresAt,
+    claims,
+  };
 };
 
 const readErrorCode = async (
@@ -585,6 +893,58 @@ export class CloudAuthApi implements CloudAuthApiLike {
         );
       }
       return parseRevokedMiraDevice(body, deviceId);
+    });
+  }
+
+  async listHosts(sessionToken: string): Promise<CloudDesktopHost[]> {
+    return this.send(cloudAuthHostsUrl(this.baseUrl), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid Host directory',
+        );
+      }
+      return parseCloudDesktopHostList(body);
+    });
+  }
+
+  async issueRelayClientTicket(
+    sessionToken: string,
+    room: string,
+  ): Promise<IssuedRelayTransportTicket> {
+    return this.send(cloudAuthServiceCredentialsUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({
+        audience: CLOUD_RELAY_TRANSPORT_AUDIENCE,
+        relay: { room, role: 'client' },
+      }),
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid Relay ticket response',
+        );
+      }
+      return parseIssuedRelayTransportTicket(body, room);
     });
   }
 }

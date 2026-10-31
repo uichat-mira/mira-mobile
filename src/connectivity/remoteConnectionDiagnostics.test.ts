@@ -135,4 +135,28 @@ describe('MOB-035 remote connection diagnostics', () => {
     expect(malformed.kind).toBe('session_service_error');
     expect(server.kind).toBe('session_service_error');
   });
+
+  it('keeps Cloud authorization, Relay transport, Host offline and Host denial distinct', async () => {
+    const cloudAuth = await classifySessionLoadFailure(
+      new RemoteHostError('CLOUD_RELAY_TICKET_DENIED', 'ticket denied'),
+      { getNetworkState: online },
+    );
+    const transport = await classifySessionLoadFailure(
+      new RemoteHostError('RELAY_NETWORK_ERROR', 'relay unavailable'),
+      { getNetworkState: online },
+    );
+    const hostOffline = await classifySessionLoadFailure(
+      new RemoteHostError('CLOUD_RELAY_HOST_OFFLINE', 'host offline'),
+      { getNetworkState: online },
+    );
+    const hostDenied = await classifySessionLoadFailure(
+      new RemoteHostError('HTTP_403', 'Host denied business request', 403),
+      { getNetworkState: online },
+    );
+
+    expect(cloudAuth.kind).toBe('cloud_authorization');
+    expect(transport.kind).toBe('host_unreachable');
+    expect(hostOffline.kind).toBe('host_offline');
+    expect(hostDenied.kind).toBe('permission_denied');
+  });
 });

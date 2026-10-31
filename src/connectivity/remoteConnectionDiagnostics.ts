@@ -9,6 +9,7 @@ export type RemoteConnectionDiagnosticKind =
   | 'mobile_offline'
   | 'credential_invalid'
   | 'permission_denied'
+  | 'cloud_authorization'
   | 'host_offline'
   | 'host_unreachable'
   | 'session_service_error';
@@ -57,6 +58,21 @@ const transportFailureCodes = new Set([
   'RELAY_ENDPOINT_UNAVAILABLE',
 ]);
 
+const cloudAuthorizationCodes = new Set([
+  'CLOUD_RELAY_SESSION_REQUIRED',
+  'CLOUD_RELAY_SESSION_REJECTED',
+  'CLOUD_RELAY_TICKET_DENIED',
+  'CLOUD_RELAY_TICKET_INVALID',
+  'CLOUD_RELAY_TICKET_REJECTED',
+  'CLOUD_RELAY_AUTH_UNAVAILABLE',
+  'CLOUD_RELAY_INVALID_RESPONSE',
+  'CLOUD_RELAY_ENDPOINT_UNAVAILABLE',
+]);
+
+const isCloudAuthorizationFailure = (error: RemoteHostError) =>
+  cloudAuthorizationCodes.has(error.code) ||
+  error.code.startsWith('CLOUD_RELAY_');
+
 const transportAttemptsFrom = (
   error: RemoteHostError,
 ): RemoteTransportAttemptDiagnostic[] => {
@@ -73,7 +89,12 @@ const transportAttemptsFrom = (
 };
 
 const hasAuthoritativeHostOfflineEvidence = (error: RemoteHostError) => {
-  if (error.code === 'RELAY_HOST_OFFLINE') return true;
+  if (
+    error.code === 'RELAY_HOST_OFFLINE' ||
+    error.code === 'CLOUD_RELAY_HOST_OFFLINE'
+  ) {
+    return true;
+  }
   const attempts = transportAttemptsFrom(error);
   return (
     attempts.some(attempt => attempt.authoritativeHostOffline) &&
@@ -145,6 +166,23 @@ export const classifySessionLoadFailure = async (
         title: 'Mira Desktop 当前离线',
         message: 'Relay 已确认当前 Host 不在线。启动 Mira Desktop 后重试。',
         primaryAction: { kind: 'retry', label: '重试' },
+      },
+      remoteError,
+    );
+  }
+
+  if (remoteError && isCloudAuthorizationFailure(remoteError)) {
+    return createDiagnostic(
+      {
+        kind: 'cloud_authorization',
+        title: 'Mira Cloud 连接授权失败',
+        message:
+          '手机已登录 Mira Cloud，但当前无法获得官方 Relay 连接授权。Tailscale 直连不受影响。',
+        primaryAction: { kind: 'retry', label: '重试' },
+        secondaryAction: {
+          kind: 'connection_settings',
+          label: '连接设置',
+        },
       },
       remoteError,
     );
