@@ -92,12 +92,18 @@ describe('AboutScreen MOB-056D', () => {
 
   it('still surfaces a patch release through the manual check', async () => {
     const { parseSemver } = jest.requireActual('../update/semver');
+    // Keep the fixture one patch ahead of the installed app as dev advances.
+    // A release at the same version is correctly classified as up to date.
+    const { version: installedVersion } = jest.requireActual('../../package.json');
+    const current = parseSemver(installedVersion);
+    if (!current) throw new Error('Invalid installed version in AboutScreen test');
+    const nextVersion = `${current.major}.${current.minor}.${current.patch + 1}`;
     mockFetchLatestRelease.mockResolvedValue({
-      version: parseSemver('0.3.22'),
-      displayVersion: '0.3.22-dev',
+      version: parseSemver(nextVersion),
+      displayVersion: `${nextVersion}-dev`,
       notes: null,
       apkUrl:
-        'https://assets.tomz.io/mira/mobile/dev/releases/0.3.22/uichat-mira-mobile-release.apk',
+        `https://assets.tomz.io/mira/mobile/dev/releases/${nextVersion}/uichat-mira-mobile-release.apk`,
       sha256: 'a'.repeat(64),
     });
 
@@ -111,7 +117,7 @@ describe('AboutScreen MOB-056D', () => {
     const subtitles = tree.root
       .findAll((node) => typeof node.props.children === 'string')
       .map((node) => node.props.children as string);
-    expect(subtitles.some((value) => value.includes('0.3.22-dev'))).toBe(true);
+    expect(subtitles.some((value) => value.includes(`${nextVersion}-dev`))).toBe(true);
   });
 
   it('shows no new-version state when the release is equal or older', async () => {
