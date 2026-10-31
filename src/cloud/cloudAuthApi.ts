@@ -320,7 +320,8 @@ export const parseCloudDesktopHost = (value: unknown): CloudDesktopHost => {
     value.deviceId.length === 0 ||
     (value.availability !== 'available' && value.availability !== 'offline') ||
     typeof value.relayRoom !== 'string' ||
-    !CLOUD_RELAY_ROOM_PATTERN.test(value.relayRoom)
+    !CLOUD_RELAY_ROOM_PATTERN.test(value.relayRoom) ||
+    value.relayRoom === '.' || value.relayRoom === '..'
   ) {
     throw new CloudAuthRequestError(
       'invalid_response',
