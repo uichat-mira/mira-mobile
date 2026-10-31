@@ -1,4 +1,5 @@
 import type { Session, SessionSource } from '../types';
+import { RemoteHostError } from '../api/remoteHttp';
 import { LocalProviderRuntime } from './localProviderRuntime';
 import { RemoteHostRuntime } from './remoteHostRuntime';
 import type { ConversationRuntime } from './conversationRuntime';
@@ -36,8 +37,15 @@ export class RuntimeRegistry {
     ]);
     const sessions = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
     if (sessions.length === 0) {
-      const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-      if (failure) throw failure.reason;
+      const [remote, local] = results;
+      // A missing Desktop pairing is not a global list failure. Users who
+      // only configure a Local Provider legitimately have no Remote threads.
+      if (local.status === 'rejected') throw local.reason;
+      if (remote.status === 'rejected' &&
+          !(remote.reason instanceof RemoteHostError &&
+            remote.reason.code === 'PAIRING_REQUIRED')) {
+        throw remote.reason;
+      }
     }
     return sessions.sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
   }
