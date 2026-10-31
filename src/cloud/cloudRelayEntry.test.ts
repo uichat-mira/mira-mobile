@@ -184,6 +184,24 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     expect(roomApi.issueRelayClientTicket).not.toHaveBeenCalled();
   });
 
+  it('memoizes per-session Cloud access and resets it after sign-out', async () => {
+    const store = await storedSession();
+    const relayEntry = entry(store, api());
+    const first = await relayEntry.discover();
+    const same = await relayEntry.discover();
+    expect(same).toBe(first);
+    expect(same.tickets).toBe(first.tickets);
+
+    relayEntry.reset();
+    const refreshed = await relayEntry.discover();
+    expect(refreshed.tickets).not.toBe(first.tickets);
+
+    await store.clear();
+    await expect(relayEntry.discover()).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_SESSION_REQUIRED',
+    });
+  });
+
   it('acquires a new ticket for each socket establishment without caching', async () => {
     const apiLike = api();
     const relayEntry = entry(await storedSession(), apiLike);
