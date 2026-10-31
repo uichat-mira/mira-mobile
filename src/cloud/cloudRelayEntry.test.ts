@@ -216,6 +216,17 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     expect(apiLike.issueRelayClientTicket).toHaveBeenCalledTimes(2);
   });
 
+  it('shares one in-flight discovery across simultaneous Cloud callers', async () => {
+    const apiLike = api();
+    const relayEntry = entry(await storedSession(), apiLike);
+    const first = relayEntry.discover();
+    const second = relayEntry.discover();
+    expect(second).toBe(first);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toBe(b);
+    expect(apiLike.listHosts).toHaveBeenCalledTimes(1);
+  });
+
   it('revokes old ticket providers synchronously on reset', async () => {
     const apiLike = api();
     const relayEntry = entry(await storedSession(), apiLike);
