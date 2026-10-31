@@ -311,7 +311,36 @@ const createHeaders = (input: {
   return headers;
 };
 
-const buildSocketUrl = (relay: RemoteRelayEndpoint) => {
+export interface RelayTransportTarget {
+  endpoint: string;
+  relayId: string;
+}
+
+/**
+ * Admission is the only part of the Relay transport that differs between the
+ * Legacy pairing token and the Cloud transport ticket. The frame engine below
+ * must never see a business credential.
+ */
+export interface RelayAdmission {
+  createHello(
+    target: RelayTransportTarget,
+  ): Record<string, unknown> | Promise<Record<string, unknown>>;
+  mapAdmissionErrorCode(code: string): string;
+}
+
+export const legacyRelayAdmission = (token: string): RelayAdmission => ({
+  createHello: target => ({
+    role: 'client',
+    relayId: target.relayId,
+    token,
+  }),
+  mapAdmissionErrorCode: code => `RELAY_${code}`,
+});
+
+const isPromiseLike = <T>(value: T | Promise<T>): value is Promise<T> =>
+  typeof (value as Promise<T> | null)?.then === 'function';
+
+const buildSocketUrl = (relay: RelayTransportTarget) => {
   const baseUrl = normalizeRelayEndpoint(relay.endpoint).replace(
     /^https:/u,
     'wss:',
@@ -396,7 +425,7 @@ type SsePending<T> = {
 
 type PendingRequest = JsonPending<unknown> | SsePending<unknown>;
 
-class RelayConnection {
+export class RelayConnection {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private resolveConnect: (() => void) | null = null;
@@ -406,7 +435,8 @@ class RelayConnection {
   private sequence = 0;
 
   constructor(
-    private readonly relay: RemoteRelayEndpoint,
+    private readonly relay: RelayTransportTarget,
+    private readonly admission: RelayAdmission,
     private readonly onClose?: () => void,
   ) {}
 
@@ -593,13 +623,6 @@ class RelayConnection {
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.send({
-        version: 1,
-        type: 'hello',
-        role: 'client',
-        relayId: this.relay.relayId,
-        token: this.relay.token,
-      });
       this.handshakeTimer = setTimeout(() => {
         if (this.socket !== socket || !this.connectPromise) return;
         this.finishConnectFailure(
@@ -614,6 +637,7 @@ class RelayConnection {
           // Socket may already be closed.
         }
       }, HANDSHAKE_TIMEOUT_MS);
+      void this.openAdmission(socket);
     };
 
     socket.onmessage = event => {
@@ -635,6 +659,26 @@ class RelayConnection {
         return;
       }
       const record = raw as Record<string, unknown>;
+      if (
+        record.type === 'error' &&
+        this.connectPromise &&
+        typeof record.code === 'string'
+      ) {
+        this.finishConnectFailure(
+          this.admissionError(
+            record.code,
+            typeof record.message === 'string'
+              ? record.message
+              : 'Mira Relay rejected the connection',
+          ),
+        );
+        try {
+          socket.close(1008, 'Relay admission rejected');
+        } catch {
+          // Socket may already be closed.
+        }
+        return;
+      }
       if (record.type === 'hello_ack') {
         if (
           record.version !== 1 ||
@@ -688,6 +732,58 @@ class RelayConnection {
     };
 
     return connectPromise;
+  }
+
+  private openAdmission(socket: WebSocket) {
+    let pendingHello: Record<string, unknown> | Promise<Record<string, unknown>>;
+    try {
+      pendingHello = this.admission.createHello(this.relay);
+    } catch (error) {
+      this.failAdmission(socket, error);
+      return;
+    }
+    if (isPromiseLike(pendingHello)) {
+      void pendingHello.then(
+        hello => this.sendAdmissionHello(socket, hello),
+        error => this.failAdmission(socket, error),
+      );
+      return;
+    }
+    this.sendAdmissionHello(socket, pendingHello);
+  }
+
+  private sendAdmissionHello(
+    socket: WebSocket,
+    hello: Record<string, unknown>,
+  ) {
+    if (this.socket !== socket || socket.readyState !== 1) return;
+    if (!this.send({ version: 1, type: 'hello', ...hello })) {
+      this.finishConnectFailure(
+        new RemoteHostError(
+          'RELAY_DISCONNECTED',
+          'Mira Relay is not connected',
+        ),
+      );
+    }
+  }
+
+  private failAdmission(socket: WebSocket, error: unknown) {
+    if (this.socket !== socket) return;
+    this.finishConnectFailure(error);
+    try {
+      socket.close(1008, 'Relay admission unavailable');
+    } catch {
+      // Socket may already be closed.
+    }
+  }
+
+  private admissionError(code: string, message: string) {
+    return new RemoteHostError(
+      this.admission.mapAdmissionErrorCode(code),
+      message,
+      undefined,
+      { relayCode: code },
+    );
   }
 
   private handleFrame(frame: RelayInboundFrame) {
@@ -944,9 +1040,13 @@ const connectionFor = (relay: RemoteRelayEndpoint) => {
   const key = `${relay.endpoint}\n${relay.relayId}\n${relay.token}`;
   let connection = connections.get(key);
   if (!connection) {
-    connection = new RelayConnection(relay, () => {
-      connections.delete(key);
-    });
+    connection = new RelayConnection(
+      relay,
+      legacyRelayAdmission(relay.token),
+      () => {
+        connections.delete(key);
+      },
+    );
     connections.set(key, connection);
   }
   return connection;
