@@ -45,30 +45,41 @@ const cloudAdmission = (
     CLOUD_ADMISSION_ERROR_CODES[code] ?? `RELAY_${code}`,
 });
 
-const connections = new Map<string, RelayConnection>();
+type CloudConnection = {
+  connection: RelayConnection;
+  ticketProvider: CloudRelayTicketProvider;
+};
 
-// Deliberately keyed only by public transport identity. A Client ticket is
-// short-lived and must never become part of a connection cache key.
+const connections = new Map<string, CloudConnection>();
+
+// Keep JWTs out of cache keys, but do not reuse a socket authenticated through
+// another Cloud Session. Discovery creates a fresh provider for each session
+// context; replacing it closes the prior authenticated socket.
 const connectionFor = (
   target: CloudRelayTransportTarget,
   tickets: CloudRelayTicketProvider,
 ) => {
   const key = `${target.endpoint}\n${target.room}`;
-  let connection = connections.get(key);
-  if (!connection) {
-    const relayTarget: RelayTransportTarget = {
-      endpoint: target.endpoint,
-      relayId: target.room,
-    };
-    connection = new RelayConnection(
-      relayTarget,
-      cloudAdmission(tickets),
-      () => {
-        connections.delete(key);
-      },
-    );
-    connections.set(key, connection);
+  const existing = connections.get(key);
+  if (existing?.ticketProvider === tickets) return existing.connection;
+  if (existing) {
+    connections.delete(key);
+    existing.connection.close();
   }
+  const relayTarget: RelayTransportTarget = {
+    endpoint: target.endpoint,
+    relayId: target.room,
+  };
+  const connection = new RelayConnection(
+    relayTarget,
+    cloudAdmission(tickets),
+    () => {
+      if (connections.get(key)?.connection === connection) {
+        connections.delete(key);
+      }
+    },
+  );
+  connections.set(key, { connection, ticketProvider: tickets });
   return connection;
 };
 
@@ -86,7 +97,7 @@ export const openCloudRelayPostSse = <T>(
   connectionFor(target, tickets).openSse(request);
 
 export const closeCloudRelayConnections = () => {
-  for (const connection of connections.values()) connection.close();
+  for (const entry of connections.values()) entry.connection.close();
   connections.clear();
 };
 

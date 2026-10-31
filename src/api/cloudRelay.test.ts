@@ -220,6 +220,99 @@ describe('official Cloud Relay client transport', () => {
     await second;
   });
 
+  it('replaces an authenticated connection when a new Cloud Session provider targets the same Host', async () => {
+    const firstProvider = {
+      acquireClientTicket: jest.fn(async () => 'first-session-ticket'),
+    };
+    const secondProvider = {
+      acquireClientTicket: jest.fn(async () => 'second-session-ticket'),
+    };
+    const first = requestCloudRelayJson(target, firstProvider, {
+      hostUrl: target.endpoint,
+      path: '/remote/v1/manifest',
+      parse: value => value,
+    });
+    const oldSocket = FakeWebSocket.instances[0];
+    await connect(oldSocket);
+
+    const second = requestCloudRelayJson(target, secondProvider, {
+      hostUrl: target.endpoint,
+      path: '/remote/v1/manifest',
+      parse: value => value,
+    });
+    const newSocket = FakeWebSocket.instances[1];
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(oldSocket.readyState).toBe(3);
+    await expect(first).rejects.toMatchObject({ code: 'RELAY_DISCONNECTED' });
+    await connect(newSocket);
+    expect(secondProvider.acquireClientTicket).toHaveBeenCalledTimes(1);
+    expect(parseSent(newSocket)[0]).toMatchObject({
+      token: 'second-session-ticket',
+    });
+    const requestId = String(
+      parseSent(newSocket).find(frame => frame.type === 'request')?.requestId,
+    );
+    newSocket.message({
+      version: 1, type: 'response', requestId, status: 200, headers: {},
+    });
+    newSocket.message({
+      version: 1, type: 'chunk', requestId, encoding: 'base64',
+      data: base64(JSON.stringify({ success: true, data: {} })),
+    });
+    newSocket.message({ version: 1, type: 'complete', requestId });
+    await second;
+  });
+
+  it('does not consume Relay hello timeout while Cloud Auth acquires a ticket', async () => {
+    jest.useFakeTimers();
+    try {
+      let issueTicket!: (token: string) => void;
+      const provider = {
+        acquireClientTicket: () => new Promise<string>(resolve => {
+          issueTicket = resolve;
+        }),
+      };
+      const request = requestCloudRelayJson(target, provider, {
+        hostUrl: target.endpoint,
+        path: '/remote/v1/manifest',
+        parse: value => value,
+      });
+      const onSettled = jest.fn();
+      void request.then(onSettled, onSettled);
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await flush();
+      jest.advanceTimersByTime(11_000);
+      await flush();
+      expect(onSettled).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(1);
+      issueTicket('late-but-valid-client-ticket');
+      await flush();
+      expect(parseSent(socket)[0]).toMatchObject({
+        type: 'hello', token: 'late-but-valid-client-ticket',
+      });
+      socket.message({
+        version: 1, type: 'hello_ack', role: 'client',
+        relayId: target.room, protocolVersion: 1, hostConnected: true,
+      });
+      await flush();
+      const requestId = String(
+        parseSent(socket).find(frame => frame.type === 'request')?.requestId,
+      );
+      socket.message({
+        version: 1, type: 'response', requestId, status: 200, headers: {},
+      });
+      socket.message({
+        version: 1, type: 'chunk', requestId, encoding: 'base64',
+        data: base64(JSON.stringify({ success: true, data: {} })),
+      });
+      socket.message({ version: 1, type: 'complete', requestId });
+      await expect(request).resolves.toEqual({});
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('issues a fresh ticket for every new WebSocket', async () => {
     const tokens = ['ticket-0', 'ticket-1'];
     const tickets = jest.fn(async () => tokens.shift() ?? 'ticket-exhausted');

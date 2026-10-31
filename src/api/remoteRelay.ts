@@ -580,9 +580,13 @@ export class RelayConnection {
   }
 
   close() {
-    this.failAll(
-      new RemoteHostError('RELAY_DISCONNECTED', 'Mira Relay connection closed'),
+    const closed = new RemoteHostError(
+      'RELAY_DISCONNECTED', 'Mira Relay connection closed',
     );
+    // Closing an unauthenticated socket must also reject callers awaiting the
+    // async Client ticket/hello (the pending request map is not populated yet).
+    if (this.connectPromise) this.finishConnectFailure(closed);
+    this.failAll(closed);
     const socket = this.socket;
     this.socket = null;
     this.connectPromise = null;
@@ -623,20 +627,8 @@ export class RelayConnection {
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.handshakeTimer = setTimeout(() => {
-        if (this.socket !== socket || !this.connectPromise) return;
-        this.finishConnectFailure(
-          new RemoteHostError(
-            'RELAY_HANDSHAKE_TIMEOUT',
-            'Mira Relay handshake timed out',
-          ),
-        );
-        try {
-          socket.close(1008, 'Relay handshake timeout');
-        } catch {
-          // Socket may already be closed.
-        }
-      }, HANDSHAKE_TIMEOUT_MS);
+      // Cloud Auth ticket acquisition uses its own bounded HTTP timeout.
+      // Only start the Relay handshake budget after hello can be sent.
       void this.openAdmission(socket);
     };
 
@@ -756,7 +748,21 @@ export class RelayConnection {
     socket: WebSocket,
     hello: Record<string, unknown>,
   ) {
-    if (this.socket !== socket || socket.readyState !== 1) return;
+    if (this.socket !== socket || socket.readyState !== 1 ||
+        !this.connectPromise) return;
+    this.handshakeTimer = setTimeout(() => {
+      if (this.socket !== socket || !this.connectPromise) return;
+      this.finishConnectFailure(
+        new RemoteHostError(
+          'RELAY_HANDSHAKE_TIMEOUT', 'Mira Relay handshake timed out',
+        ),
+      );
+      try {
+        socket.close(1008, 'Relay handshake timeout');
+      } catch {
+        // Socket may already be closed.
+      }
+    }, HANDSHAKE_TIMEOUT_MS);
     if (!this.send({ version: 1, type: 'hello', ...hello })) {
       this.finishConnectFailure(
         new RemoteHostError(
