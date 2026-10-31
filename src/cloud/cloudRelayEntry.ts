@@ -189,6 +189,7 @@ export class CloudRelayEntry {
   private readonly now: () => Date;
   private lastAccess: { key: string; access: CloudRelayAccess } | null = null;
   private generation = 0;
+  private pendingDiscovery: Promise<CloudRelayAccess> | null = null;
 
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -199,6 +200,7 @@ export class CloudRelayEntry {
 
   reset() {
     this.generation += 1;
+    this.pendingDiscovery = null;
     this.lastAccess = null;
     closeCloudRelayConnections();
   }
@@ -209,7 +211,18 @@ export class CloudRelayEntry {
     }
   }
 
-  async discover(): Promise<CloudRelayAccess> {
+  discover(): Promise<CloudRelayAccess> {
+    if (this.pendingDiscovery) return this.pendingDiscovery;
+    const pending = this.discoverOnce();
+    this.pendingDiscovery = pending;
+    const release = () => {
+      if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async discoverOnce(): Promise<CloudRelayAccess> {
     const generation = this.generation;
     let stored;
     try {
