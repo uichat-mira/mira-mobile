@@ -9,7 +9,8 @@ import type { SemverVersion } from '../update/semver';
 
 /**
  * The single committed output of a cold start. `hasDeviceCredential` decides the
- * initial route (SessionList vs Bootstrap) and `restoreTarget` is the one-shot
+ * connectivity state, never entry permission. A Local Provider user must
+ * reach SessionList without Desktop pairing. `restoreTarget` is the one-shot
  * Chat target SessionList consumes on first focus.
  */
 export interface AppBootstrapResult {
@@ -73,42 +74,36 @@ export const runAppBootstrap = async (
   const snapshot = (): AppBootstrapResult => ({ hasDeviceCredential, restoreTarget });
 
   try {
+    // Remote pairing is optional; local restoration and updates still run.
     if (!deps.isSecureStorageAvailable()) {
       deps.setConnectionStatus('disconnected');
-      return snapshot();
-    }
+    } else {
+      let stored: unknown | null = null;
+      try {
+        stored = await deps.loadDeviceCredential();
+      } catch {
+        stored = null;
+      }
+      if (isCancelled()) return snapshot();
 
-    let stored: unknown | null = null;
-    try {
-      stored = await deps.loadDeviceCredential();
-    } catch {
-      // A credential-store read failure is treated as "no credential" rather
-      // than a rejection: the navigator still commits and the existing pairing
-      // entry explains the missing device credential.
-      stored = null;
+      if (!stored) {
+        deps.setConnectionStatus('disconnected');
+      } else {
+        hasDeviceCredential = true;
+        try {
+          const restored = await deps.restoreConnection();
+          if (isCancelled()) return snapshot();
+          const connected = restored != null;
+          hasDeviceCredential = connected;
+          deps.setConnectionStatus(connected ? 'connected' : 'disconnected');
+        } catch {
+          if (isCancelled()) return snapshot();
+          hasDeviceCredential = true;
+          deps.setConnectionStatus('reconnecting');
+        }
+      }
     }
     if (isCancelled()) return snapshot();
-    if (!stored) {
-      deps.setConnectionStatus('disconnected');
-      return snapshot();
-    }
-
-    hasDeviceCredential = true;
-    try {
-      const restored = await deps.restoreConnection();
-      if (isCancelled()) return snapshot();
-
-      const connected = restored != null;
-      hasDeviceCredential = connected;
-      deps.setConnectionStatus(connected ? 'connected' : 'disconnected');
-    } catch {
-      if (isCancelled()) return snapshot();
-
-      // Direct or Relay may be temporarily unreachable. The paired-device
-      // credential remains valid unless the Host explicitly returns 401/403.
-      hasDeviceCredential = true;
-      deps.setConnectionStatus('reconnecting');
-    }
 
     const settings = await deps.loadGeneralSettings().catch(() => DEFAULT_GENERAL_SETTINGS);
     if (isCancelled()) return snapshot();

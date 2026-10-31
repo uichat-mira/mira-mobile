@@ -203,6 +203,49 @@ describe('runAppBootstrap', () => {
     expect(setStatus).toHaveBeenCalledWith('disconnected');
   });
 
+  it('restores local sessions and checks updates without Desktop pairing', async () => {
+    const localTarget: LastOpenedSession = {
+      sessionId: 'local-1',
+      title: 'My local session',
+      source: 'local-provider',
+      providerName: 'My Provider',
+      providerModel: 'test-model',
+    };
+    const { deps, restoreConnection, fetchLatestRelease } = buildHarness({
+      loadDeviceCredential: async () => null,
+      loadGeneralSettings: async () =>
+        generalSettings({ launchBehavior: 'last-session', autoCheckUpdates: true }),
+      resolveRestoreTarget: async () => localTarget,
+    });
+    await expect(runAppBootstrap(deps)).resolves.toEqual({
+      hasDeviceCredential: false,
+      restoreTarget: localTarget,
+    });
+    expect(restoreConnection).not.toHaveBeenCalled();
+    expect(fetchLatestRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores local sessions when Desktop credential storage is unavailable', async () => {
+    const localTarget: LastOpenedSession = {
+      sessionId: 'local-2',
+      title: 'Offline local session',
+      source: 'local-provider',
+      providerName: 'My Provider',
+      providerModel: 'test-model',
+    };
+    const { deps, loadDeviceCredential } = buildHarness({
+      isSecureStorageAvailable: () => false,
+      loadGeneralSettings: async () =>
+        generalSettings({ launchBehavior: 'last-session' }),
+      resolveRestoreTarget: async () => localTarget,
+    });
+    await expect(runAppBootstrap(deps)).resolves.toEqual({
+      hasDeviceCredential: false,
+      restoreTarget: localTarget,
+    });
+    expect(loadDeviceCredential).not.toHaveBeenCalled();
+  });
+
   it('keeps the credential and reports reconnecting when restore fails', async () => {
     const { deps, setStatus } = buildHarness({
       restoreConnection: async () => {
