@@ -600,8 +600,10 @@ export class RelayConnection {
   }
 
   private ensureConnected(): Promise<void> {
-    if (this.socket?.readyState === 1) return Promise.resolve();
+    // A WebSocket can be OPEN while a fresh Cloud ticket is still pending or
+    // while Relay hello_ack has not arrived. Never send business frames then.
     if (this.connectPromise) return this.connectPromise;
+    if (this.socket?.readyState === 1) return Promise.resolve();
 
     const connectPromise = new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;

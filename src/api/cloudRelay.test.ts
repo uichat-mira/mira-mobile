@@ -162,6 +162,49 @@ describe('official Cloud Relay client transport', () => {
     await expect(request).resolves.toEqual({ ok: true });
   });
 
+  it('holds concurrent business requests until the Client hello_ack is authenticated', async () => {
+    let resolveTicket!: (token: string) => void;
+    const provider = { acquireClientTicket: () => new Promise<string>(
+      resolve => { resolveTicket = resolve; },
+    ) };
+    const first = requestCloudRelayJson(target, provider, {
+      hostUrl: target.endpoint, path: '/remote/v1/manifest',
+      parse: value => value,
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await flush();
+    const second = requestCloudRelayJson(target, provider, {
+      hostUrl: target.endpoint, path: '/remote/v1/workspaces',
+      parse: value => value,
+    });
+    await flush();
+    expect(socket.sent).toHaveLength(0);
+    resolveTicket('ticket-issued-after-socket-open');
+    await flush();
+    expect(parseSent(socket).map(x => x.type)).toEqual(['hello']);
+    socket.message({
+      version: 1, type: 'hello_ack', role: 'client',
+      relayId: target.room, protocolVersion: 1, hostConnected: true,
+    });
+    await flush();
+    const requests = parseSent(socket).filter(x => x.type === 'request');
+    expect(requests).toHaveLength(2);
+    for (const frame of requests) {
+      const requestId = String(frame.requestId);
+      socket.message({
+        version: 1, type: 'response', requestId, status: 200, headers: {},
+      });
+      socket.message({
+        version: 1, type: 'chunk', requestId, encoding: 'base64',
+        data: base64(JSON.stringify({ success: true, data: {} })),
+      });
+      socket.message({ version: 1, type: 'complete', requestId });
+    }
+    await expect(first).resolves.toEqual({});
+    await expect(second).resolves.toEqual({});
+  });
+
   it('reuses a healthy socket without issuing another ticket', async () => {
     const tickets = jest.fn(async () => 'client-jwt-ticket');
     const provider = { acquireClientTicket: tickets };
