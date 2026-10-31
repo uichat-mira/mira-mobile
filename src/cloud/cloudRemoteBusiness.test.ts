@@ -5,7 +5,6 @@ import {
 import { RemoteHostError, type RemoteJsonRequest } from '../api/remoteHttp';
 import type { PostSseRequest } from '../api/postSse';
 import {
-  type RemoteChatStreamEvent,
   type RemoteDeviceScope,
 } from '../protocol/remoteHostV1';
 import { CloudRemoteBusinessClient } from './cloudRemoteBusiness';
@@ -70,7 +69,7 @@ const harness = (scopes?: RemoteDeviceScope[]) => {
     _tickets: CloudRelayTicketProvider,
     _request: PostSseRequest<T>,
   ) => ({
-    events: (async function* () { yield { type: 'finish', finishReason: 'stop' } as T; })(),
+    events: (async function* () { yield { type: 'finish', finishReason: 'stop' } as unknown as T; })(),
     abort: jest.fn(),
   }));
   const client = new CloudRemoteBusinessClient(entry, json, sse);
