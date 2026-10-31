@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { cloudRelayEntry } from './cloudRelayEntry';
 import type { CloudAccountIdentity, MiraDevice } from './cloudAuthApi';
 import {
   cloudAuthService,
@@ -371,6 +372,8 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   revokeDevice: async (deviceId: string) => {
     const current = get();
     if (!current.account || current.revokingDeviceId !== null) return;
+    // Any active Cloud business request must stop before revocation can change authority.
+    cloudRelayEntry.reset();
 
     set({ revokingDeviceId: deviceId, devicesMessage: null, message: null });
     try {
@@ -454,6 +457,8 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   signOut: async () => {
     if (get().busy) return;
+    // Close Cloud sockets and invalidate in-flight discovery before remote logout.
+    cloudRelayEntry.reset();
     set({ busy: true, message: null });
     try {
       const result = await cloudAuthService.logout();
@@ -480,3 +485,12 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     }
   },
 }));
+
+// A changed Cloud account or rejected/absent session must not retain the
+// previous account's Relay transport and any in-flight business operations.
+useCloudAccountStore.subscribe((state, previous) => {
+  if (state.account?.id !== previous.account?.id ||
+      (previous.status === 'signed_in' && state.status !== 'signed_in')) {
+    cloudRelayEntry.reset();
+  }
+});
