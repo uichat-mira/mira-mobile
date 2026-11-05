@@ -171,7 +171,18 @@ const lookupLocation = async (
     `${GEOCODING_ENDPOINT}?name=${encodeURIComponent(city)}` +
     '&count=1&language=zh&format=json';
   const payload = await fetchJson(url, signal);
-  if (!isRecord(payload) || !Array.isArray(payload.results)) {
+  if (!isRecord(payload)) {
+    throw new ToolGatewayError(
+      'WEATHER_UPSTREAM_FAILED',
+      'Weather location response was invalid',
+      true,
+    );
+  }
+
+  // Open-Meteo omits `results` entirely when nothing matches, so a missing
+  // field means "no such city" rather than a malformed upstream response.
+  if (payload.results === undefined) return null;
+  if (!Array.isArray(payload.results)) {
     throw new ToolGatewayError(
       'WEATHER_UPSTREAM_FAILED',
       'Weather location response was invalid',

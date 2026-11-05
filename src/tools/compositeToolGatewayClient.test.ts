@@ -71,6 +71,36 @@ describe('CompositeToolGatewayClient', () => {
     await expect(gateway.listTools()).resolves.toEqual([localManifest]);
   });
 
+  it('reports a degraded toolset when remote discovery fails', async () => {
+    const local = client({
+      listTools: jest.fn(async () => [localManifest]),
+    });
+    const remote = client({
+      listTools: jest.fn(async () => {
+        throw new Error('PAIRING_REQUIRED');
+      }),
+    });
+
+    const gateway = new CompositeToolGatewayClient(local, remote);
+
+    await expect(gateway.discoverTools()).resolves.toEqual({
+      tools: [localManifest],
+      notices: [{ code: 'toolset-degraded' }],
+    });
+  });
+
+  it('reports no notices when remote discovery succeeds', async () => {
+    const gateway = new CompositeToolGatewayClient(
+      client({ listTools: jest.fn(async () => [localManifest]) }),
+      client({ listTools: jest.fn(async () => [remoteManifest]) }),
+    );
+
+    await expect(gateway.discoverTools()).resolves.toEqual({
+      tools: [localManifest, remoteManifest],
+      notices: [],
+    });
+  });
+
   it('routes local tool calls locally and remote calls remotely', async () => {
     const local = client({
       listTools: jest.fn(async () => [localManifest]),

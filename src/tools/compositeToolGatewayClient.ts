@@ -5,6 +5,7 @@ import {
   type ToolApprovalResolution,
   type ToolCallRequest,
   type ToolCallResult,
+  type ToolDiscoveryResult,
   type ToolGatewayClient,
   type ToolManifest,
 } from './toolGatewayClient';
@@ -22,13 +23,20 @@ export class CompositeToolGatewayClient implements ToolGatewayClient {
   ) {}
 
   async listTools(): Promise<readonly ToolManifest[]> {
+    return (await this.discoverTools()).tools;
+  }
+
+  async discoverTools(): Promise<ToolDiscoveryResult> {
     const localTools = await this.local.listTools();
     let remoteTools: readonly ToolManifest[] = [];
+    let notices: ToolDiscoveryResult['notices'] = [];
     try {
       remoteTools = await this.remote.listTools();
     } catch {
       // Local-only Agent mode is a supported state: an unpaired or temporarily
-      // unreachable Host must not hide the local read-only toolset.
+      // unreachable Host must not hide the local read-only toolset. The notice
+      // keeps the partial toolset explicit instead of silently looking whole.
+      notices = [{ code: 'toolset-degraded' }];
     }
 
     const seen = new Set(localTools.map((tool) => tool.name));
@@ -38,7 +46,7 @@ export class CompositeToolGatewayClient implements ToolGatewayClient {
       seen.add(tool.name);
       merged.push(tool);
     }
-    return merged;
+    return { tools: merged, notices };
   }
 
   async callTool(

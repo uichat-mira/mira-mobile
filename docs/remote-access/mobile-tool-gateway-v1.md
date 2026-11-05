@@ -29,7 +29,8 @@ Local Provider on Mobile
 - 不能访问任意文件系统、进程，或 Host / Provider 凭据；
 - 只返回文本 / JSON，并继续受 Agent Loop 的 tool-result byte limit 约束；
 - 无副作用且无需人工审批；写、发送、分享类能力仍走远程工具与审批模型；
-- 由 `CompositeToolGatewayClient` 与远程工具合并；同名时本地工具优先，远程工具仍只能来自 Host discovery。
+- 由 `CompositeToolGatewayClient` 与远程工具合并；同名时本地工具优先，远程工具仍只能来自 Host discovery；
+- 远程 discovery 失败时，本地工具继续可用，但本轮必须通过 `toolset-degraded` notice 显式告知用户工具集不完整，不能伪装成完整 Agent 运行。
 
 当前内置：`local_weather_current`，只把用户提供的城市名发送给 Open-Meteo，不申请定位权限，也不使用 API Key。
 

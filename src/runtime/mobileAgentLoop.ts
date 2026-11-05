@@ -5,6 +5,7 @@ import {
   ToolGatewayError,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  type ToolDiscoveryNotice,
   type ToolGatewayClient,
   type ToolManifest,
 } from '../tools/toolGatewayClient';
@@ -61,8 +62,15 @@ export class MobileAgentLoop {
     let manifests: readonly ToolManifest[];
     let tools: OpenAiTool[];
     let toolChannelUnavailable = false;
+    let discoveryNotices: readonly ToolDiscoveryNotice[] = [];
     try {
-      manifests = await this.gateway.listTools();
+      if (this.gateway.discoverTools) {
+        const discovery = await this.gateway.discoverTools();
+        manifests = discovery.tools;
+        discoveryNotices = discovery.notices;
+      } else {
+        manifests = await this.gateway.listTools();
+      }
       tools = manifests.map(toOpenAiTool);
     } catch (error) {
       if (
@@ -92,6 +100,13 @@ export class MobileAgentLoop {
           type: 'notice' as const,
           code: 'tool-channel-unavailable' as const,
         };
+      } else {
+        // Partial availability (for example local-only tools while the Host is
+        // unreachable) is surfaced before the first model round so the turn is
+        // never presented as a complete Agent run.
+        for (const notice of discoveryNotices) {
+          yield { type: 'notice' as const, code: notice.code };
+        }
       }
       const messages = [...initialMessages];
       let rounds = 0;

@@ -63,6 +63,10 @@ export type ConversationLifecycleEvent =
   | { type: 'approval-required'; approval: ConversationStreamApproval }
   | { type: 'approval-resolved'; callId: string; name: string; approved: boolean }
   | { type: 'phase'; phase: ConversationStreamPhase }
+  | {
+      type: 'notice';
+      code: 'tool-channel-unavailable' | 'toolset-degraded';
+    }
   | { type: 'pause'; reason: ConversationStreamPauseReason }
   | { type: 'canonical-reload'; messages: ChatMessage[] }
   | {
@@ -215,8 +219,9 @@ export class ConversationOrchestrator {
               break;
             case 'notice':
               // Non-error: the turn keeps going, but the notice must stay
-              // visible so the skipped tooling is never hidden.
+              // visible so the skipped or partial tooling is never hidden.
               agentDegraded = true;
+              sink.emit({ type: 'notice', code: event.code });
               sink.emit({ type: 'phase', phase: 'degraded' });
               break;
             case 'run-paused':

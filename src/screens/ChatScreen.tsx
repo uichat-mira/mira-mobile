@@ -52,6 +52,7 @@ import {
   LocalAgentRunCard,
   type LocalAgentActivity,
   type LocalAgentApprovalView,
+  type LocalAgentNoticeCode,
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
 } from '../agent/LocalAgentRunCard';
@@ -239,6 +240,9 @@ export function ChatScreen() {
   const [approvalAction, setApprovalAction] =
     useState<ToolApprovalDecision | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [agentNotice, setAgentNotice] = useState<LocalAgentNoticeCode | null>(
+    null,
+  );
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -314,6 +318,7 @@ export function ChatScreen() {
     setAgentPhase('idle');
     setAgentPauseReason(null);
     setAgentError(null);
+    setAgentNotice(null);
 
     if (!supportsLocalAgent || !runtime.getAgentEnabled) {
       setAgentEnabled(false);
@@ -548,6 +553,7 @@ export function ChatScreen() {
         setAgentPhase('idle');
         setAgentPauseReason(null);
         setAgentError(null);
+        setAgentNotice(null);
       }
     } catch {
       Alert.alert('Agent 模式', '暂时无法保存 Agent 模式状态，请稍后重试。');
@@ -610,6 +616,7 @@ export function ChatScreen() {
           setApprovalAction(null);
           setAgentPauseReason(null);
           setAgentError(null);
+          setAgentNotice(null);
           break;
         case 'clear-approval-action':
           setApprovalAction(null);
@@ -638,6 +645,9 @@ export function ChatScreen() {
             message: event.approval.message,
             ...(event.approval.scope ? { scope: event.approval.scope } : {}),
           });
+          break;
+        case 'notice':
+          setAgentNotice(event.code);
           break;
         case 'phase':
           setAgentPhase(event.phase);
@@ -866,6 +876,7 @@ export function ChatScreen() {
       (agentPhase !== 'idle' ||
         agentActivities.length > 0 ||
         pendingAgentApproval !== null ||
+        agentNotice !== null ||
         agentError !== null);
     if (!streamingText && !isLoading && !showAgentState) return null;
 
@@ -878,6 +889,7 @@ export function ChatScreen() {
             activities={agentActivities}
             approval={pendingAgentApproval}
             approvalAction={approvalAction}
+            notice={agentNotice}
             error={agentError}
             onApproval={handleAgentApproval}
           />
@@ -899,6 +911,7 @@ export function ChatScreen() {
     agentActivities,
     agentEnabled,
     agentError,
+    agentNotice,
     agentPauseReason,
     agentPhase,
     approvalAction,

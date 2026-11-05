@@ -81,6 +81,20 @@ describe('local weather tool', () => {
   });
 
   it('reports an unknown city without calling the forecast API', async () => {
+    // Open-Meteo omits `results` completely when the geocoding query has no
+    // matches; treating that as an upstream error would hide a normal miss.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ generationtime_ms: 0.2 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(
+      weatherToolDefinition.call({ city: '不存在的城市' }, {}),
+    ).rejects.toMatchObject({ code: 'WEATHER_CITY_NOT_FOUND' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an unknown city when the geocoding result list is empty', async () => {
     const fetchMock = jest
       .fn()
       .mockResolvedValueOnce(jsonResponse({ results: [] }));
