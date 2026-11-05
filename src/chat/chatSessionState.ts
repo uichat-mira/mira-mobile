@@ -7,6 +7,19 @@ import type { Session } from '../types';
 
 type SessionReader = Pick<MiraHostApi, 'getSession'>;
 
+type WeatherErrorCode =
+  | 'WEATHER_ARGUMENTS_INVALID'
+  | 'WEATHER_CITY_NOT_FOUND'
+  | 'WEATHER_TIMEOUT'
+  | 'WEATHER_UPSTREAM_FAILED';
+
+const WEATHER_ERROR_MESSAGES: Record<WeatherErrorCode, string> = {
+  WEATHER_ARGUMENTS_INVALID: '天气查询参数无效，请检查城市名或预报天数',
+  WEATHER_CITY_NOT_FOUND: '没有找到这个城市，请换一个更具体的城市名',
+  WEATHER_TIMEOUT: '天气服务响应超时，请稍后重试',
+  WEATHER_UPSTREAM_FAILED: '天气服务暂时不可用，请稍后重试',
+};
+
 interface LocalSessionTitleReader {
   getSession?(sessionId: string): Promise<Pick<Session, 'title'>>;
 }
@@ -100,6 +113,14 @@ export const getChatSendErrorMessage = (
     if (error.code === 'TOOL_STREAM_INCOMPLETE') return '工具连接中断，可重新发送';
     if (error.code === 'TOOL_APPROVAL_UNCERTAIN') {
       return '工具审批结果暂时无法确认，请刷新状态后再决定是否重试';
+    }
+    if (
+      error.code === 'WEATHER_ARGUMENTS_INVALID' ||
+      error.code === 'WEATHER_CITY_NOT_FOUND' ||
+      error.code === 'WEATHER_TIMEOUT' ||
+      error.code === 'WEATHER_UPSTREAM_FAILED'
+    ) {
+      return error.suggestedAction || WEATHER_ERROR_MESSAGES[error.code];
     }
     return error.message || '远程工具执行失败，请重试';
   }
