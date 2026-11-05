@@ -1,5 +1,6 @@
 import type { RuntimeEvent } from './conversationRuntime';
 import { MobileAgentLoop } from './mobileAgentLoop';
+import { RemoteHostError } from '../api/remoteHttp';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
@@ -572,6 +573,31 @@ describe('MobileAgentLoop', () => {
       ),
     ).rejects.toMatchObject({ code: 'TOOL_CHANNEL_UNAVAILABLE' });
     expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a lost tool scope instead of degrading to a plain answer', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new RemoteHostError(
+          'REMOTE_SCOPE_REQUIRED',
+          'tool scope is missing',
+          403,
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      loop.run(
+        [],
+        async () =>
+          (async function* () {
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+        { onToolChannelUnavailable: 'continue-without-tools' },
+      ),
+    ).rejects.toMatchObject({ code: 'REMOTE_SCOPE_REQUIRED' });
   });
 
   it('surfaces the tool-channel failure by default instead of silently continuing', async () => {

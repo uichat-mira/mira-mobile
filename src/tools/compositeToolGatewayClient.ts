@@ -1,3 +1,4 @@
+import { RemoteHostError } from '../api/remoteHttp';
 import {
   ToolGatewayError,
   type ToolApprovalDecision,
@@ -9,6 +10,26 @@ import {
   type ToolGatewayClient,
   type ToolManifest,
 } from './toolGatewayClient';
+
+const HOST_AVAILABILITY_ERROR_CODES = new Set([
+  'PAIRING_REQUIRED',
+  'NETWORK_ERROR',
+  'REQUEST_ABORTED',
+  'REMOTE_ENDPOINT_UNAVAILABLE',
+  'REMOTE_TOOL_ROUTE_UNAVAILABLE',
+]);
+
+/**
+ * Only an unreachable or unpaired Host may be downgraded to a local-only
+ * toolset. Scope loss, auth failures, alias conflicts and malformed responses
+ * are configuration or protocol defects, and hiding them behind "temporarily
+ * unavailable" would leave the user without the re-pair / bug-report guidance.
+ */
+const isHostAvailabilityError = (error: unknown): boolean => {
+  if (!(error instanceof RemoteHostError)) return false;
+  if (error.status !== undefined && error.status >= 500) return true;
+  return HOST_AVAILABILITY_ERROR_CODES.has(error.code);
+};
 
 /**
  * Keeps read-only local tools available even when no paired Mira Host can
@@ -32,10 +53,11 @@ export class CompositeToolGatewayClient implements ToolGatewayClient {
     let notices: ToolDiscoveryResult['notices'] = [];
     try {
       remoteTools = await this.remote.listTools();
-    } catch {
+    } catch (error) {
       // Local-only Agent mode is a supported state: an unpaired or temporarily
-      // unreachable Host must not hide the local read-only toolset. The notice
-      // keeps the partial toolset explicit instead of silently looking whole.
+      // unreachable Host must not hide the local read-only toolset. Everything
+      // else is rethrown so the real failure reaches the user-facing mapper.
+      if (!isHostAvailabilityError(error)) throw error;
       notices = [{ code: 'toolset-degraded' }];
     }
 

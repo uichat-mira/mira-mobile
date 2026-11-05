@@ -1,3 +1,4 @@
+import { RemoteHostError } from '../api/remoteHttp';
 import { CompositeToolGatewayClient } from './compositeToolGatewayClient';
 import type {
   ToolCallRequest,
@@ -56,13 +57,13 @@ describe('CompositeToolGatewayClient', () => {
     ]);
   });
 
-  it('keeps local tools available when remote discovery fails', async () => {
+  it('keeps local tools available when the Host is not paired', async () => {
     const local = client({
       listTools: jest.fn(async () => [localManifest]),
     });
     const remote = client({
       listTools: jest.fn(async () => {
-        throw new Error('PAIRING_REQUIRED');
+        throw new RemoteHostError('PAIRING_REQUIRED', 'Host is not paired');
       }),
     });
 
@@ -71,13 +72,13 @@ describe('CompositeToolGatewayClient', () => {
     await expect(gateway.listTools()).resolves.toEqual([localManifest]);
   });
 
-  it('reports a degraded toolset when remote discovery fails', async () => {
+  it('reports a degraded toolset when the Host is unreachable', async () => {
     const local = client({
       listTools: jest.fn(async () => [localManifest]),
     });
     const remote = client({
       listTools: jest.fn(async () => {
-        throw new Error('PAIRING_REQUIRED');
+        throw new RemoteHostError('NETWORK_ERROR', 'Network is down');
       }),
     });
 
@@ -86,6 +87,59 @@ describe('CompositeToolGatewayClient', () => {
     await expect(gateway.discoverTools()).resolves.toEqual({
       tools: [localManifest],
       notices: [{ code: 'toolset-degraded' }],
+    });
+  });
+
+  it('reports a degraded toolset when the Host returns a server error', async () => {
+    const gateway = new CompositeToolGatewayClient(
+      client({ listTools: jest.fn(async () => [localManifest]) }),
+      client({
+        listTools: jest.fn(async () => {
+          throw new RemoteHostError('HTTP_ERROR', 'Upstream failed', 503);
+        }),
+      }),
+    );
+
+    await expect(gateway.discoverTools()).resolves.toEqual({
+      tools: [localManifest],
+      notices: [{ code: 'toolset-degraded' }],
+    });
+  });
+
+  it('rethrows a lost tool scope instead of hiding it as unavailable', async () => {
+    const gateway = new CompositeToolGatewayClient(
+      client({ listTools: jest.fn(async () => [localManifest]) }),
+      client({
+        listTools: jest.fn(async () => {
+          throw new RemoteHostError(
+            'REMOTE_SCOPE_REQUIRED',
+            'Tool scope is missing',
+            403,
+          );
+        }),
+      }),
+    );
+
+    await expect(gateway.discoverTools()).rejects.toMatchObject({
+      code: 'REMOTE_SCOPE_REQUIRED',
+    });
+  });
+
+  it('rethrows a protocol or alias defect instead of hiding it as unavailable', async () => {
+    const gateway = new CompositeToolGatewayClient(
+      client({ listTools: jest.fn(async () => [localManifest]) }),
+      client({
+        listTools: jest.fn(async () => {
+          throw new RemoteHostError(
+            'REMOTE_TOOL_ALIAS_CONFLICT',
+            'Alias conflict',
+          );
+        }),
+      }),
+    );
+
+    await expect(gateway.discoverTools()).rejects.toMatchObject({
+      code: 'REMOTE_TOOL_ALIAS_CONFLICT',
     });
   });
 

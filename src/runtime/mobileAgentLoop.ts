@@ -42,6 +42,10 @@ export type AgentModelCall = (
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
 
+const isDegradableToolChannelError = (error: unknown): boolean =>
+  error instanceof ToolGatewayError &&
+  error.code === 'TOOL_CHANNEL_UNAVAILABLE';
+
 const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
   function: {
@@ -73,9 +77,14 @@ export class MobileAgentLoop {
       }
       tools = manifests.map(toOpenAiTool);
     } catch (error) {
+      // Only an absent/unreachable channel may degrade to a plain model round.
+      // A lost scope or a protocol defect must surface as the real failure so
+      // the user gets re-pair or bug-report guidance instead of a vague
+      // "temporarily unavailable" message.
       if (
         (options.onToolChannelUnavailable ?? 'fail') !==
-        'continue-without-tools'
+          'continue-without-tools' ||
+        !isDegradableToolChannelError(error)
       ) {
         throw error;
       }
