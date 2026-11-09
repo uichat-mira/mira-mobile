@@ -66,6 +66,11 @@ Android 真机 + 真实 Cloud 账号 + 已部署 Who You：
 
 iOS 真机与隔离/配额/relay 失败的真实注入路径：如无环境，明确记录为 validation gap，不写成已通过。
 
+## 部署依赖（阻断真实旅程）
+
+- `uichat-mira/who-you` 的 `FOUNDATION.md` 当前明确记录：没有 Cloudflare deployment、DNS、D1、R2 落地。因此本卡**不得硬编码任何 Who You 域名**；MCP 资源地址必须来自构建配置（沿用 `resolveCloudAuthBaseUrl` 的 channel 机制），未配置时明确报"未配置"，不得猜测默认域名。
+- 真实发送、真实签发的确认凭证、真实隔离/配额/relay 失败，都依赖部署后的环境；本机只能做契约级测试。
+
 ## 风险
 
 - Cloud Auth 与 Who You 未在本机部署，凭证签发与真实发送只能以部署环境 + 真机旅程证明。
