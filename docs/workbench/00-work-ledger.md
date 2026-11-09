@@ -67,6 +67,7 @@
 | MOB-064 | 统一 Mobile 公共反馈邮箱 | DOING | 删除旧个人邮箱内容；设置「电子邮件」与「报告错误」统一使用共享 `PUBLIC_FEEDBACK_EMAIL = hello@tomz.io`；报告 mailto 单测直接固定收件人；真人验收仅要求 Android 两个入口各核对一次收件人，不重复 MOB-052/MOB-055 全量矩阵 |
 
 | MOB-056 | 设置 → 常规偏好页与真机验收 | REVIEW | feat/general-settings PR 进入 review；默认会话来源、启动恢复上次会话、文本大小（重启完全生效）、触感反馈、启动自动检查更新五项设备本地偏好；新增 KV mira.mobile.general.v1 / mira.mobile.last-opened-session.v1；本地 Typecheck/Lint/Jest 全绿；真机验收以 Android 核心体验为主，重点含启动恢复 / 文本缩放 / 触感反馈；iOS 普通共性路径不设真机硬门槛，详见 docs/task-cards/MOB-056-general-settings-device-acceptance.md |
+| MOB-082 | Who You 邮箱客户端接线（读信 + 草稿确认发送） | TODO | 服务端契约由 `uichat-mira/who-you` S1–S4 拥有；Mobile 只新增 `src/whoYou/` 适配层、邮箱/线程/正文/附件页面、草稿确认与发送编排、错误码用户态；确认凭证仅内存持有，不落盘不进日志；首版不做离线缓存；与既有 cloud / security / Host 行为并存不改；真人验收需真实 Cloud 账号 + 已部署 Who You，详见 docs/task-cards/MOB-082-who-you-mail-client.md |
 
 ## Deferred Engineering Governance
 
