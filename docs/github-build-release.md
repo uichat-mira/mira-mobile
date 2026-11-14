@@ -64,6 +64,8 @@ feat/* -> dev -> test -> prod
 
 同一工作流 / 分支采用 concurrency 取消旧的进行中运行，避免较老提交覆盖新结果。
 
+`R2 Release Truth` 只对**可能改变可发布产物**的 push 运行。仅文档 / Markdown / 协作配置变更的 push 会被 `paths-ignore` 跳过，因为 release truth 以 `package.json.version` 为键且同渠道同版本不可变：这类提交无法产生新的合法产物，重跑只会构建出同版本但字节不同的 APK，最终以 `Version collision` 失败。被跳过的只是"没有东西可发布"的运行，真实构建路径（`src/`、`android/`、`ios/`、依赖清单、工作流本身）不受影响。
+
 ## 构建任务
 
 | Job | 平台 | 主要检查 | 产物 |
