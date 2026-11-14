@@ -215,4 +215,51 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     ).resolves.toBe('client-jwt-ticket');
     expect(apiLike.issueRelayClientTicket).toHaveBeenCalledTimes(2);
   });
+
+  it('shares one in-flight discovery across simultaneous Cloud callers', async () => {
+    const apiLike = api();
+    const relayEntry = entry(await storedSession(), apiLike);
+    const first = relayEntry.discover();
+    const second = relayEntry.discover();
+    expect(second).toBe(first);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toBe(b);
+    expect(apiLike.listHosts).toHaveBeenCalledTimes(1);
+  });
+
+  it('revokes old ticket providers synchronously on reset', async () => {
+    const apiLike = api();
+    const relayEntry = entry(await storedSession(), apiLike);
+    const prior = await relayEntry.discover();
+    relayEntry.reset();
+    await expect(
+      prior.tickets.acquireClientTicket(prior.target.room),
+    ).rejects.toMatchObject({ code: 'CLOUD_RELAY_SESSION_REJECTED' });
+    expect(apiLike.issueRelayClientTicket).not.toHaveBeenCalled();
+  });
+
+  it('ignores a Host discovery that completes after Cloud logout/reset', async () => {
+    let finishDiscovery: ((hosts: typeof host[]) => void) | undefined;
+    let discoveryStarted: (() => void) | undefined;
+    const started = new Promise<void>(resolve => { discoveryStarted = resolve; });
+    const pendingHosts = new Promise<typeof host[]>(resolve => {
+      finishDiscovery = resolve;
+    });
+    const apiLike = api({
+      listHosts: jest.fn(() => {
+        discoveryStarted?.();
+        return pendingHosts;
+      }),
+    });
+    const relayEntry = entry(await storedSession(), apiLike);
+    const pending = relayEntry.discover();
+    await started;
+    relayEntry.reset();
+    finishDiscovery?.([host]);
+    await expect(pending).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_SESSION_REJECTED',
+    });
+    expect(apiLike.issueRelayClientTicket).not.toHaveBeenCalled();
+  });
+
 });
