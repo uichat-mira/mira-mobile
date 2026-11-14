@@ -7,6 +7,18 @@ on:
       - dev
       - test
       - prod
+    # Release truth is keyed by package.json.version and immutable per channel,
+    # so a push that cannot change the shipped app has nothing to publish. Without
+    # this guard a docs-only push rebuilds the same version and fails as a
+    # "version collision", which hides real regressions behind a permanently red
+    # workflow. Build-affecting paths are deliberately NOT listed here.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.ai/**'
+      - '.opencode/**'
+      - '.coderabbit.yaml'
+      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
 permissions:

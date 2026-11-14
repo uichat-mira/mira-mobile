@@ -77,6 +77,27 @@ describe('MOB-028A release truth', () => {
     expect(workflow).not.toContain('MIRA_RELEASE_CHANNEL: dev\n');
   });
 
+  it('skips release publication for pushes that cannot change the shipped app', () => {
+    const workflow = readSource('.github/workflows/r2-release-truth.yml');
+
+    expect(workflow).toContain('paths-ignore:');
+    expect(workflow).toContain("- 'docs/**'");
+    expect(workflow).toContain("- '**/*.md'");
+    // Build inputs must stay publishable: a docs/ignore list that accidentally
+    // covers source, native projects, dependencies or workflow files would stop
+    // real releases from reaching R2.
+    for (const buildPath of [
+      'src/**',
+      'android/**',
+      'ios/**',
+      'package.json',
+      'package-lock.json',
+      '.github/workflows/**',
+    ]) {
+      expect(workflow).not.toContain(`- '${buildPath}'`);
+    }
+  });
+
   it('binds canonical release artifacts to both branch and commit', () => {
     const workflow = readSource('.github/workflows/r2-release-truth.yml');
     expect(workflow).toContain('-f branch="$RELEASE_CHANNEL"');
