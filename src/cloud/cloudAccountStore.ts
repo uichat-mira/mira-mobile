@@ -44,6 +44,30 @@ interface CloudAccountStore {
 
 let initialization: Promise<void> | null = null;
 
+// A newer Cloud account intent owns the visible result. Old async reads may
+// still complete later, but they must never overwrite a login, logout, revoke
+// or refresh that started after them.
+let lifecycleVersion = 0;
+const nextLifecycle = () => ++lifecycleVersion;
+const ownsLifecycle = (version: number) => version === lifecycleVersion;
+
+// A superseded cold-start restore can still describe real saved authority: the
+// store keeps the newer intent's state, but the secure record was valid. Without
+// remembering it, an already-authenticated user sees a failed login when an
+// OAuth callback races the initial restore. The stored version makes the record
+// usable only by the intent that actually superseded it.
+let supersededColdStartRestore: {
+  state: CloudAuthSessionState;
+  supersededBy: number;
+} | null = null;
+
+const beginIntent = (): number => {
+  // A newer intent knows nothing about an older restore or callback, so the
+  // recovery record must not survive into it.
+  supersededColdStartRestore = null;
+  return nextLifecycle();
+};
+
 const unavailableMessage =
   'Mira Cloud 暂时不可用。本地模型和 Tailscale 直连不受影响。';
 const rejectedMessage = 'Mira Cloud 登录已失效，请重新登录。';
@@ -134,19 +158,31 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   initialize: async () => {
     if (get().initialized) return;
     if (!initialization) {
+      const version = lifecycleVersion;
       initialization = (async () => {
         try {
           const state = await cloudAuthService.restoreSession();
-          set({ ...resultStatus(state), ...deviceReset(), initialized: true });
+          if (ownsLifecycle(version)) {
+            set({ ...resultStatus(state), ...deviceReset(), initialized: true });
+          } else {
+            // The store keeps the newer intent's state, but this result still
+            // reflects the real secure record. Keep it for callback recovery.
+            supersededColdStartRestore = { state, supersededBy: lifecycleVersion };
+            set({ initialized: true });
+          }
         } catch {
-          set({
-            status: 'signed_out',
-            account: null,
-            expiresAt: null,
-            message: '无法读取 Mira Cloud 登录状态。',
-            ...deviceReset(),
-            initialized: true,
-          });
+          if (ownsLifecycle(version)) {
+            set({
+              status: 'signed_out',
+              account: null,
+              expiresAt: null,
+              message: '无法读取 Mira Cloud 登录状态。',
+              ...deviceReset(),
+              initialized: true,
+            });
+          } else {
+            set({ initialized: true });
+          }
         }
       })();
     }
@@ -154,10 +190,12 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   },
 
   refresh: async () => {
-    if (get().busy) return;
+    if (get().busy || get().revokingDeviceId !== null) return;
+    const version = lifecycleVersion;
     set({ busy: true });
     try {
       const state = await cloudAuthService.restoreSession();
+      if (!ownsLifecycle(version)) return;
       const next = resultStatus(state);
       // A storage failure can leave Cloud unavailable with no account identity.
       // Never preserve an old account's devices or loading state across that
@@ -173,6 +211,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         ...(keepsAccountDevices(state) && sameAccount ? {} : deviceReset()),
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       set({
         status: 'cloud_unavailable',
         account: get().account,
@@ -180,21 +219,24 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         message: unavailableMessage,
       });
     } finally {
-      set({ busy: false });
+      if (ownsLifecycle(version)) set({ busy: false });
     }
   },
 
   signIn: async () => {
     if (get().busy) return;
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       await cloudAuthService.beginSignIn();
+      if (!ownsLifecycle(version)) return;
       set({
         status: 'authorizing',
         message:
           '已在系统浏览器中打开 Mira Cloud 登录页，完成登录后返回 Mira。',
       });
     } catch (error) {
+      if (!ownsLifecycle(version)) return;
       const current = get();
       const failure = failureStatus(error, current.account);
       // A failed browser launch does not invalidate the session already saved
@@ -206,15 +248,19 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       }
       return;
     }
+    if (!ownsLifecycle(version)) return;
     set({ busy: false });
   },
 
   cancelSignIn: async () => {
     if (get().busy) return;
+    const version = beginIntent();
     set({ busy: true });
     try {
       await cloudAuthService.cancelPendingSignIn();
+      if (!ownsLifecycle(version)) return;
     } catch {
+      if (!ownsLifecycle(version)) return;
       // Pending state is not confirmed cleared; retain the authorizing
       // screen and allow the user to retry cancellation.
       set({ busy: false, message: '无法清除本次登录状态，请重试。' });
@@ -223,6 +269,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
     try {
       const restored = await cloudAuthService.restoreSession();
+      if (!ownsLifecycle(version)) return;
       const state = resultStatus(restored);
       set({
         ...state,
@@ -234,6 +281,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
             : '已取消 Mira Cloud 登录。',
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       const current = get();
       set({
         status: current.account ? 'cloud_unavailable' : 'signed_out',
@@ -244,17 +292,35 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   },
 
   completeSignIn: async (params: OAuthCallbackParams) => {
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       const state = await cloudAuthService.completeSignIn(params);
+      if (!ownsLifecycle(version)) return get().status;
       set({ ...resultStatus(state), ...deviceReset(), busy: false });
     } catch (error) {
+      if (!ownsLifecycle(version)) return get().status;
       // An invalid/duplicate deep link must not sign out an existing account.
       // On cold start, let the initial secure-store restore finish first.
       if (!get().initialized) await get().initialize();
+      if (!ownsLifecycle(version)) return get().status;
       const current = get();
       const failure = failureStatus(error, current.account);
-      if (current.account && current.status === 'authorizing') {
+      if (
+        !current.account &&
+        supersededColdStartRestore?.supersededBy === version
+      ) {
+        // The cold-start restore was valid but lost the race to this callback.
+        // Report the saved session instead of a sign-out that never happened.
+        const { state: saved } = supersededColdStartRestore;
+        supersededColdStartRestore = null;
+        set({
+          ...resultStatus(saved),
+          ...(keepsAccountDevices(saved) ? {} : deviceReset()),
+          message: failure.message,
+          busy: false,
+        });
+      } else if (current.account && current.status === 'authorizing') {
         // Re-login may have started from an existing/offline Cloud session.
         // Re-check the secure record instead of presenting a false sign-out.
         try {
@@ -287,6 +353,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   loadDevices: async () => {
     const current = get();
+    const version = lifecycleVersion;
     if (
       !current.account ||
       current.status !== 'signed_in' ||
@@ -299,6 +366,15 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ devicesStatus: 'loading', devicesMessage: null });
     try {
       const result = await cloudAuthService.listDevices();
+      // A superseded load still owns the loader it set. Leaving it behind wedges
+      // the device section on a permanent spinner because loadDevices refuses to
+      // run again while devicesStatus is 'loading'.
+      if (!ownsLifecycle(version)) {
+        if (get().devicesStatus === 'loading') {
+          set({ devicesStatus: 'unavailable', devicesMessage: deviceListFailureMessage });
+        }
+        return;
+      }
       // The request may finish after logout, revoke, or a different login.
       // Its result belongs only to the account that initiated this load.
       const latest = get();
@@ -370,11 +446,22 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   revokeDevice: async (deviceId: string) => {
     const current = get();
-    if (!current.account || current.revokingDeviceId !== null) return;
-
+    if (!current.account || current.revokingDeviceId !== null || current.busy) {
+      return;
+    }
+    const version = beginIntent();
     set({ revokingDeviceId: deviceId, devicesMessage: null, message: null });
     try {
       const result = await cloudAuthService.revokeDevice(deviceId);
+      if (!ownsLifecycle(version)) {
+        // The superseding intent may have preserved this account's devices, so
+        // nothing else will clear the marker. Leaving it set disables every
+        // revoke button and short-circuits refresh/loadDevices indefinitely.
+        if (get().revokingDeviceId === deviceId) {
+          set({ revokingDeviceId: null });
+        }
+        return;
+      }
       switch (result.status) {
         case 'signed_out':
           // There was no stored Cloud credential, so the service never sent
@@ -445,8 +532,11 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         revokingDeviceId: null,
       });
     } catch {
+      if (get().revokingDeviceId === deviceId) {
+        set({ revokingDeviceId: null });
+      }
+      if (!ownsLifecycle(version)) return;
       set({
-        revokingDeviceId: null,
         devicesMessage: '设备撤销结果未确认，请稍后重试。',
       });
     }
@@ -454,9 +544,11 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   signOut: async () => {
     if (get().busy) return;
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       const result = await cloudAuthService.logout();
+      if (!ownsLifecycle(version)) return;
       if (result.cleared) {
         set({
           status: 'signed_out',
@@ -473,6 +565,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         busy: false,
       });
     } catch {
+      if (!ownsLifecycle(version)) return;
       set({
         message: '退出 Mira Cloud 未完成，请稍后重试。',
         busy: false,
