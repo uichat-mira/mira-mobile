@@ -60,6 +60,7 @@ import { buildShareCardModel, collectShareableMessages } from '../share/shareCar
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
 import { ShareMessageSelector } from '../share/ShareMessageSelector';
 import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
+import { lightImpact } from '../haptics/haptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
@@ -753,6 +754,12 @@ export function ChatScreen() {
       if (!existingMessage) {
         setMessages((prev) => [...prev, userMsg]);
       }
+
+      // Haptic feedback fires for every user-initiated send (including retries)
+      // so the interaction contract "my question was delivered" matches what
+      // users feel. It runs in parallel with runTurn — no await, the network
+      // path must never wait on the vibrator.
+      void lightImpact();
 
       await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
     },
