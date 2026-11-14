@@ -1,6 +1,7 @@
 import type { Session } from '../types';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { RuntimeRegistry } from './runtimeRegistry';
+import { RemoteHostError } from '../api/remoteHttp';
 
 const session = (id: string, source: 'remote-host' | 'local-provider', updatedAt: string): Session => ({
   id,
@@ -78,6 +79,45 @@ describe('RuntimeRegistry', () => {
 
     expect(localDeletes).toEqual(['local-1']);
     expect(remoteDeletes).toEqual(['remote-1', 'local-looking-remote']);
+  });
+
+  it('shows an empty list instead of a Remote failure with no Desktop pairing', async () => {
+    const local = runtime('local-provider', []);
+    const remote = runtime('remote-host', []) as ConversationRuntime;
+    remote.listSessions = async () => {
+      throw new RemoteHostError('PAIRING_REQUIRED', 'Not paired to Desktop');
+    };
+    const registry = new RuntimeRegistry(local as never, remote as never);
+
+    await expect(registry.listSessions()).resolves.toEqual([]);
+    await expect(registry.listSessions('remote-host')).rejects.toMatchObject({
+      code: 'PAIRING_REQUIRED',
+    });
+  });
+
+  it('does not hide genuine Local Provider storage failures when unpaired', async () => {
+    const local = runtime('local-provider', []) as ConversationRuntime;
+    const remote = runtime('remote-host', []) as ConversationRuntime;
+    local.listSessions = async () => { throw new Error('local storage failed'); };
+    remote.listSessions = async () => {
+      throw new RemoteHostError('PAIRING_REQUIRED', 'Not paired to Desktop');
+    };
+    const registry = new RuntimeRegistry(local as never, remote as never);
+
+    await expect(registry.listSessions()).rejects.toThrow('local storage failed');
+  });
+
+  it('still reports genuine Remote network errors with an empty local list', async () => {
+    const local = runtime('local-provider', []);
+    const remote = runtime('remote-host', []) as ConversationRuntime;
+    remote.listSessions = async () => {
+      throw new RemoteHostError('NETWORK_ERROR', 'Host offline');
+    };
+    const registry = new RuntimeRegistry(local as never, remote as never);
+
+    await expect(registry.listSessions()).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+    });
   });
 
   it('keeps the available source when the other source fails', async () => {

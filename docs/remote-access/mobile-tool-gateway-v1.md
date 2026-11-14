@@ -2,7 +2,7 @@
 
 状态：MOB-041 implementation contract  
 日期：2026-09-07  
-范围：Mira Mobile Local Provider Agent -> paired Mira Host -> Harness / remote tools
+范围：Mira Mobile Local Provider Agent -> paired Mira Host -> Harness / remote tools；以及 Mobile 内置只读工具
 
 ## 1. V1 结论
 
@@ -20,6 +20,20 @@ Local Provider on Mobile
 ```
 
 工具以远程执行为主。需要人工审批的具体调用在手机端完成批准或拒绝；真正的 Policy 校验、凭据持有和工具执行仍由 Mira Host / Harness 负责。
+
+### 1.1 Mobile 内置只读工具
+
+在不改变远程权威边界的前提下，Mobile 可以编译内置一组有界的只读工具，用于未配对 Host 时的本地 Agent 模式。这类工具必须满足：
+
+- 只能以代码形式随 App 发布，不支持动态安装、脚本、Shell 或 MCP；
+- 不能访问任意文件系统、进程，或 Host / Provider 凭据；
+- 只返回文本 / JSON，并继续受 Agent Loop 的 tool-result byte limit 约束；
+- 无副作用且无需人工审批；写、发送、分享类能力仍走远程工具与审批模型；
+- 由 `CompositeToolGatewayClient` 与远程工具合并；同名时本地工具优先，远程工具仍只能来自 Host discovery；
+- 仅当 Remote Host 未配对、暂时不可达或返回 5xx 时，本地工具继续可用，并通过 `toolset-degraded` notice 显式告知用户工具集不完整；
+- 权限范围缺失（`REMOTE_SCOPE_REQUIRED`）、认证失败、工具别名冲突或协议解析错误必须上抛，按真实失败呈现配对 / 排查提示，不能折叠成“暂时不可用”。
+
+当前内置：`local_weather_current`，只把用户提供的城市名发送给 Open-Meteo，不申请定位权限，也不使用 API Key。
 
 ## 2. 身份与凭据
 

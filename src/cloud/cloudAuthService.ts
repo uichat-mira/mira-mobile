@@ -144,12 +144,38 @@ interface CloudAuthServiceOptions {
 const requestError = (error: unknown): CloudAuthServiceError => {
   if (error instanceof CloudAuthRequestError) {
     switch (error.kind) {
-      case 'network':
+      case 'network': {
+        // Show only our fixed local diagnostic code. Never display the native
+        // exception, authorization URL, verifier, or one-use OAuth code.
+        const diagnostic = error.code;
+        if (
+          diagnostic &&
+          /^MOB081_(FETCH|TIMEOUT)_HEALTH_(OK|HTTP|NETWORK|TIMEOUT)$/.test(diagnostic)
+        ) {
+          const health = diagnostic.split('_').pop();
+          const hint =
+            health === 'OK'
+              ? 'App 可以读取健康接口，但令牌兑换请求失败。'
+              : health === 'HTTP'
+                ? 'App 读到健康接口的异常 HTTP 响应。'
+                : 'App 自身也无法读取健康接口（手机浏览器结果不代表 App 网络）。';
+          // Never expose native exception messages or a forged diagnostic.
+          const safeDetail = error.detail &&
+            /^(?:Android OkHttp: (?:HTTP [1-5][0-9]{2}|NETWORK (?:[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error))(?:>[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error)){0,2} \((?:CERTIFICATE_REJECTED|DNS_FAILURE|CONNECTION_RESET|NETWORK_UNREACHABLE|CONNECTION_REFUSED|TIMEOUT|TLS_HANDSHAKE|CONNECT_FAILED|EARLY_EOF|UNCLASSIFIED)\)|UNAVAILABLE|PROBE_FAILED))$/.test(error.detail)
+            ? '\n错误详情：' + error.detail
+            : '';
+          return new CloudAuthServiceError(
+            'network',
+            `Mira Cloud 登录网络诊断 ${diagnostic}：${hint}请截图反馈。` + safeDetail,
+            diagnostic,
+          );
+        }
         return new CloudAuthServiceError(
           'network',
           '无法连接 Mira Cloud，请检查网络后重试。',
           error.code,
         );
+      }
       case 'unavailable':
         return new CloudAuthServiceError(
           'unavailable',

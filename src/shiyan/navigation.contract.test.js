@@ -16,11 +16,18 @@ describe('Shiyan navigation contract', () => {
     expect(app).toContain('<Stack.Screen name="ShiyanHome" component={ShiyanHomeScreen} />');
   });
 
-  it('keeps Shiyan reachable before Host pairing', () => {
-    const bootstrap = readSource('src/screens/BootstrapScreen.tsx');
+  it('keeps Shiyan reachable before Host pairing through the main drawer', () => {
     const app = readSource('App.tsx');
+    const list = readSource('src/screens/SessionListScreen.tsx');
+    const drawer = readSource('src/session/CustomDrawer.tsx');
+    const bootstrap = readSource('src/screens/BootstrapScreen.tsx');
 
-    expect(app).toContain("hasDeviceCredential ? 'SessionList' : 'Bootstrap'");
+    // A non-paired launch must reach the main drawer and its Plugins entry.
+    expect(app).toContain('initialRouteName="SessionList"');
+    expect(list).toContain('accessibilityLabel="打开菜单"');
+    expect(list).toContain('<CustomDrawer');
+    expect(drawer).toContain("navigation.navigate('Plugins')");
+    // Explicit onboarding/legacy entry remains registered and functional.
     expect(app).toContain('<Stack.Screen name="Bootstrap" component={BootstrapScreen} />');
     expect(bootstrap).toContain("navigation.navigate('HostConfig')");
     expect(bootstrap).toContain("navigation.navigate('Plugins')");

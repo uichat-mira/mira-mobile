@@ -51,12 +51,36 @@ export class AppUpdateInstallError extends Error {
 interface MiraAppUpdateNativeModule {
   download(url: string, sha256: string, fileName: string): Promise<string>;
   cancelDownload(): Promise<void>;
-  install(filePath: string, sha256: string): Promise<void>;
+  install(filePath: string, sha256: string): Promise<number>;
   canInstallPackages(): Promise<boolean>;
   openInstallPermissionSettings(): Promise<void>;
 }
 
 const PROGRESS_EVENT = 'MiraAppUpdateProgress';
+const INSTALL_FAILURE_EVENT = 'MiraAppUpdateInstallFailure';
+
+export interface UpdateInstallFailure {
+  sessionId: number;
+  message: string;
+}
+
+/** Reject malformed/stale native callbacks before they enter the UI state. */
+export const observeUpdateInstallFailures = (
+  onFailure: (failure: UpdateInstallFailure) => void,
+): { remove(): void } =>
+  DeviceEventEmitter.addListener(INSTALL_FAILURE_EVENT, (payload: unknown) => {
+    if (!isRecord(payload)) return;
+    const { sessionId, message } = payload;
+    if (
+      typeof sessionId !== 'number' ||
+      !Number.isSafeInteger(sessionId) ||
+      sessionId <= 0 ||
+      typeof message !== 'string' ||
+      message.length < 1 ||
+      message.length > 120
+    ) return;
+    onFailure({ sessionId, message });
+  });
 
 const getNativeModule = (): MiraAppUpdateNativeModule | null => {
   const nativeModule = NativeModules.MiraAppUpdate as
@@ -165,7 +189,7 @@ export const downloadUpdate = async (
 export const installDownloadedUpdate = async (
   filePath: string,
   sha256: string,
-): Promise<void> => {
+): Promise<number> => {
   const nativeModule = getNativeModule();
   if (nativeModule === null) {
     throw new AppUpdateInstallError(
@@ -174,7 +198,11 @@ export const installDownloadedUpdate = async (
     );
   }
   try {
-    await nativeModule.install(filePath, sha256);
+    const sessionId = await nativeModule.install(filePath, sha256);
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+      throw new AppUpdateInstallError('UPDATE_INSTALL_FAILED', 'Invalid install session');
+    }
+    return sessionId;
   } catch (error) {
     throw toAppUpdateError(error);
   }

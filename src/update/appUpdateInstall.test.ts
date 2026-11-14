@@ -8,6 +8,7 @@ import {
   installDownloadedUpdate,
   isInAppUpdateSupported,
   openInstallPermissionSettings,
+  observeUpdateInstallFailures,
   parseUpdateProgress,
   toAppUpdateError,
   updateFileName,
@@ -229,9 +230,11 @@ describe('downloadUpdate', () => {
 
 describe('installDownloadedUpdate', () => {
   it('hands the verified file path and digest to the native installer', async () => {
-    mockInstall.mockResolvedValue(undefined);
+    mockInstall.mockResolvedValue(42);
 
-    await installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256);
+    await expect(
+      installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256),
+    ).resolves.toBe(42);
 
     expect(mockInstall).toHaveBeenCalledWith(
       '/cache/mira-update/mira-0.4.0-dev.apk',
@@ -259,6 +262,26 @@ describe('installDownloadedUpdate', () => {
     await expect(
       installDownloadedUpdate('/cache/mira-update/mira-0.4.0-dev.apk', release.sha256),
     ).rejects.toMatchObject({ code: 'UPDATE_DIGEST_MISMATCH' });
+  });
+});
+
+describe('installer failure notifications', () => {
+  it('accepts only bounded session-correlated failure events', () => {
+    const handler = jest.fn();
+    const subscription = observeUpdateInstallFailures(handler);
+    emitProgress({ sessionId: 42, message: '安装失败' });
+    expect(handler).not.toHaveBeenCalled();
+    (mockListeners.get('MiraAppUpdateInstallFailure') ?? []).forEach((fn) =>
+      fn({ sessionId: 42, message: '安装失败' }),
+    );
+    expect(handler).toHaveBeenCalledWith({ sessionId: 42, message: '安装失败' });
+    (mockListeners.get('MiraAppUpdateInstallFailure') ?? []).forEach((fn) => {
+      fn({ sessionId: '42', message: 'not valid' });
+      fn({ sessionId: 41, message: '' });
+      fn({ sessionId: 43, message: 'x'.repeat(121) });
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+    subscription.remove();
   });
 });
 

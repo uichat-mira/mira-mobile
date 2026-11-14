@@ -311,7 +311,36 @@ const createHeaders = (input: {
   return headers;
 };
 
-const buildSocketUrl = (relay: RemoteRelayEndpoint) => {
+export interface RelayTransportTarget {
+  endpoint: string;
+  relayId: string;
+}
+
+/**
+ * Admission is the only part of the Relay transport that differs between the
+ * Legacy pairing token and the Cloud transport ticket. The frame engine below
+ * must never see a business credential.
+ */
+export interface RelayAdmission {
+  createHello(
+    target: RelayTransportTarget,
+  ): Record<string, unknown> | Promise<Record<string, unknown>>;
+  mapAdmissionErrorCode(code: string): string;
+}
+
+export const legacyRelayAdmission = (token: string): RelayAdmission => ({
+  createHello: target => ({
+    role: 'client',
+    relayId: target.relayId,
+    token,
+  }),
+  mapAdmissionErrorCode: code => `RELAY_${code}`,
+});
+
+const isPromiseLike = <T>(value: T | Promise<T>): value is Promise<T> =>
+  typeof (value as Promise<T> | null)?.then === 'function';
+
+const buildSocketUrl = (relay: RelayTransportTarget) => {
   const baseUrl = normalizeRelayEndpoint(relay.endpoint).replace(
     /^https:/u,
     'wss:',
@@ -396,17 +425,21 @@ type SsePending<T> = {
 
 type PendingRequest = JsonPending<unknown> | SsePending<unknown>;
 
-class RelayConnection {
+export class RelayConnection {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private resolveConnect: (() => void) | null = null;
   private rejectConnect: ((error: unknown) => void) | null = null;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private socketOpenTimer: ReturnType<typeof setTimeout> | null = null;
+  private authenticated = false;
+  private helloSent = false;
   private readonly pending = new Map<string, PendingRequest>();
   private sequence = 0;
 
   constructor(
-    private readonly relay: RemoteRelayEndpoint,
+    private readonly relay: RelayTransportTarget,
+    private readonly admission: RelayAdmission,
     private readonly onClose?: () => void,
   ) {}
 
@@ -550,11 +583,17 @@ class RelayConnection {
   }
 
   close() {
-    this.failAll(
-      new RemoteHostError('RELAY_DISCONNECTED', 'Mira Relay connection closed'),
+    const closed = new RemoteHostError(
+      'RELAY_DISCONNECTED', 'Mira Relay connection closed',
     );
+    // Closing an unauthenticated socket must also reject callers awaiting the
+    // async Client ticket/hello (the pending request map is not populated yet).
+    if (this.connectPromise) this.finishConnectFailure(closed);
+    this.failAll(closed);
     const socket = this.socket;
     this.socket = null;
+    this.authenticated = false;
+    this.helloSent = false;
     this.connectPromise = null;
     this.stopHandshakeTimer();
     try {
@@ -566,8 +605,17 @@ class RelayConnection {
   }
 
   private ensureConnected(): Promise<void> {
-    if (this.socket?.readyState === 1) return Promise.resolve();
+    // A WebSocket can be OPEN while a fresh Cloud ticket is still pending or
+    // while Relay hello_ack has not arrived. Never send business frames then.
     if (this.connectPromise) return this.connectPromise;
+    if (this.socket?.readyState === 1 && this.authenticated) return Promise.resolve();
+    if (this.socket) {
+      const stale = this.socket;
+      this.socket = null;
+      this.authenticated = false;
+      this.helloSent = false;
+      try { stale.close(1008, 'Relay not authenticated'); } catch { /* closed */ }
+    }
 
     const connectPromise = new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;
@@ -590,30 +638,22 @@ class RelayConnection {
       return connectPromise;
     }
     this.socket = socket;
+    this.authenticated = false;
+    this.helloSent = false;
+    // Distinct socket-open timeout: DNS/TLS failures must not hang forever.
+    this.socketOpenTimer = setTimeout(() => {
+      if (this.socket === socket && this.connectPromise) {
+        this.failAdmission(socket, new RemoteHostError(
+          'RELAY_CONNECT_TIMEOUT', 'Mira Relay connection timed out'));
+      }
+    }, HANDSHAKE_TIMEOUT_MS);
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.send({
-        version: 1,
-        type: 'hello',
-        role: 'client',
-        relayId: this.relay.relayId,
-        token: this.relay.token,
-      });
-      this.handshakeTimer = setTimeout(() => {
-        if (this.socket !== socket || !this.connectPromise) return;
-        this.finishConnectFailure(
-          new RemoteHostError(
-            'RELAY_HANDSHAKE_TIMEOUT',
-            'Mira Relay handshake timed out',
-          ),
-        );
-        try {
-          socket.close(1008, 'Relay handshake timeout');
-        } catch {
-          // Socket may already be closed.
-        }
-      }, HANDSHAKE_TIMEOUT_MS);
+      this.stopSocketOpenTimer();
+      // Ticket acquisition has an independent HTTP budget; start hello/ack
+      // timeout only after sending hello.
+      void this.openAdmission(socket);
     };
 
     socket.onmessage = event => {
@@ -635,7 +675,24 @@ class RelayConnection {
         return;
       }
       const record = raw as Record<string, unknown>;
+      if (
+        record.type === 'error' &&
+        this.connectPromise &&
+        typeof record.code === 'string'
+      ) {
+        this.failAdmission(socket, this.admissionError(
+          record.code,
+          typeof record.message === 'string'
+            ? record.message
+            : 'Mira Relay rejected the connection',
+        ));
+        return;
+      }
       if (record.type === 'hello_ack') {
+        if (!this.connectPromise || !this.helloSent) {
+          this.failProtocol('Mira Relay acknowledged an unsent hello');
+          return;
+        }
         if (
           record.version !== 1 ||
           record.role !== 'client' ||
@@ -646,6 +703,7 @@ class RelayConnection {
           return;
         }
         this.stopHandshakeTimer();
+        this.authenticated = true;
         const resolve = this.resolveConnect;
         this.resolveConnect = null;
         this.rejectConnect = null;
@@ -664,19 +722,15 @@ class RelayConnection {
 
     socket.onerror = () => {
       if (this.socket !== socket) return;
-      if (this.connectPromise) {
-        this.finishConnectFailure(
-          new RemoteHostError(
-            'RELAY_NETWORK_ERROR',
-            'Unable to reach Mira Relay',
-          ),
-        );
-      }
+      this.failAdmission(socket, new RemoteHostError(
+        'RELAY_NETWORK_ERROR', 'Unable to reach Mira Relay'));
     };
 
     socket.onclose = event => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.authenticated = false;
+      this.helloSent = false;
       this.stopHandshakeTimer();
       const reason = event.reason || 'Mira Relay connection closed';
       if (this.connectPromise) {
@@ -688,6 +742,75 @@ class RelayConnection {
     };
 
     return connectPromise;
+  }
+
+  private openAdmission(socket: WebSocket) {
+    let pendingHello: Record<string, unknown> | Promise<Record<string, unknown>>;
+    try {
+      pendingHello = this.admission.createHello(this.relay);
+    } catch (error) {
+      this.failAdmission(socket, error);
+      return;
+    }
+    if (isPromiseLike(pendingHello)) {
+      void pendingHello.then(
+        hello => this.sendAdmissionHello(socket, hello),
+        error => this.failAdmission(socket, error),
+      );
+      return;
+    }
+    this.sendAdmissionHello(socket, pendingHello);
+  }
+
+  private sendAdmissionHello(
+    socket: WebSocket,
+    hello: Record<string, unknown>,
+  ) {
+    if (this.socket !== socket || socket.readyState !== 1 ||
+        !this.connectPromise) return;
+    this.handshakeTimer = setTimeout(() => {
+      if (this.socket !== socket || !this.connectPromise) return;
+      this.finishConnectFailure(
+        new RemoteHostError(
+          'RELAY_HANDSHAKE_TIMEOUT', 'Mira Relay handshake timed out',
+        ),
+      );
+      try {
+        socket.close(1008, 'Relay handshake timeout');
+      } catch {
+        // Socket may already be closed.
+      }
+    }, HANDSHAKE_TIMEOUT_MS);
+    if (!this.send({ version: 1, type: 'hello', ...hello })) {
+      this.failAdmission(socket, new RemoteHostError(
+        'RELAY_DISCONNECTED', 'Mira Relay is not connected'));
+      return;
+    }
+    this.helloSent = true;
+  }
+
+  private failAdmission(socket: WebSocket, error: unknown) {
+    if (this.socket !== socket) return;
+    this.socket = null;
+    this.authenticated = false;
+    this.helloSent = false;
+    if (this.connectPromise) this.finishConnectFailure(error);
+    else this.stopHandshakeTimer();
+    this.failAll(error);
+    try {
+      socket.close(1008, 'Relay admission unavailable');
+    } catch {
+      // Socket may already be closed.
+    }
+  }
+
+  private admissionError(code: string, message: string) {
+    return new RemoteHostError(
+      this.admission.mapAdmissionErrorCode(code),
+      message,
+      undefined,
+      { relayCode: code },
+    );
   }
 
   private handleFrame(frame: RelayInboundFrame) {
@@ -905,13 +1028,8 @@ class RelayConnection {
 
   private failProtocol(message: string) {
     const error = new RemoteHostError('RELAY_PROTOCOL_ERROR', message);
-    if (this.connectPromise) this.finishConnectFailure(error);
-    this.failAll(error);
-    try {
-      this.socket?.close(1002, message.slice(0, 100));
-    } catch {
-      // Socket may already be closed.
-    }
+    const socket = this.socket;
+    if (socket) this.failAdmission(socket, error);
   }
 
   private finishConnectFailure(error: unknown) {
@@ -923,7 +1041,13 @@ class RelayConnection {
     reject?.(error);
   }
 
+  private stopSocketOpenTimer() {
+    if (this.socketOpenTimer) clearTimeout(this.socketOpenTimer);
+    this.socketOpenTimer = null;
+  }
+
   private stopHandshakeTimer() {
+    this.stopSocketOpenTimer();
     if (!this.handshakeTimer) return;
     clearTimeout(this.handshakeTimer);
     this.handshakeTimer = null;
@@ -944,9 +1068,13 @@ const connectionFor = (relay: RemoteRelayEndpoint) => {
   const key = `${relay.endpoint}\n${relay.relayId}\n${relay.token}`;
   let connection = connections.get(key);
   if (!connection) {
-    connection = new RelayConnection(relay, () => {
-      connections.delete(key);
-    });
+    connection = new RelayConnection(
+      relay,
+      legacyRelayAdmission(relay.token),
+      () => {
+        connections.delete(key);
+      },
+    );
     connections.set(key, connection);
   }
   return connection;

@@ -78,24 +78,21 @@ function StatusBarThemed() {
 function AppInner() {
   const bootstrap = useAppBootstrap();
   const bootstrapChecked = bootstrap !== null;
-  const hasDeviceCredential = bootstrap?.hasDeviceCredential ?? false;
   const restoreTarget = bootstrap?.restoreTarget ?? null;
   const startupRestoreHandled = useRef(false);
 
   useAppLifecycle();
   useCloudAccountBootstrap();
 
-  // SessionList remains the stack root for an authenticated launch. A valid
-  // restore target is consumed exactly once from SessionList's first focus and
-  // pushed with the same Chat navigation contract as a normal list selection.
-  // This preserves #206's restore intent without making Chat an unreturnable root.
+  // SessionList is always the root, even without paired Desktop credentials.
+  // A last-opened Chat is pushed above it so Back reaches sessions/Settings.
   if (!bootstrapChecked) return null;
 
   return (
     <>
       <TailscaleConnectivityLifecycle />
       <Stack.Navigator
-        initialRouteName={hasDeviceCredential ? 'SessionList' : 'Bootstrap'}
+        initialRouteName="SessionList"
         screenOptions={{ headerShown: false }}
       >
         <Stack.Screen name="Bootstrap" component={BootstrapScreen} />

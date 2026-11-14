@@ -45,10 +45,28 @@ interface CloudAccountStore {
 let initialization: Promise<void> | null = null;
 
 // A newer Cloud account intent owns the visible result. Old async reads may
-// complete later, but must never overwrite a login, logout or revoke.
+// still complete later, but they must never overwrite a login, logout, revoke
+// or refresh that started after them.
 let lifecycleVersion = 0;
 const nextLifecycle = () => ++lifecycleVersion;
 const ownsLifecycle = (version: number) => version === lifecycleVersion;
+
+// A superseded cold-start restore can still describe real saved authority: the
+// store keeps the newer intent's state, but the secure record was valid. Without
+// remembering it, an already-authenticated user sees a failed login when an
+// OAuth callback races the initial restore. The stored version makes the record
+// usable only by the intent that actually superseded it.
+let supersededColdStartRestore: {
+  state: CloudAuthSessionState;
+  supersededBy: number;
+} | null = null;
+
+const beginIntent = (): number => {
+  // A newer intent knows nothing about an older restore or callback, so the
+  // recovery record must not survive into it.
+  supersededColdStartRestore = null;
+  return nextLifecycle();
+};
 
 const unavailableMessage =
   'Mira Cloud 暂时不可用。本地模型和 Tailscale 直连不受影响。';
@@ -147,6 +165,9 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           if (ownsLifecycle(version)) {
             set({ ...resultStatus(state), ...deviceReset(), initialized: true });
           } else {
+            // The store keeps the newer intent's state, but this result still
+            // reflects the real secure record. Keep it for callback recovery.
+            supersededColdStartRestore = { state, supersededBy: lifecycleVersion };
             set({ initialized: true });
           }
         } catch {
@@ -176,11 +197,18 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       const state = await cloudAuthService.restoreSession();
       if (!ownsLifecycle(version)) return;
       const next = resultStatus(state);
+      // A storage failure can leave Cloud unavailable with no account identity.
+      // Never preserve an old account's devices or loading state across that
+      // unknown-identity transition (or a different account).
+      const priorAccountId = get().account?.id;
+      const sameAccount =
+        (state.status === 'signed_in' ||
+          state.status === 'cloud_unavailable') &&
+        state.account !== null &&
+        state.account.id === priorAccountId;
       set({
         ...next,
-        ...(keepsAccountDevices(state) && get().account?.id === next.account?.id
-          ? {}
-          : deviceReset()),
+        ...(keepsAccountDevices(state) && sameAccount ? {} : deviceReset()),
       });
     } catch {
       if (!ownsLifecycle(version)) return;
@@ -197,7 +225,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   signIn: async () => {
     if (get().busy) return;
-    const version = nextLifecycle();
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       await cloudAuthService.beginSignIn();
@@ -220,12 +248,13 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       }
       return;
     }
+    if (!ownsLifecycle(version)) return;
     set({ busy: false });
   },
 
   cancelSignIn: async () => {
     if (get().busy) return;
-    const version = nextLifecycle();
+    const version = beginIntent();
     set({ busy: true });
     try {
       await cloudAuthService.cancelPendingSignIn();
@@ -263,7 +292,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
   },
 
   completeSignIn: async (params: OAuthCallbackParams) => {
-    const version = nextLifecycle();
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       const state = await cloudAuthService.completeSignIn(params);
@@ -277,12 +306,25 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       if (!ownsLifecycle(version)) return get().status;
       const current = get();
       const failure = failureStatus(error, current.account);
-      if (current.account && current.status === 'authorizing') {
+      if (
+        !current.account &&
+        supersededColdStartRestore?.supersededBy === version
+      ) {
+        // The cold-start restore was valid but lost the race to this callback.
+        // Report the saved session instead of a sign-out that never happened.
+        const { state: saved } = supersededColdStartRestore;
+        supersededColdStartRestore = null;
+        set({
+          ...resultStatus(saved),
+          ...(keepsAccountDevices(saved) ? {} : deviceReset()),
+          message: failure.message,
+          busy: false,
+        });
+      } else if (current.account && current.status === 'authorizing') {
         // Re-login may have started from an existing/offline Cloud session.
         // Re-check the secure record instead of presenting a false sign-out.
         try {
           const previous = await cloudAuthService.restoreSession();
-          if (!ownsLifecycle(version)) return get().status;
           set({
             ...resultStatus(previous),
             ...(keepsAccountDevices(previous) ? {} : deviceReset()),
@@ -290,7 +332,6 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
             busy: false,
           });
         } catch {
-          if (!ownsLifecycle(version)) return get().status;
           set({
             status: 'cloud_unavailable',
             message: failure.message,
@@ -325,7 +366,35 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     set({ devicesStatus: 'loading', devicesMessage: null });
     try {
       const result = await cloudAuthService.listDevices();
-      if (!ownsLifecycle(version) || get().account?.id !== current.account?.id) {
+      // A superseded load still owns the loader it set. Leaving it behind wedges
+      // the device section on a permanent spinner because loadDevices refuses to
+      // run again while devicesStatus is 'loading'.
+      if (!ownsLifecycle(version)) {
+        if (get().devicesStatus === 'loading') {
+          set({ devicesStatus: 'unavailable', devicesMessage: deviceListFailureMessage });
+        }
+        return;
+      }
+      // The request may finish after logout, revoke, or a different login.
+      // Its result belongs only to the account that initiated this load.
+      const latest = get();
+      if (latest.account?.id !== current.account.id) {
+        // A null identity must not retain the previous account's loader.
+        // A different signed-in account may have its own active request.
+        if (!latest.account && latest.devicesStatus === 'loading') {
+          set(deviceReset());
+        }
+        return;
+      }
+      if (latest.status !== 'signed_in') {
+        // Same account, but refresh has moved it offline/authorizing. Never
+        // publish the stale list, and do not strand the retry state on loading.
+        if (latest.devicesStatus === 'loading') {
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: deviceListFailureMessage,
+          });
+        }
         return;
       }
       switch (result.status) {
@@ -361,13 +430,17 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           });
       }
     } catch {
-      if (!ownsLifecycle(version) || get().account?.id !== current.account?.id) {
-        return;
+      const latest = get();
+      if (latest.devicesStatus === 'loading') {
+        if (!latest.account) {
+          set(deviceReset());
+        } else if (latest.account.id === current.account.id) {
+          set({
+            devicesStatus: 'unavailable',
+            devicesMessage: deviceListFailureMessage,
+          });
+        }
       }
-      set({
-        devicesStatus: 'unavailable',
-        devicesMessage: deviceListFailureMessage,
-      });
     }
   },
 
@@ -376,11 +449,19 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     if (!current.account || current.revokingDeviceId !== null || current.busy) {
       return;
     }
-    const version = nextLifecycle();
+    const version = beginIntent();
     set({ revokingDeviceId: deviceId, devicesMessage: null, message: null });
     try {
       const result = await cloudAuthService.revokeDevice(deviceId);
-      if (!ownsLifecycle(version)) return;
+      if (!ownsLifecycle(version)) {
+        // The superseding intent may have preserved this account's devices, so
+        // nothing else will clear the marker. Leaving it set disables every
+        // revoke button and short-circuits refresh/loadDevices indefinitely.
+        if (get().revokingDeviceId === deviceId) {
+          set({ revokingDeviceId: null });
+        }
+        return;
+      }
       switch (result.status) {
         case 'signed_out':
           // There was no stored Cloud credential, so the service never sent
@@ -451,9 +532,11 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         revokingDeviceId: null,
       });
     } catch {
+      if (get().revokingDeviceId === deviceId) {
+        set({ revokingDeviceId: null });
+      }
       if (!ownsLifecycle(version)) return;
       set({
-        revokingDeviceId: null,
         devicesMessage: '设备撤销结果未确认，请稍后重试。',
       });
     }
@@ -461,7 +544,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
 
   signOut: async () => {
     if (get().busy) return;
-    const version = nextLifecycle();
+    const version = beginIntent();
     set({ busy: true, message: null });
     try {
       const result = await cloudAuthService.logout();

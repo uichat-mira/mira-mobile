@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -14,6 +15,8 @@ import {
 } from '../settings/SettingsComponents';
 import {
   DEFAULT_GENERAL_SETTINGS,
+  HAPTICS_STRENGTH_MAX,
+  HAPTICS_STRENGTH_MIN,
   loadGeneralSettings,
   saveGeneralSettings,
   type DefaultSessionSource,
@@ -220,7 +223,7 @@ export function GeneralSettingsScreen() {
           <View style={styles.flex}>
             <Text style={[styles.title, { color: colors.text.ink }]}>触感反馈</Text>
             <Text style={[styles.subtitle, { color: colors.text.muted }]}>
-              收到新的 AI 回复时轻微振动
+              发送消息、收到 AI 回复时的振动
             </Text>
           </View>
           <Switch
@@ -230,6 +233,37 @@ export function GeneralSettingsScreen() {
             trackColor={{ false: colors.border.default, true: colors.primary }}
             thumbColor={colors.bg.elevated}
           />
+        </View>
+        <View
+          style={[
+            styles.strengthRow,
+            { backgroundColor: colors.bg.card, opacity: settings.hapticsEnabled ? 1 : 0.5 },
+          ]}
+        >
+          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>振动强度</Text>
+          <Slider
+            style={styles.strengthSlider}
+            minimumValue={HAPTICS_STRENGTH_MIN}
+            maximumValue={HAPTICS_STRENGTH_MAX}
+            step={1}
+            value={settings.hapticsStrength}
+            minimumTrackTintColor={colors.primary}
+            maximumTrackTintColor={colors.border.default}
+            thumbTintColor={colors.primary}
+            disabled={loadFailed || saving || !settings.hapticsEnabled}
+            onValueChange={(value) => {
+              // Live-update state so the slider thumb follows the finger
+              // smoothly. Persistence is debounced until the user releases,
+              // otherwise every drag frame would hit storage.
+              setSettings((current) => ({ ...current, hapticsStrength: Math.round(value) }));
+            }}
+            onSlidingComplete={(value) => {
+              applySettings({ ...settings, hapticsStrength: Math.round(value) });
+            }}
+          />
+          <Text style={[styles.strengthValue, { color: colors.text.muted }]}>
+            {settings.hapticsStrength}
+          </Text>
         </View>
         <Pressable
           onPress={toggleVibrationTest}
@@ -317,6 +351,16 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   testButtonText: { fontSize: fontSize.button, fontWeight: '600' },
+  strengthRow: {
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+    gap: spacing.xs,
+  },
+  strengthLabel: { fontSize: fontSize.button, fontWeight: '500' },
+  strengthSlider: { width: '100%', height: 40 },
+  strengthValue: { fontSize: fontSize.button, textAlign: 'right' },
   loadErrorBox: {
     borderRadius: radius.lg,
     padding: spacing.lg,

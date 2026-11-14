@@ -17,7 +17,6 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
-import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import {
   useCloudAccountStore,
   type CloudAccountStatus,
@@ -53,23 +52,24 @@ export function CloudAuthCallbackScreen() {
   }, [code, completeSignIn, error, state]);
 
   const succeeded = result === 'signed_in' && !message;
+  const detailMarker = '\n错误详情：';
+  const detailAt = message?.indexOf(detailMarker) ?? -1;
+  const summary = detailAt >= 0 ? message?.slice(0, detailAt) : message;
+  const diagnosticDetail = detailAt >= 0 ? message?.slice(detailAt + detailMarker.length) : null;
 
-  const returnToAccount = async () => {
+  const returnToAccount = () => {
     const routes = navigation.getState().routes;
-    if (routes.some(item => item.name === 'CloudAccount')) {
+    // An existing CloudAccount route is only safe when SessionList is below
+    // it. A cold or Bootstrap-only callback needs a usable root.
+    if (routes.some(item => item.name === 'SessionList') &&
+        routes.some(item => item.name === 'CloudAccount')) {
       navigation.popTo('CloudAccount');
       return;
     }
 
-    // A cold OAuth deep link can have only the callback in history. Restore
-    // a usable entry route so Back still reaches Local Provider/Host choices.
-    const hasRemoteCredential = routes.some(item => item.name === 'SessionList')
-      ? true
-      : await deviceCredentialStore.load().then(Boolean).catch(() => false);
-    const root = hasRemoteCredential ? 'SessionList' : 'Bootstrap';
     navigation.reset({
       index: 1,
-      routes: [{ name: root }, { name: 'CloudAccount' }],
+      routes: [{ name: 'SessionList' }, { name: 'CloudAccount' }],
     });
   };
 
@@ -114,8 +114,18 @@ export function CloudAuthCallbackScreen() {
               未完成 Mira Cloud 登录
             </Text>
             <Text style={[styles.description, { color: colors.text.soft }]}>
-              {message ?? '登录回调未通过校验，请重新发起登录。'}
+              {summary ?? '登录回调未通过校验，请重新发起登录。'}
             </Text>
+            {diagnosticDetail ? (
+              <View style={[styles.diagnostic, { backgroundColor: colors.bg.card }]}>
+                <Text style={[styles.diagnosticLabel, { color: colors.text.soft }]}>
+                  错误详情（可截图）
+                </Text>
+                <Text selectable style={[styles.diagnosticText, { color: colors.text.ink }]}>
+                  {diagnosticDetail}
+                </Text>
+              </View>
+            ) : null}
           </>
         )}
 
@@ -166,6 +176,14 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlign: 'center',
   },
+  diagnostic: {
+    alignSelf: 'stretch',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
+  diagnosticLabel: { fontSize: fontSize.bodyMd },
+  diagnosticText: { fontSize: fontSize.bodyMd, lineHeight: 22 },
   button: {
     marginTop: spacing.lg,
     minHeight: sizing.touchTarget,

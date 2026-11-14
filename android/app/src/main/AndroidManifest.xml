@@ -36,15 +36,11 @@
           android:name="android.support.FILE_PROVIDER_PATHS"
           android:resource="@xml/mira_share_paths" />
       </provider>
-      <provider
-        android:name="androidx.core.content.FileProvider"
-        android:authorities="${applicationId}.mira.update"
-        android:exported="false"
-        android:grantUriPermissions="true">
-        <meta-data
-          android:name="android.support.FILE_PROVIDER_PATHS"
-          android:resource="@xml/mira_update_paths" />
-      </provider>
+      <!-- PackageInstaller result callbacks are delivered through a private
+           explicit PendingIntent. No APK file URIs leave this app. -->
+      <receiver
+        android:name=".MiraUpdateInstallReceiver"
+        android:exported="false" />
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"

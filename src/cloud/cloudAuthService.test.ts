@@ -163,6 +163,67 @@ describe('Mira Cloud OAuth service', () => {
     expect(harness.pendingStore.peek()).toBeNull();
   });
 
+  it('shows only bounded dev transport evidence and never native exception details', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'network',
+        'sensitive native transport exception',
+        'MOB081_FETCH_HEALTH_NETWORK',
+      ),
+    );
+
+    await expect(
+      harness.service.completeSignIn({ code, state: pending.state }),
+    ).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_NETWORK',
+      message: expect.stringContaining('MOB081_FETCH_HEALTH_NETWORK'),
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.pendingStore.peek()).toBeNull();
+  });
+
+  it('surfaces a safe native error detail but not arbitrary exception content', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw code_verifier=secret',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET)',
+      ),
+    );
+    await expect(harness.service.completeSignIn({ code, state: pending.state }))
+      .rejects.toMatchObject({
+        message: expect.stringContaining('错误详情：Android OkHttp: NETWORK SocketException (CONNECTION_RESET)'),
+      });
+
+    await harness.service.beginSignIn();
+    const next = harness.pendingStore.peek();
+    if (!next) throw new Error('Expected another OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw error',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET) code_verifier=private',
+      ),
+    );
+    try {
+      await harness.service.completeSignIn({ code, state: next.state });
+      throw new Error('Expected network failure');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).not.toContain('code_verifier');
+      expect(message).not.toContain('错误详情：');
+    }
+  });
+
   it('rejects a mismatched state before redeeming the code', async () => {
     const harness = createHarness();
     await harness.service.beginSignIn();
@@ -720,6 +781,59 @@ describe('Mira Cloud device service', () => {
       harness.service.revokeDevice(revokedDevice.id),
     ).resolves.toMatchObject({ status: 'rejected' });
     expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('serializes logout before a later revoke and does not send DELETE with a cleared token', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const installationId = harness.installationStore.peek()?.installationId;
+    expect(installationId).toBeDefined();
+    await harness.sessionStore.save(storedSession());
+    let releaseLogout!: () => void;
+    let logoutStarted!: () => void;
+    const started = new Promise<void>(resolve => { logoutStarted = resolve; });
+    (harness.api.logout as jest.Mock).mockImplementationOnce(
+      () => new Promise<void>(resolve => {
+        releaseLogout = resolve;
+        logoutStarted();
+      }),
+    );
+
+    const logout = harness.service.logout();
+    await started;
+    const revoke = harness.service.revokeDevice(device.id);
+    releaseLogout();
+
+    await expect(logout).resolves.toMatchObject({
+      remote: 'revoked', cleared: true,
+    });
+    await expect(revoke).resolves.toEqual({ status: 'signed_out' });
+    expect(harness.api.revokeDevice).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(
+      installationId,
+    );
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+  });
+
+  it('keeps the installation identity when this device is revoked', async () => {
+    const harness = createHarness();
+    const id = await harness.service.beginSignIn().then(
+      () => harness.installationStore.peek()?.installationId,
+    );
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Session revoked'),
+    );
+
+    await expect(harness.service.revokeDevice(device.id)).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(id);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
   });
 
   it('runs a fresh authoritative session check after revoke instead of reusing a pre-revoke restore', async () => {

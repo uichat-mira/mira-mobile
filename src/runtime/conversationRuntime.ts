@@ -45,7 +45,10 @@ export type RuntimeEvent =
    * channel is unreachable; the UI must surface it so the skipped tooling is
    * never hidden from the user.
    */
-  | { type: 'notice'; code: 'tool-channel-unavailable' }
+  | {
+      type: 'notice';
+      code: 'tool-channel-unavailable' | 'toolset-degraded';
+    }
   | { type: 'error'; message: string };
 
 export interface ConversationRuntime {
