@@ -5,6 +5,7 @@ import {
   ToolGatewayError,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  type ToolDiscoveryNotice,
   type ToolGatewayClient,
   type ToolManifest,
 } from '../tools/toolGatewayClient';
@@ -41,6 +42,10 @@ export type AgentModelCall = (
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
 
+const isDegradableToolChannelError = (error: unknown): boolean =>
+  error instanceof ToolGatewayError &&
+  error.code === 'TOOL_CHANNEL_UNAVAILABLE';
+
 const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
   function: {
@@ -61,13 +66,25 @@ export class MobileAgentLoop {
     let manifests: readonly ToolManifest[];
     let tools: OpenAiTool[];
     let toolChannelUnavailable = false;
+    let discoveryNotices: readonly ToolDiscoveryNotice[] = [];
     try {
-      manifests = await this.gateway.listTools();
+      if (this.gateway.discoverTools) {
+        const discovery = await this.gateway.discoverTools();
+        manifests = discovery.tools;
+        discoveryNotices = discovery.notices;
+      } else {
+        manifests = await this.gateway.listTools();
+      }
       tools = manifests.map(toOpenAiTool);
     } catch (error) {
+      // Only an absent/unreachable channel may degrade to a plain model round.
+      // A lost scope or a protocol defect must surface as the real failure so
+      // the user gets re-pair or bug-report guidance instead of a vague
+      // "temporarily unavailable" message.
       if (
         (options.onToolChannelUnavailable ?? 'fail') !==
-        'continue-without-tools'
+          'continue-without-tools' ||
+        !isDegradableToolChannelError(error)
       ) {
         throw error;
       }
@@ -92,6 +109,13 @@ export class MobileAgentLoop {
           type: 'notice' as const,
           code: 'tool-channel-unavailable' as const,
         };
+      } else {
+        // Partial availability (for example local-only tools while the Host is
+        // unreachable) is surfaced before the first model round so the turn is
+        // never presented as a complete Agent run.
+        for (const notice of discoveryNotices) {
+          yield { type: 'notice' as const, code: notice.code };
+        }
       }
       const messages = [...initialMessages];
       let rounds = 0;

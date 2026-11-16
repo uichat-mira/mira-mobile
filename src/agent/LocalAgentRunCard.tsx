@@ -37,6 +37,10 @@ export type LocalAgentPauseReason =
   | 'cancelled'
   | 'approval-rejected';
 
+export type LocalAgentNoticeCode =
+  | 'tool-channel-unavailable'
+  | 'toolset-degraded';
+
 export interface LocalAgentApprovalView {
   invocationId: string;
   callId: string;
@@ -51,6 +55,7 @@ interface Props {
   activities: readonly LocalAgentActivity[];
   approval: LocalAgentApprovalView | null;
   approvalAction: ToolApprovalDecision | null;
+  notice: LocalAgentNoticeCode | null;
   error: string | null;
   onApproval: (decision: ToolApprovalDecision) => void;
 }
@@ -84,6 +89,13 @@ const pauseLabel: Record<LocalAgentPauseReason, string> = {
   'approval-rejected': '该工具调用已拒绝，本轮已停止。',
 };
 
+const noticeLabel: Record<LocalAgentNoticeCode, string> = {
+  'tool-channel-unavailable':
+    '工具通道当前不可用，本次已按普通回答处理，未使用任何工具。',
+  'toolset-degraded':
+    'Host 工具暂时不可用，本轮只使用手机内置工具（如天气）。',
+};
+
 const preview = (value: string) => {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.length > 120 ? compact.slice(0, 117) + '…' : compact;
@@ -95,6 +107,7 @@ export function LocalAgentRunCard({
   activities,
   approval,
   approvalAction,
+  notice,
   error,
   onApproval,
 }: Props) {
@@ -107,6 +120,11 @@ export function LocalAgentRunCard({
   ) {
     return null;
   }
+
+  const phaseText =
+    phase === 'degraded' && notice === 'toolset-degraded'
+      ? '工具能力受限'
+      : phaseLabel[phase];
 
   return (
     <View
@@ -122,7 +140,7 @@ export function LocalAgentRunCard({
       <View style={styles.header}>
         <Text style={[styles.title, { color: colors.text.ink }]}>Agent</Text>
         <Text style={[styles.phase, { color: colors.text.muted }]}>
-          {phaseLabel[phase]}
+          {phaseText}
         </Text>
       </View>
 
@@ -211,9 +229,9 @@ export function LocalAgentRunCard({
         </View>
       ) : null}
 
-      {phase === 'degraded' ? (
+      {phase === 'degraded' && notice ? (
         <Text style={[styles.notice, { color: colors.text.muted }]}>
-          工具通道当前不可用，本次已按普通回答处理，未使用任何工具。
+          {noticeLabel[notice]}
         </Text>
       ) : null}
 

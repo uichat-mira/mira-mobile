@@ -165,6 +165,27 @@ describe('chatSessionState', () => {
     ).toContain('未能执行');
   });
 
+  it('localizes built-in weather tool failures and prefers the suggested action', () => {
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError('WEATHER_CITY_NOT_FOUND', 'city not found'),
+        'local-provider',
+      ),
+    ).toContain('没有找到这个城市');
+
+    expect(
+      getChatSendErrorMessage(
+        new ToolGatewayError(
+          'WEATHER_UPSTREAM_FAILED',
+          'upstream failed',
+          true,
+          '天气服务正在维护，请稍后再试',
+        ),
+        'local-provider',
+      ),
+    ).toBe('天气服务正在维护，请稍后再试');
+  });
+
   it('keeps an unrecognized local Host send failure code-free and user-appropriate', () => {
     const message = getChatSendErrorMessage(
       new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),
