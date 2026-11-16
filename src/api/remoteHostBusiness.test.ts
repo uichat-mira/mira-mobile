@@ -354,6 +354,29 @@ describe.each([
     expect(profile.sseRequests).toHaveLength(0);
   });
 
+  it('does not advertise or send Chat with read-only OR write-only grants', async () => {
+    for (const scopes of [
+      ['threads:read', 'messages:read'],
+      ['threads:read', 'messages:write'],
+    ] as const) {
+      const available = manifest();
+      profile.setManifest({
+        ...available,
+        device: { ...available.device, scopes: [...scopes] },
+      });
+      await expect(profile.client.sendMessage(sendInput())).rejects.toMatchObject({
+        code: profile.writeDeniedCode,
+      });
+    }
+    expect(profile.sseRequests).toHaveLength(0);
+    expect(profile.jsonRequests.some(
+      request => request.path === '/threads/' + thread.id + '/messages',
+    )).toBe(false);
+    profile.setManifest(manifest());
+    await expect(profile.client.sendMessage(sendInput())).resolves.toBeDefined();
+    expect(profile.sseRequests).toHaveLength(1);
+  });
+
   it('dispatches an uncertain create at most once and never replays it', async () => {
     profile.failCreate(profile.createUncertainError());
     await expect(profile.client.createThread('once')).rejects.toMatchObject({

@@ -125,6 +125,10 @@ export const remoteManifestSupportsThreadDelete = (
 export const remoteManifestSupportsChat = (
   manifest: RemoteManifest,
 ): boolean =>
+  // Current Host append contract reads canonical history to obtain its CAS
+  // cursor before sending. Unlike thread create/delete, this capability
+  // therefore requires BOTH independently granted message scopes.
+  manifest.device.scopes.includes('messages:read') &&
   manifest.device.scopes.includes('messages:write') &&
   manifest.routes.messages.includes(REMOTE_CHAT_ROUTE);
 

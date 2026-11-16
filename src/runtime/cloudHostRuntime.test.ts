@@ -82,11 +82,11 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     }));
   });
 
-  it('allows Agent private workspaces when Host grants messages:write and thread active', async () => {
+  it('allows Agent private workspaces only when Host grants read and write', async () => {
     const client = api();
     client.getManifest.mockResolvedValue({
       ...manifest,
-      device: { ...manifest.device, scopes: ['threads:read', 'messages:write'] },
+      device: { ...manifest.device, scopes: ['threads:read', 'messages:read', 'messages:write'] },
       routes: { ...manifest.routes, messages: ['POST /proxy/chat/default'] },
     });
     const runtime = new CloudHostRuntime(client as never);
@@ -98,6 +98,18 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     await expect(runtime.canSendMessage('remote-1')).resolves.toBe(true);
     expect(client.getThread).toHaveBeenCalledTimes(2);
     expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('never enables the composer for a write-only Cloud grant without history read', async () => {
+    const client = api();
+    client.getManifest.mockResolvedValue({
+      ...manifest,
+      device: { ...manifest.device, scopes: ['messages:write'] },
+      routes: { ...manifest.routes, messages: ['POST /proxy/chat/default'] },
+    });
+    const runtime = new CloudHostRuntime(client as never);
+    await expect(runtime.canSendMessage('remote-1')).resolves.toBe(false);
+    expect(client.getThread).not.toHaveBeenCalled();
   });
 
   it('refuses to send on a thread that is no longer active', async () => {
