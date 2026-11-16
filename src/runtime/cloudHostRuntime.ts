@@ -49,10 +49,13 @@ export class CloudHostRuntime implements ConversationRuntime {
       manifest.routes.threads.includes('DELETE /threads/:id');
   }
 
-  async canSendMessage(): Promise<boolean> {
+  async canSendMessage(sessionId?: string): Promise<boolean> {
+    if (!sessionId) return false;
     const manifest = await this.cloud.getManifest();
-    return manifest.device.scopes.includes('messages:write') &&
-      manifest.routes.messages.includes('POST /proxy/chat/default');
+    if (!manifest.device.scopes.includes('messages:write') ||
+        !manifest.routes.messages.includes('POST /proxy/chat/default')) return false;
+    const thread = await this.cloud.getThread(sessionId);
+    return !(thread.agentEnabled === true && !thread.workspaceId?.trim());
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -68,6 +71,11 @@ export class CloudHostRuntime implements ConversationRuntime {
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    const thread = await this.cloud.getThread(sessionId);
+    if (thread.agentEnabled === true && !thread.workspaceId?.trim()) {
+      throw new RemoteHostError('CLOUD_AGENT_WORKSPACE_REQUIRED',
+        'This legacy Agent thread is read-only without a Workspace', 403);
+    }
     const messageId = options?.messageId ?? createMessageId();
     const session = await this.cloud.sendMessage({
       threadId: sessionId,

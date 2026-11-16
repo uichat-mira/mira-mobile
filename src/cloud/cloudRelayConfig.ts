@@ -41,7 +41,7 @@ export const resolveCloudRelayBaseUrl = (
 };
 
 /**
- * Approved isolated Cloud-only Worker used for development pilot T4.
+ * Official shared Cloud-only Worker, verified by deployed module comparison and mobile 5G HTTPS.
  * Release-channel owned endpoint, not a per-user setting or Legacy Relay.
  * Other channels remain explicitly unconfigured until provisioned.
  */
@@ -49,5 +49,5 @@ export const officialCloudRelayEndpoint = (
   channel: 'predev' | 'dev' | 'test' | 'prod' = releaseChannel,
 ): string | null =>
   channel === 'dev'
-    ? 'https://uichat-mira-relay-cloud-rel005.dangjingtao.workers.dev'
+    ? 'https://cloud-relay.tomz.io'
     : null;
