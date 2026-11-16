@@ -25,6 +25,7 @@ jest.mock('../runtime/runtimeRegistry', () => ({
   runtimeRegistry: {
     listSessions: jest.fn(),
     deleteSession: jest.fn(),
+    cloud: { canDeleteSession: jest.fn(async () => false) },
   },
 }));
 
@@ -42,19 +43,30 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('../connectivity/ConnectionSourceDropdown', () => ({
   ConnectionSourceDropdown: ({
-    onChange,
+    onChange, options,
   }: {
-    onChange: (value: 'all' | 'remote-host' | 'local-provider') => void;
+    onChange: (value: 'all' | 'remote-host' | 'local-provider' | 'cloud-host') => void;
+    options: Array<{ value: string; disabled?: boolean }>;
   }) => {
-    const { Pressable, Text } = jest.requireActual('react-native');
+    const { Pressable, Text, View } = jest.requireActual('react-native');
     return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="切换到本地连接"
-        onPress={() => onChange('local-provider')}
-      >
-        <Text>切换到本地连接</Text>
-      </Pressable>
+      <View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="切换到本地连接"
+          onPress={() => onChange('local-provider')}
+        >
+          <Text>切换到本地连接</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="切换到 Mira Cloud"
+          disabled={options.find(option => option.value === 'cloud-host')?.disabled}
+          onPress={() => onChange('cloud-host')}
+        >
+          <Text>切换到 Mira Cloud</Text>
+        </Pressable>
+      </View>
     );
   },
 }));
@@ -224,6 +236,54 @@ describe('SessionListScreen session collection', () => {
     await act(async () => tree.unmount());
   });
 
+  it('selects an authenticated Cloud Host without using the paired Host route', async () => {
+    const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
+    const original = useCloudAccountStore.getState();
+    const { useNavigation } = jest.requireMock('@react-navigation/native');
+    const navigation = { navigate: jest.fn(), goBack: jest.fn() };
+    (useNavigation as jest.Mock).mockReturnValue(navigation);
+    runtimeRegistry.listSessions.mockImplementation(async (filter: string) =>
+      filter === 'cloud-host'
+        ? [{ id: 'desktop-cloud-thread', title: 'Mac 云端线程', source: 'cloud-host',
+          updatedAt: new Date('2026-11-16T02:00:00.000Z') }]
+        : []
+    );
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: { id: 'account-a', username: 'alice' },
+      initialized: true,
+    });
+
+    let tree!: ReactTestRenderer;
+    try {
+      tree = await renderScreen();
+      const picker = tree.root.findAll(
+        node => node.props.accessibilityLabel === '切换到 Mira Cloud',
+      )[0];
+      expect(picker.props.disabled).toBe(false);
+      await act(async () => {
+        picker.props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(runtimeRegistry.listSessions).toHaveBeenCalledWith('cloud-host');
+      expect(collectText(tree)).toContain('Mac 云端线程');
+      const row = tree.root.findAll(
+        node => node.props.accessibilityLabel === 'Mac 云端线程',
+      )[0];
+      await act(async () => row.props.onPress());
+      expect(navigation.navigate).toHaveBeenCalledWith('Chat', expect.objectContaining({
+        sessionId: 'desktop-cloud-thread',
+        source: 'cloud-host',
+        cloudAccountId: 'account-a',
+      }));
+    } finally {
+      if (tree) await act(async () => tree.unmount());
+      useCloudAccountStore.setState(original);
+    }
+  });
+
   it('does not keep previous-source rows visible while a filter reload is pending', async () => {
     let resolveLocal!: (value: unknown[]) => void;
     runtimeRegistry.listSessions.mockImplementation((filter: string) => {
@@ -287,7 +347,7 @@ describe('SessionListScreen session collection', () => {
     });
 
     const texts = collectText(tree);
-    expect(texts).toContain('连接不可用');
+    expect(texts).toContain('暂时无法连接 Mira Desktop');
     expect(texts).not.toContain('暂无会话');
     await act(async () => tree.unmount());
   });

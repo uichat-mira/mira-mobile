@@ -1,3 +1,5 @@
+import { releaseChannel } from 'mira-release-channel';
+
 /**
  * The hosted Cloud Relay is one Mira-operated, shared multi-account service.
  * This endpoint is platform-owned deployment configuration, never a field the
@@ -37,3 +39,15 @@ export const resolveCloudRelayBaseUrl = (
   }
   return normalizeCloudRelayBaseUrl(value);
 };
+
+/**
+ * Approved isolated Cloud-only Worker used for development pilot T4.
+ * Release-channel owned endpoint, not a per-user setting or Legacy Relay.
+ * Other channels remain explicitly unconfigured until provisioned.
+ */
+export const officialCloudRelayEndpoint = (
+  channel: 'predev' | 'dev' | 'test' | 'prod' = releaseChannel,
+): string | null =>
+  channel === 'dev'
+    ? 'https://uichat-mira-relay-cloud-rel005.dangjingtao.workers.dev'
+    : null;

@@ -37,7 +37,7 @@ const sanitizeThreadTitle = (title: string): string => {
   return stripped || '未命名会话';
 };
 
-const threadToSession = (thread: RemoteThread): Session => ({
+export const threadToSession = (thread: RemoteThread): Session => ({
   id: thread.id,
   title: sanitizeThreadTitle(thread.title),
   updatedAt: new Date(thread.updatedAt),
@@ -50,7 +50,7 @@ const threadToSession = (thread: RemoteThread): Session => ({
   messageCount: thread.messageCount,
 });
 
-const messageToChatMessage = (message: RemoteMessage): ChatMessage => ({
+export const messageToChatMessage = (message: RemoteMessage): ChatMessage => ({
   id: message.id,
   role:
     message.role === 'tool' || message.role === 'system'

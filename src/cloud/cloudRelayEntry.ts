@@ -4,7 +4,7 @@ import {
   type CloudDesktopHost,
   type CloudRelayApiLike,
 } from './cloudAuthApi';
-import { resolveCloudRelayBaseUrl } from './cloudRelayConfig';
+import { resolveCloudRelayBaseUrl, officialCloudRelayEndpoint } from './cloudRelayConfig';
 import {
   cloudSessionStore,
   type CloudSessionStore,
@@ -194,7 +194,8 @@ export class CloudRelayEntry {
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
     this.api = options.api ?? new CloudAuthApi();
-    this.relayEndpoint = options.relayEndpoint ?? null;
+    this.relayEndpoint = options.relayEndpoint === undefined
+      ? officialCloudRelayEndpoint() : options.relayEndpoint;
     this.now = options.now ?? (() => new Date());
   }
 

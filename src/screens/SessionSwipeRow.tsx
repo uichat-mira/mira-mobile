@@ -60,7 +60,9 @@ export function SessionSwipeRow({
     SWIPE_ACTION_GAP * Math.max(0, actionCount - 1);
   const belongsToWorkspace =
     typeof item.workspaceId === 'string' && item.workspaceId.trim().length > 0;
-  const preview = belongsToWorkspace
+  const preview = item.source === 'cloud-host'
+    ? 'Mira Cloud · 桌面会话'
+    : belongsToWorkspace
     ? `项目会话${roleName ? ` · ${roleName}` : ''}`
     : roleName
       ? `角色 · ${roleName}`

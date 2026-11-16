@@ -60,6 +60,31 @@ describe('RuntimeRegistry', () => {
     expect(remoteCalls).toBe(1);
   });
 
+  it('keeps the explicit Cloud Host source separate from paired Host and Local Provider', async () => {
+    const local = runtime('local-provider', []);
+    const paired = runtime('remote-host', []);
+    const cloud = runtime('remote-host', [
+      { ...session('cloud-thread', 'remote-host', '2026-11-16T00:00:00.000Z'), source: 'cloud-host' },
+    ]);
+    const cloudList = jest.spyOn(cloud, 'listSessions');
+    const cloudDelete = jest.spyOn(cloud, 'deleteSession');
+    const pairedList = jest.spyOn(paired, 'listSessions');
+    const registry = new RuntimeRegistry(local as never, paired as never, cloud as never);
+
+    await expect(registry.listSessions('cloud-host')).resolves.toMatchObject([
+      { id: 'cloud-thread', source: 'cloud-host' },
+    ]);
+    expect(cloudList).toHaveBeenCalledTimes(1);
+    expect(pairedList).not.toHaveBeenCalled();
+
+    await registry.deleteSession('cloud-thread', 'cloud-host');
+    expect(cloudDelete).toHaveBeenCalledWith('cloud-thread');
+    expect(registry.runtimeForSession('cloud-thread', 'cloud-host')).toBe(cloud);
+    await registry.listSessions('all');
+    expect(cloudList).toHaveBeenCalledTimes(1);
+    expect(pairedList).toHaveBeenCalledTimes(1);
+  });
+
   it('routes session deletion to the matching runtime only', async () => {
     const localDeletes: string[] = [];
     const remoteDeletes: string[] = [];
