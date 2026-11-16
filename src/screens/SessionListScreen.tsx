@@ -11,6 +11,7 @@ import { useThreadPinStore } from '../store/threadPinStore';
 import { isThreadPinned, sortSessionsByLocalPin } from '../store/threadPinning';
 import { useThreadReadStore } from '../store/threadReadStore';
 import { miraHostClient } from '../api/miraHostClient';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
@@ -32,6 +33,7 @@ const DRAWER_WIDTH = Math.floor(Dimensions.get('window').width * 0.82);
 const getEmptyDescription = (source: SessionSourceFilter): string => {
   if (source === 'local-provider') return '尚未创建本地连接会话';
   if (source === 'remote-host') return '远程连接当前没有可用会话';
+  if (source === 'cloud-host') return 'Mira Cloud 当前没有可用的桌面会话';
   return '远程连接与本地连接当前都没有会话';
 };
 
@@ -40,6 +42,8 @@ export function SessionListScreen() {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { colors } = useTheme();
   const { connectionStatus, config } = useHostStore();
+  const cloudStatus = useCloudAccountStore(state => state.status);
+  const cloudAccountId = useCloudAccountStore(state => state.account?.id);
   const roleNames = useRoleNameMap();
   const pinnedAtByThreadId = useThreadPinStore((state) => state.pinnedAtByThreadId);
   const hydratePins = useThreadPinStore((state) => state.hydrate);
@@ -51,6 +55,13 @@ export function SessionListScreen() {
   const clearThreadRead = useThreadReadStore((state) => state.clearThread);
   const insets = useSafeAreaInsets();
   const [sourceFilter, setSourceFilter] = useState<SessionSourceFilter>('all');
+  const previousCloudAccountIdRef = useRef(cloudAccountId);
+  React.useEffect(() => {
+    if (previousCloudAccountIdRef.current !== cloudAccountId) {
+      if (previousCloudAccountIdRef.current) setSourceFilter('all');
+      previousCloudAccountIdRef.current = cloudAccountId;
+    }
+  }, [cloudAccountId]);
   const [localConfigured, setLocalConfigured] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openSwipeRowId, setOpenSwipeRowId] = useState<string | null>(null);
@@ -85,7 +96,9 @@ export function SessionListScreen() {
     removeSession,
   } = useSessionCollection({
     listSessions: (filter) => runtimeRegistry.listSessions(filter),
-    canDeleteRemoteSessions: () => miraHostClient.canDeleteSession(),
+    canDeleteRemoteSessions: () => sourceFilter === 'cloud-host'
+      ? runtimeRegistry.cloud.canDeleteSession()
+      : miraHostClient.canDeleteSession(),
     syncUnreadSessions,
     hydrateLocalState,
     autoLoad: false,
@@ -104,15 +117,19 @@ export function SessionListScreen() {
   const sourceOptions: ConnectionSourceOption<SessionSourceFilter>[] = [
     { value: 'all', label: '全部任务', description: '同时显示远程和本地会话', status: localConfigured || !!config ? 'connected' : 'not-configured' },
     { value: 'remote-host', label: '远程连接', description: '来自已配对 Mira Host 的会话', status: remoteStatus, disabled: remoteStatus !== 'connected' && remoteStatus !== 'connecting' },
+    { value: 'cloud-host', label: 'Mira Cloud', description: '当前云账号的桌面 Host，会话经官方 Relay 读取', status: cloudStatus !== 'signed_in' ? 'not-configured' : sourceFilter === 'cloud-host' && !isLoading ? loadDiagnostic ? 'error' : 'connected' : 'connecting', disabled: cloudStatus !== 'signed_in' },
     { value: 'local-provider', label: '本地连接', description: '保存在当前设备的直连会话', status: localConfigured ? 'connected' : 'not-configured' },
   ];
 
   React.useEffect(() => {
     const remoteUnavailable = remoteStatus !== 'connected' && remoteStatus !== 'connecting';
+    if (sourceFilter === 'cloud-host' && cloudStatus !== 'signed_in') {
+      setSourceFilter('all');
+    }
     if (sourceFilter === 'remote-host' && remoteUnavailable) {
       setSourceFilter('all');
     }
-  }, [remoteStatus, sourceFilter]);
+  }, [cloudStatus, remoteStatus, sourceFilter]);
 
   const openDrawer = useCallback(() => {
     setDrawerOpen(true);
@@ -192,6 +209,7 @@ export function SessionListScreen() {
       sessionId: session.id,
       title: session.title,
       source: session.source,
+      ...(session.source === 'cloud-host' ? { cloudAccountId } : {}),
       providerName: session.providerName,
       providerModel: session.providerModel,
     });
@@ -308,7 +326,9 @@ export function SessionListScreen() {
               <SessionSwipeRow
                 item={item}
                 roleName={projection.roleName}
-                connectionStatus={connectionStatus}
+                connectionStatus={item.source === 'cloud-host'
+                  ? loadDiagnostic ? 'disconnected' : 'connected'
+                  : connectionStatus}
                 colors={colors}
                 isPinned={projection.pinned}
                 isUnread={projection.unread}
@@ -340,7 +360,7 @@ export function SessionListScreen() {
           }
 
           if (collectionState === 'error' && loadDiagnostic) {
-            return <View style={styles.emptyState}><Text style={[styles.emptyTitle, { color: colors.text.ink }]}>连接不可用</Text><Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>请在“连接”中检查远程连接状态</Text></View>;
+            return <View style={styles.emptyState}><Text style={[styles.emptyTitle, { color: colors.text.ink }]}>{loadDiagnostic.title}</Text><Text style={[styles.emptySubtitle, { color: colors.text.soft }]}>{loadDiagnostic.message}</Text></View>;
           }
 
           return (

@@ -39,6 +39,7 @@ import {
   type ConversationLifecycleEvent,
 } from '../chat/conversationOrchestration';
 import { miraHostClient } from '../api/miraHostClient';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { RemoteHostError } from '../api/remoteHttp';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
@@ -210,7 +211,9 @@ export function ChatScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId, title: routeTitle, source, providerName, providerModel } = route.params;
+  const { sessionId, title: routeTitle, source, providerName, providerModel, cloudAccountId } = route.params;
+  const activeCloudAccountId = useCloudAccountStore(state => state.account?.id);
+  const cloudAccountStatus = useCloudAccountStore(state => state.status);
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const markThreadRead = useThreadReadStore((state) => state.markThreadRead);
@@ -231,6 +234,7 @@ export function ChatScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [agentEnabled, setAgentEnabled] = useState(false);
+  const [cloudCanSend, setCloudCanSend] = useState(false);
   const [agentModeLoading, setAgentModeLoading] = useState(true);
   const [agentPhase, setAgentPhase] = useState<LocalAgentRunPhase>('idle');
   const [agentActivities, setAgentActivities] = useState<LocalAgentActivity[]>([]);
@@ -274,6 +278,11 @@ export function ChatScreen() {
     [sessionId, source],
   );
   const isLocalProvider = runtime.kind === 'local-provider';
+  const isCloudHost = source === 'cloud-host';
+  const cloudAuthorityActive = !isCloudHost || (
+    cloudAccountStatus === 'signed_in' &&
+    Boolean(cloudAccountId) && cloudAccountId === activeCloudAccountId
+  );
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
   const shareDisabled =
     isSharing || isLoading || isLoadingHistory || historyError !== null;
@@ -286,6 +295,23 @@ export function ChatScreen() {
         : historyError
           ? '分享会话，聊天记录重新加载后可用'
           : '分享会话';
+
+  useEffect(() => {
+    if (!isCloudHost) return;
+    if (!cloudAuthorityActive) {
+      runtime.cancelActiveRun();
+      setMessages([]);
+      setInputText('');
+      setCloudCanSend(false);
+      return;
+    }
+    let active = true;
+    setCloudCanSend(false);
+    void runtime.canSendMessage?.().then(allowed => {
+      if (active) setCloudCanSend(allowed);
+    }).catch(() => { if (active) setCloudCanSend(false); });
+    return () => { active = false; };
+  }, [cloudAuthorityActive, isCloudHost, runtime]);
 
   useEffect(() => {
     setIsSearchVisible(false);
@@ -304,12 +330,12 @@ export function ChatScreen() {
     // observation). Feeding the same observer here means a Remote Assistant
     // reply that lands while foregrounded triggers the identical reminder as a
     // Local one, without inventing a second trigger path.
-    if (isLocalProvider) return undefined;
+    if (isLocalProvider || isCloudHost) return undefined;
     return miraHostClient.subscribeMessageSnapshots((snapshot) => {
       if (snapshot.sessionId !== sessionId) return;
       assistantHapticsRef.current?.observe(snapshot.messages);
     });
-  }, [isLocalProvider, sessionId]);
+  }, [isCloudHost, isLocalProvider, sessionId]);
 
   useEffect(() => {
     let active = true;
@@ -380,18 +406,21 @@ export function ChatScreen() {
       }
       return;
     }
-    const canonicalTitle = await readCanonicalSessionTitle(
-      miraHostClient,
-      sessionId,
-    );
+    const canonicalTitle = isCloudHost
+      ? await readLocalSessionTitle(runtime, sessionId)
+      : await readCanonicalSessionTitle(miraHostClient, sessionId);
     if (canonicalTitle !== null) {
       setSessionTitle(canonicalTitle);
     }
-  }, [isLocalProvider, runtime, sessionId]);
+  }, [isCloudHost, isLocalProvider, runtime, sessionId]);
 
   const loadMessages = useCallback(async (): Promise<ChatMessage[] | null> => {
     setHistoryError(null);
     try {
+      if (!cloudAuthorityActive) {
+        throw new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED',
+          '当前云账号已发生变化，请重新选择会话');
+      }
       const canonicalMessages = await runtime.getMessages(sessionId);
       setMessages(canonicalMessages);
       assistantHapticsRef.current?.observe(canonicalMessages);
@@ -413,7 +442,7 @@ export function ChatScreen() {
       setHistoryError(getChatHistoryErrorMessage(error));
       return null;
     }
-  }, [clearThreadRead, markThreadRead, runtime, sessionId]);
+  }, [clearThreadRead, cloudAuthorityActive, markThreadRead, runtime, sessionId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -838,7 +867,7 @@ export function ChatScreen() {
               ) : (
                 <AssistantMarkdown content={item.content} />
               )}
-              <MessageAttachments threadId={sessionId} parts={item.parts} />
+              {!isCloudHost ? <MessageAttachments threadId={sessionId} parts={item.parts} /> : null}
             </View>
             {isFailed ? (
               <>
@@ -870,6 +899,7 @@ export function ChatScreen() {
       colors,
       failedMessages,
       handleRetry,
+      isCloudHost,
       searchFocusMessageId,
       sessionId,
       themedStyles,
@@ -1174,11 +1204,13 @@ export function ChatScreen() {
               style={[styles.input, { color: colors.text.ink }]}
               value={inputText}
               onChangeText={setInputText}
-              placeholder="给 Mira 发消息..."
+              placeholder={isCloudHost && !cloudCanSend
+                ? '当前 Cloud Host 仅支持读取会话' : '给 Mira 发消息...'}
               placeholderTextColor={colors.text.placeholder}
               multiline
               maxLength={500}
               editable={
+                cloudAuthorityActive && (!isCloudHost || cloudCanSend) &&
                 !isLoading && !(supportsLocalAgent && agentModeLoading)
               }
               blurOnSubmit={false}
@@ -1216,6 +1248,7 @@ export function ChatScreen() {
                       : colors.primary,
                   },
                   (!inputText.trim() ||
+                    (isCloudHost && !cloudCanSend) ||
                     (supportsLocalAgent && agentModeLoading)) && {
                     backgroundColor: colors.primaryDisabled,
                   },
@@ -1223,6 +1256,8 @@ export function ChatScreen() {
                 onPress={() => void sendMessage()}
                 disabled={
                   !inputText.trim() ||
+                  (isCloudHost && !cloudCanSend) ||
+                  !cloudAuthorityActive ||
                   (supportsLocalAgent && agentModeLoading)
                 }
               >
