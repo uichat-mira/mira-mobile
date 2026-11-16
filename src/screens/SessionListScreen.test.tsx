@@ -284,7 +284,7 @@ describe('SessionListScreen session collection', () => {
     }
   });
 
-  it('navigates a Workspace-less legacy Cloud Agent to read-only Chat', async () => {
+  it('opens a private Host Agent thread without imposing local read-only', async () => {
     const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
     const previous = useCloudAccountStore.getState();
     const { useNavigation } = jest.requireMock('@react-navigation/native');
@@ -318,7 +318,6 @@ describe('SessionListScreen session collection', () => {
       expect(navigation.navigate).toHaveBeenCalledWith('Chat', expect.objectContaining({
         sessionId: 'old-agent',
         source: 'cloud-host',
-        cloudLegacyAgentReadOnly: true,
       }));
     } finally {
       if (tree) await act(async () => tree.unmount());

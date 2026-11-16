@@ -19,6 +19,8 @@ const createMessageId = () =>
  */
 export class CloudHostRuntime implements ConversationRuntime {
   readonly kind = 'remote-host' as const;
+  // This describes Mobile's local Agent loop, not Host-owned Agent execution.
+  // The canonical Host thread may run Agent with an isolated private workspace.
   readonly supportsAgent = false;
   private currentAbort: (() => void) | null = null;
 
@@ -55,7 +57,9 @@ export class CloudHostRuntime implements ConversationRuntime {
     if (!manifest.device.scopes.includes('messages:write') ||
         !manifest.routes.messages.includes('POST /proxy/chat/default')) return false;
     const thread = await this.cloud.getThread(sessionId);
-    return !(thread.agentEnabled === true && !thread.workspaceId?.trim());
+    // Workspace id can be null for a valid Host-owned private Agent workspace.
+    // Host authorizes and provisions the effective root at invocation time.
+    return thread.status === 'active';
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -72,17 +76,22 @@ export class CloudHostRuntime implements ConversationRuntime {
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const thread = await this.cloud.getThread(sessionId);
-    if (thread.agentEnabled === true && !thread.workspaceId?.trim()) {
-      throw new RemoteHostError('CLOUD_AGENT_WORKSPACE_REQUIRED',
-        'This legacy Agent thread is read-only without a Workspace', 403);
+    if (thread.status !== 'active') {
+      throw new RemoteHostError('CLOUD_THREAD_NOT_ACTIVE',
+        'The Desktop thread is not active', 409);
     }
+    // A fresh Host read gives the expected tail for optimistic append. The
+    // Host still owns the transcript: do not upload client-rendered history.
+    const history = await this.cloud.getMessages(sessionId);
+    const expectedTailMessageId = history.length
+      ? history[history.length - 1]!.id : null;
     const messageId = options?.messageId ?? createMessageId();
     const session = await this.cloud.sendMessage({
       threadId: sessionId,
       messageId,
       content: input,
-      ...(typeof options?.agentEnabled === 'boolean'
-        ? { agentEnabled: options.agentEnabled } : {}),
+      expectedTailMessageId,
+      agentEnabled: thread.agentEnabled === true,
     });
     this.currentAbort = session.abort;
     const self = this;

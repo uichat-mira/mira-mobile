@@ -95,6 +95,8 @@ export interface SendRemoteMessageInput {
   threadId: string;
   messageId: string;
   content: string;
+  /** Host canonical tail observed immediately before an append-only send. */
+  expectedTailMessageId?: string | null;
   messages?: Array<{
     id?: string;
     role: 'system' | 'user' | 'assistant';

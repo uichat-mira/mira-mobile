@@ -179,6 +179,10 @@ export class CloudRemoteBusinessClient {
     if (!input.messageId.trim()) {
       throw new RemoteHostError('MESSAGE_ID_REQUIRED', 'A stable message id is required');
     }
+    if (input.expectedTailMessageId === undefined) {
+      throw new RemoteHostError('THREAD_TAIL_REQUIRED',
+        'Cloud append requires an authoritative Host history cursor');
+    }
 
     const access = await this.entry.discover();
     const manifest = await this.getManifestWithAccess(access);
@@ -209,6 +213,8 @@ export class CloudRemoteBusinessClient {
         id: input.threadId,
         messageId: input.messageId,
         messages,
+        // Distinct from Desktop's explicit branch-edit request semantics.
+        appendAtTail: { expectedTailMessageId: input.expectedTailMessageId },
         ...(typeof input.agentEnabled === 'boolean'
           ? { agentEnabled: input.agentEnabled } : {}),
         ...(input.requestedToolGroupIds

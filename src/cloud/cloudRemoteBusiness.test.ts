@@ -107,6 +107,7 @@ describe('MOB-080 Cloud-only business transport', () => {
     });
     await expect(client.sendMessage({
       threadId: thread.id, messageId: 'mobile-1', content: 'Hello',
+      expectedTailMessageId: null,
     })).rejects.toMatchObject({ code: 'CLOUD_HOST_GRANT_REQUIRED' });
     expect(json).toHaveBeenCalledTimes(2);
     expect(json.mock.calls.every(([, , request]) => request.path === '/remote/v1/manifest'))
@@ -133,12 +134,21 @@ describe('MOB-080 Cloud-only business transport', () => {
       .toHaveLength(1);
   });
 
+  it('never sends a Cloud mutation without the canonical Host append cursor', async () => {
+    const { client, sse } = harness();
+    await expect(client.sendMessage({
+      threadId: thread.id, messageId: 'without-cursor', content: 'must not write',
+    })).rejects.toMatchObject({ code: 'THREAD_TAIL_REQUIRED' });
+    expect(sse).not.toHaveBeenCalled();
+  });
+
   it('opens Cloud chat SSE using the canonical Host request, without Legacy Authorization', async () => {
     const { client, sse, json } = harness();
     const stream = await client.sendMessage({
       threadId: thread.id,
       messageId: 'mobile-stable-1',
       content: 'Hello',
+      expectedTailMessageId: 'previous-message',
       agentEnabled: true,
     });
     expect(stream.abort).toEqual(expect.any(Function));
@@ -155,6 +165,7 @@ describe('MOB-080 Cloud-only business transport', () => {
         id: thread.id,
         messageId: 'mobile-stable-1',
         agentEnabled: true,
+        appendAtTail: { expectedTailMessageId: 'previous-message' },
         messages: [{
           id: 'mobile-stable-1',
           role: 'user',

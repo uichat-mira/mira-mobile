@@ -45,12 +45,17 @@ offline and scope denied states. Desktop Cloud Host must be connected to the
 same official Cloud-only Worker. No readiness/availability may be inferred from sign-in
 alone; a connected indicator is set only after a real Cloud list response.
 
-Cloud legacy Agent threads without a valid Workspace may open history read-only
-through the Cloud source. Their composer is disabled and the Cloud runtime
-itself refuses send attempts on those threads even if the mobile device
-later has a broader grant. Paired Remote Host's existing Agent Workspace
-contract remains enforced. History still requires the separate
-messages:read effective Host grant; threads:read alone is not sufficient.
+Cloud Agent threads without an explicit Workspace are not inherently legacy
+read-only. Desktop may own a valid private Agent workspace even while
+workspaceId is null, so the Cloud consumer defers execution permission and
+Agent routing to the Host. Sending requires the separate messages:write
+effective Host grant, and Host still enforces all Tool/Harness approvals.
+For every Cloud send, Mobile reads the canonical Host tail, then submits one
+user message with appendAtTail.expectedTailMessageId; Host rejects stale
+tails rather than treating the message as a branch-from-root edit.
+The Mobile local Agent loop and Cloud Tool approval UI remain separate
+follow-ups. History still requires messages:read; threads:read alone is
+insufficient.
 
 Tool Gateway, attachments, alternate entry surfaces (Drawer/Search), full
 account-isolation/device-revocation pilot, and test/prod release promotion
