@@ -294,7 +294,7 @@ describe.each([
     ]);
   });
 
-  it('appends the Host canonical transcript and its exact tail cursor', async () => {
+  it('submits one new user turn and exact Host tail cursor', async () => {
     await profile.client.sendMessage(sendInput());
 
     expect(profile.sseRequests).toHaveLength(1);
@@ -303,23 +303,11 @@ describe.each([
       id: thread.id,
       messageId: 'mobile-new',
       appendAtTail: { expectedTailMessageId: 'tool-old' },
-      messages: [
-        {
-          id: 'user-old',
-          role: 'user',
-          parts: [{ type: 'text', text: 'remember this' }],
-        },
-        {
-          id: 'assistant-old',
-          role: 'assistant',
-          parts: [{ type: 'text', text: 'I remember' }],
-        },
-        {
-          id: 'mobile-new',
-          role: 'user',
-          parts: [{ type: 'text', text: 'continue' }],
-        },
-      ],
+      messages: [{
+        id: 'mobile-new',
+        role: 'user',
+        parts: [{ type: 'text', text: 'continue' }],
+      }],
     });
   });
 

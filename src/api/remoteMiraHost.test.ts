@@ -894,23 +894,11 @@ describe('RemoteMiraHostClient chat request', () => {
         body: expect.objectContaining({
           id: 'thread-1',
           messageId: 'user-new',
-          messages: [
-            {
-              id: 'user-old',
-              role: 'user',
-              parts: [{ type: 'text', text: 'remember this' }],
-            },
-            {
-              id: 'assistant-old',
-              role: 'assistant',
-              parts: [{ type: 'text', text: 'I remember' }],
-            },
-            {
-              id: 'user-new',
-              role: 'user',
-              parts: [{ type: 'text', text: 'continue' }],
-            },
-          ],
+          messages: [{
+            id: 'user-new',
+            role: 'user',
+            parts: [{ type: 'text', text: 'continue' }],
+          }],
           appendAtTail: { expectedTailMessageId: 'tool-old' },
         }),
       }),

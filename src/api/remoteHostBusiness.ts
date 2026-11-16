@@ -137,53 +137,6 @@ const parseArray = <T>(
   return value.map(parse);
 };
 
-const toContextMessage = (message: RemoteMessage) => {
-  if (message.role === 'tool') return null;
-
-  const text =
-    message.content.trim() ||
-    message.parts
-      .filter((part): part is Extract<typeof part, { type: 'text' }> =>
-        part.type === 'text',
-      )
-      .map(part => part.text)
-      .join('\n')
-      .trim();
-
-  if (!text) return null;
-
-  return {
-    id: message.id,
-    role: message.role,
-    parts: [{ type: 'text' as const, text }],
-  };
-};
-
-export type RemoteChatContextMessage = NonNullable<
-  ReturnType<typeof toContextMessage>
->;
-
-/**
- * Builds the append payload from the Host-owned canonical transcript, never
- * from renderer state. Tool messages stay Host-internal.
- */
-export const buildCanonicalChatMessages = (
-  history: RemoteMessage[],
-  messageId: string,
-  content: string,
-): RemoteChatContextMessage[] => {
-  const messages = history
-    .filter(message => message.id !== messageId)
-    .map(toContextMessage)
-    .filter((message): message is RemoteChatContextMessage => Boolean(message));
-  messages.push({
-    id: messageId,
-    role: 'user',
-    parts: [{ type: 'text', text: content }],
-  });
-  return messages;
-};
-
 export class RemoteHostBusinessClient {
   constructor(
     private readonly transport: RemoteHostBusinessTransport,
@@ -284,7 +237,14 @@ export class RemoteHostBusinessClient {
       path: '/threads/' + encodeURIComponent(input.threadId) + '/messages',
       parse: value => parseArray(value, parseRemoteMessage, 'messages'),
     });
-    const messages = buildCanonicalChatMessages(history, messageId, content);
+    // Desktop Host owns the model/RAG/Agent context. Only the new turn is
+    // authorized for append; uploading history would violate the Host's
+    // single-message append contract and must not be used to rebuild context.
+    const messages = [{
+      id: messageId,
+      role: 'user' as const,
+      parts: [{ type: 'text' as const, text: content }],
+    }];
     const expectedTailMessageId = history.length
       ? history[history.length - 1]!.id
       : null;

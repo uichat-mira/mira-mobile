@@ -133,7 +133,7 @@ describe('MOB-080 Cloud-only business transport', () => {
       .toHaveLength(1);
   });
 
-  it('appends the Host canonical transcript and its last message as cursor', async () => {
+  it('submits one new user turn and exact Host tail cursor', async () => {
     const history = [
       {
         id: 'user-old', threadId: thread.id, role: 'user', content: 'remember this',
@@ -157,20 +157,11 @@ describe('MOB-080 Cloud-only business transport', () => {
     });
     expect(sse.mock.calls[0][2].body).toMatchObject({
       appendAtTail: { expectedTailMessageId: 'tool-old' },
-      messages: [
-        {
-          id: 'user-old', role: 'user',
-          parts: [{ type: 'text', text: 'remember this' }],
-        },
-        {
-          id: 'assistant-old', role: 'assistant',
-          parts: [{ type: 'text', text: 'I remember' }],
-        },
-        {
-          id: 'mobile-new', role: 'user',
-          parts: [{ type: 'text', text: 'continue' }],
-        },
-      ],
+      messages: [{
+        id: 'mobile-new',
+        role: 'user',
+        parts: [{ type: 'text', text: 'continue' }],
+      }],
     });
   });
 
