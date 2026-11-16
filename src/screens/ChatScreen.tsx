@@ -39,6 +39,7 @@ import {
   type ConversationLifecycleEvent,
 } from '../chat/conversationOrchestration';
 import { miraHostClient } from '../api/miraHostClient';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { RemoteHostError } from '../api/remoteHttp';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
@@ -52,12 +53,15 @@ import {
   LocalAgentRunCard,
   type LocalAgentActivity,
   type LocalAgentApprovalView,
+  type LocalAgentNoticeCode,
   type LocalAgentPauseReason,
   type LocalAgentRunPhase,
 } from '../agent/LocalAgentRunCard';
-import { buildShareCardModel } from '../share/shareCardModel';
+import { buildShareCardModel, collectShareableMessages } from '../share/shareCardModel';
 import { ConversationShareCoordinator } from '../share/conversationShareCoordinator';
+import { ShareMessageSelector } from '../share/ShareMessageSelector';
 import { AssistantMessageHapticsObserver } from '../haptics/newAssistantMessageHaptics';
+import { lightImpact } from '../haptics/haptics';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   getChatHistoryErrorMessage,
@@ -207,7 +211,9 @@ export function ChatScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId, title: routeTitle, source, providerName, providerModel } = route.params;
+  const { sessionId, title: routeTitle, source, providerName, providerModel, cloudAccountId } = route.params;
+  const activeCloudAccountId = useCloudAccountStore(state => state.account?.id);
+  const cloudAccountStatus = useCloudAccountStore(state => state.status);
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const markThreadRead = useThreadReadStore((state) => state.markThreadRead);
@@ -228,6 +234,7 @@ export function ChatScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [agentEnabled, setAgentEnabled] = useState(false);
+  const [cloudCanSend, setCloudCanSend] = useState(false);
   const [agentModeLoading, setAgentModeLoading] = useState(true);
   const [agentPhase, setAgentPhase] = useState<LocalAgentRunPhase>('idle');
   const [agentActivities, setAgentActivities] = useState<LocalAgentActivity[]>([]);
@@ -238,9 +245,16 @@ export function ChatScreen() {
   const [approvalAction, setApprovalAction] =
     useState<ToolApprovalDecision | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [agentNotice, setAgentNotice] = useState<LocalAgentNoticeCode | null>(
+    null,
+  );
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [isShareSelecting, setIsShareSelecting] = useState(false);
+  // Frozen when the selector opens, so the confirm path builds the very same
+  // message snapshot the user selected from.
+  const [shareSnapshot, setShareSnapshot] = useState<readonly ChatMessage[]>([]);
   const [searchFocusMessageId, setSearchFocusMessageId] = useState<string | null>(
     null,
   );
@@ -264,6 +278,11 @@ export function ChatScreen() {
     [sessionId, source],
   );
   const isLocalProvider = runtime.kind === 'local-provider';
+  const isCloudHost = source === 'cloud-host';
+  const cloudAuthorityActive = !isCloudHost || (
+    cloudAccountStatus === 'signed_in' &&
+    Boolean(cloudAccountId) && cloudAccountId === activeCloudAccountId
+  );
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
   const shareDisabled =
     isSharing || isLoading || isLoadingHistory || historyError !== null;
@@ -276,6 +295,23 @@ export function ChatScreen() {
         : historyError
           ? '分享会话，聊天记录重新加载后可用'
           : '分享会话';
+
+  useEffect(() => {
+    if (!isCloudHost) return;
+    if (!cloudAuthorityActive) {
+      runtime.cancelActiveRun();
+      setMessages([]);
+      setInputText('');
+      setCloudCanSend(false);
+      return;
+    }
+    let active = true;
+    setCloudCanSend(false);
+    void runtime.canSendMessage?.(sessionId).then(allowed => {
+      if (active) setCloudCanSend(allowed);
+    }).catch(() => { if (active) setCloudCanSend(false); });
+    return () => { active = false; };
+  }, [cloudAuthorityActive, isCloudHost, runtime, sessionId]);
 
   useEffect(() => {
     setIsSearchVisible(false);
@@ -294,12 +330,12 @@ export function ChatScreen() {
     // observation). Feeding the same observer here means a Remote Assistant
     // reply that lands while foregrounded triggers the identical reminder as a
     // Local one, without inventing a second trigger path.
-    if (isLocalProvider) return undefined;
+    if (isLocalProvider || isCloudHost) return undefined;
     return miraHostClient.subscribeMessageSnapshots((snapshot) => {
       if (snapshot.sessionId !== sessionId) return;
       assistantHapticsRef.current?.observe(snapshot.messages);
     });
-  }, [isLocalProvider, sessionId]);
+  }, [isCloudHost, isLocalProvider, sessionId]);
 
   useEffect(() => {
     let active = true;
@@ -309,6 +345,7 @@ export function ChatScreen() {
     setAgentPhase('idle');
     setAgentPauseReason(null);
     setAgentError(null);
+    setAgentNotice(null);
 
     if (!supportsLocalAgent || !runtime.getAgentEnabled) {
       setAgentEnabled(false);
@@ -369,18 +406,21 @@ export function ChatScreen() {
       }
       return;
     }
-    const canonicalTitle = await readCanonicalSessionTitle(
-      miraHostClient,
-      sessionId,
-    );
+    const canonicalTitle = isCloudHost
+      ? await readLocalSessionTitle(runtime, sessionId)
+      : await readCanonicalSessionTitle(miraHostClient, sessionId);
     if (canonicalTitle !== null) {
       setSessionTitle(canonicalTitle);
     }
-  }, [isLocalProvider, runtime, sessionId]);
+  }, [isCloudHost, isLocalProvider, runtime, sessionId]);
 
   const loadMessages = useCallback(async (): Promise<ChatMessage[] | null> => {
     setHistoryError(null);
     try {
+      if (!cloudAuthorityActive) {
+        throw new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED',
+          '当前云账号已发生变化，请重新选择会话');
+      }
       const canonicalMessages = await runtime.getMessages(sessionId);
       setMessages(canonicalMessages);
       assistantHapticsRef.current?.observe(canonicalMessages);
@@ -402,7 +442,7 @@ export function ChatScreen() {
       setHistoryError(getChatHistoryErrorMessage(error));
       return null;
     }
-  }, [clearThreadRead, markThreadRead, runtime, sessionId]);
+  }, [clearThreadRead, cloudAuthorityActive, markThreadRead, runtime, sessionId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -429,36 +469,59 @@ export function ChatScreen() {
     flatListRef.current?.scrollToEnd({ animated: true });
   }, [isSearchVisible]);
 
-  const handleShare = useCallback(async () => {
+  // The share button no longer shares immediately: it opens the selection mode
+  // so the user decides which questions and replies end up in the card.
+  const handleShare = useCallback(() => {
     if (shareCoordinator.isActive || isSharing) return;
     if (isLoadingHistory || isLoading || historyError) return;
 
-    const model = buildShareCardModel(messages, sessionTitle);
-    if (!model) {
+    const snapshot = collectShareableMessages(messages);
+    if (snapshot.length === 0) {
       Alert.alert('暂无可分享内容', '当前会话还没有可分享的消息。');
       return;
     }
 
-    setIsSharing(true);
-    try {
-      await shareCoordinator.share(model);
-    } catch {
-      Alert.alert(
-        '分享失败',
-        '未能生成分享图片或打开系统分享，请重试；若仍失败，可重新打开会话后再试。',
-      );
-    } finally {
-      setIsSharing(false);
-    }
+    setShareSnapshot(snapshot);
+    setIsShareSelecting(true);
   }, [
     historyError,
     isLoading,
     isLoadingHistory,
     isSharing,
     messages,
-    sessionTitle,
     shareCoordinator,
   ]);
+
+  const handleConfirmShare = useCallback(
+    async (selectedIds: string[]) => {
+      setIsShareSelecting(false);
+      if (shareCoordinator.isActive || isSharing) return;
+
+      const selected = new Set(selectedIds);
+      // Build from the frozen snapshot the selector displayed, so messages that
+      // streamed in while it was open can neither leak in nor shift order.
+      const selectedMessages = shareSnapshot.filter((message) => selected.has(message.id));
+      setShareSnapshot([]);
+      const model = buildShareCardModel(selectedMessages, sessionTitle);
+      if (!model) {
+        Alert.alert('暂无可分享内容', '请至少选择一条要分享的消息。');
+        return;
+      }
+
+      setIsSharing(true);
+      try {
+        await shareCoordinator.share(model);
+      } catch {
+        Alert.alert(
+          '分享失败',
+          '未能生成分享图片或打开系统分享，请重试；若仍失败，可重新打开会话后再试。',
+        );
+      } finally {
+        setIsSharing(false);
+      }
+    },
+    [isSharing, sessionTitle, shareCoordinator, shareSnapshot],
+  );
 
   const closeSearch = useCallback(() => {
     setIsSearchVisible(false);
@@ -520,6 +583,7 @@ export function ChatScreen() {
         setAgentPhase('idle');
         setAgentPauseReason(null);
         setAgentError(null);
+        setAgentNotice(null);
       }
     } catch {
       Alert.alert('Agent 模式', '暂时无法保存 Agent 模式状态，请稍后重试。');
@@ -582,6 +646,7 @@ export function ChatScreen() {
           setApprovalAction(null);
           setAgentPauseReason(null);
           setAgentError(null);
+          setAgentNotice(null);
           break;
         case 'clear-approval-action':
           setApprovalAction(null);
@@ -610,6 +675,9 @@ export function ChatScreen() {
             message: event.approval.message,
             ...(event.approval.scope ? { scope: event.approval.scope } : {}),
           });
+          break;
+        case 'notice':
+          setAgentNotice(event.code);
           break;
         case 'phase':
           setAgentPhase(event.phase);
@@ -698,6 +766,7 @@ export function ChatScreen() {
       if (
         !content ||
         isLoading ||
+        (isCloudHost && (!cloudAuthorityActive || !cloudCanSend)) ||
         (supportsLocalAgent && agentModeLoading)
       ) {
         return;
@@ -716,11 +785,20 @@ export function ChatScreen() {
         setMessages((prev) => [...prev, userMsg]);
       }
 
+      // Haptic feedback fires for every user-initiated send (including retries)
+      // so the interaction contract "my question was delivered" matches what
+      // users feel. It runs in parallel with runTurn — no await, the network
+      // path must never wait on the vibrator.
+      void lightImpact();
+
       await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
     },
     [
       agentEnabled,
       agentModeLoading,
+      cloudAuthorityActive,
+      cloudCanSend,
+      isCloudHost,
       inputText,
       isLoading,
       runTurn,
@@ -793,7 +871,7 @@ export function ChatScreen() {
               ) : (
                 <AssistantMarkdown content={item.content} />
               )}
-              <MessageAttachments threadId={sessionId} parts={item.parts} />
+              {!isCloudHost ? <MessageAttachments threadId={sessionId} parts={item.parts} /> : null}
             </View>
             {isFailed ? (
               <>
@@ -825,6 +903,7 @@ export function ChatScreen() {
       colors,
       failedMessages,
       handleRetry,
+      isCloudHost,
       searchFocusMessageId,
       sessionId,
       themedStyles,
@@ -838,6 +917,7 @@ export function ChatScreen() {
       (agentPhase !== 'idle' ||
         agentActivities.length > 0 ||
         pendingAgentApproval !== null ||
+        agentNotice !== null ||
         agentError !== null);
     if (!streamingText && !isLoading && !showAgentState) return null;
 
@@ -850,6 +930,7 @@ export function ChatScreen() {
             activities={agentActivities}
             approval={pendingAgentApproval}
             approvalAction={approvalAction}
+            notice={agentNotice}
             error={agentError}
             onApproval={handleAgentApproval}
           />
@@ -871,6 +952,7 @@ export function ChatScreen() {
     agentActivities,
     agentEnabled,
     agentError,
+    agentNotice,
     agentPauseReason,
     agentPhase,
     approvalAction,
@@ -978,6 +1060,17 @@ export function ChatScreen() {
         shareDisabled={shareDisabled}
         shareDisabledAccessibilityLabel={shareAccessibilityLabel}
         onFindInChat={openSearch}
+      />
+
+      <ShareMessageSelector
+        visible={isShareSelecting}
+        messages={shareSnapshot}
+        busy={isSharing}
+        onCancel={() => {
+          setIsShareSelecting(false);
+          setShareSnapshot([]);
+        }}
+        onConfirm={(selectedIds) => void handleConfirmShare(selectedIds)}
       />
 
       {isSearchVisible ? (
@@ -1115,11 +1208,13 @@ export function ChatScreen() {
               style={[styles.input, { color: colors.text.ink }]}
               value={inputText}
               onChangeText={setInputText}
-              placeholder="给 Mira 发消息..."
+              placeholder={isCloudHost && !cloudCanSend
+                ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
               placeholderTextColor={colors.text.placeholder}
               multiline
               maxLength={500}
               editable={
+                cloudAuthorityActive && (!isCloudHost || cloudCanSend) &&
                 !isLoading && !(supportsLocalAgent && agentModeLoading)
               }
               blurOnSubmit={false}
@@ -1157,6 +1252,7 @@ export function ChatScreen() {
                       : colors.primary,
                   },
                   (!inputText.trim() ||
+                    (isCloudHost && !cloudCanSend) ||
                     (supportsLocalAgent && agentModeLoading)) && {
                     backgroundColor: colors.primaryDisabled,
                   },
@@ -1164,6 +1260,8 @@ export function ChatScreen() {
                 onPress={() => void sendMessage()}
                 disabled={
                   !inputText.trim() ||
+                  (isCloudHost && !cloudCanSend) ||
+                  !cloudAuthorityActive ||
                   (supportsLocalAgent && agentModeLoading)
                 }
               >

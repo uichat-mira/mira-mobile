@@ -7,6 +7,19 @@ import type { Session } from '../types';
 
 type SessionReader = Pick<MiraHostApi, 'getSession'>;
 
+type WeatherErrorCode =
+  | 'WEATHER_ARGUMENTS_INVALID'
+  | 'WEATHER_CITY_NOT_FOUND'
+  | 'WEATHER_TIMEOUT'
+  | 'WEATHER_UPSTREAM_FAILED';
+
+const WEATHER_ERROR_MESSAGES: Record<WeatherErrorCode, string> = {
+  WEATHER_ARGUMENTS_INVALID: '天气查询参数无效，请检查城市名或预报天数',
+  WEATHER_CITY_NOT_FOUND: '没有找到这个城市，请换一个更具体的城市名',
+  WEATHER_TIMEOUT: '天气服务响应超时，请稍后重试',
+  WEATHER_UPSTREAM_FAILED: '天气服务暂时不可用，请稍后重试',
+};
+
 interface LocalSessionTitleReader {
   getSession?(sessionId: string): Promise<Pick<Session, 'title'>>;
 }
@@ -70,6 +83,9 @@ export const getChatSendErrorMessage = (
     if (error.code === 'REMOTE_TOOL_ROUTE_UNAVAILABLE') {
       return '当前 Mira Host 还没有提供工具能力';
     }
+    if (error.code === 'REMOTE_ENDPOINT_UNAVAILABLE') {
+      return '当前没有可用的远程工具通道，Agent 工具暂不可用';
+    }
     if (error.code === 'REQUEST_ABORTED') return '本次发送已取消';
     if (error.code === 'PROVIDER_TIMEOUT') return 'Provider 响应超时，请重试';
     if (error.code === 'NETWORK_ERROR') {
@@ -82,15 +98,29 @@ export const getChatSendErrorMessage = (
     if (error.status === 404) return 'Provider 地址或模型不可用，请检查配置';
     if (error.status === 429) return 'Provider 请求过于频繁，请稍后重试';
     if (error.status !== undefined && error.status >= 500) return 'Provider 服务暂时不可用，请稍后重试';
+    // Any remaining Host-side failure stays user-appropriate and code-free:
+    // raw error codes belong in logging/telemetry, not in chat UI copy.
+    return '本地对话暂时无法连接所需服务，请稍后重试';
   }
 
   if (error instanceof ToolGatewayError) {
     if (error.code === 'TOOL_CANCELLED') return '本次 Agent 运行已取消';
     if (error.code === 'TOOL_ARGUMENTS_INVALID') return '工具参数无效，本轮已停止';
+    if (error.code === 'TOOL_CHANNEL_UNAVAILABLE') {
+      return '工具通道当前不可用，本回合所需的工具未能执行，请稍后重试';
+    }
     if (error.code === 'TOOL_NOT_AVAILABLE') return '这个工具当前不可用';
     if (error.code === 'TOOL_STREAM_INCOMPLETE') return '工具连接中断，可重新发送';
     if (error.code === 'TOOL_APPROVAL_UNCERTAIN') {
       return '工具审批结果暂时无法确认，请刷新状态后再决定是否重试';
+    }
+    if (
+      error.code === 'WEATHER_ARGUMENTS_INVALID' ||
+      error.code === 'WEATHER_CITY_NOT_FOUND' ||
+      error.code === 'WEATHER_TIMEOUT' ||
+      error.code === 'WEATHER_UPSTREAM_FAILED'
+    ) {
+      return error.suggestedAction || WEATHER_ERROR_MESSAGES[error.code];
     }
     return error.message || '远程工具执行失败，请重试';
   }

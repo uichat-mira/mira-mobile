@@ -75,6 +75,18 @@ const createdThreadPayload = {
   messageCount: 0,
 };
 
+const createManifestPayload = {
+  ...manifestPayload,
+  device: {
+    ...manifestPayload.device,
+    scopes: ['threads:read', 'messages:write'],
+  },
+  routes: {
+    ...manifestPayload.routes,
+    threads: ['GET /threads', 'POST /threads'],
+  },
+};
+
 const pairingDescriptor = {
   version: 1 as const,
   hostUrl: 'https://mira.example.ts.net',
@@ -296,7 +308,7 @@ describe('RemoteMiraHostClient transport selection', () => {
     const relayJson: RelayJsonTransport = async (_relay, request) => {
       relayJsonMock(_relay, request);
       if (request.path === '/remote/v1/manifest') {
-        return request.parse(manifestPayload);
+        return request.parse(createManifestPayload);
       }
       return request.parse(createdThreadPayload);
     };
@@ -334,7 +346,7 @@ describe('RemoteMiraHostClient transport selection', () => {
     const direct: JsonTransport = async request => {
       directMock(request);
       if (request.path === '/remote/v1/manifest') {
-        return request.parse(manifestPayload);
+        return request.parse(createManifestPayload);
       }
       throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     };
@@ -797,18 +809,55 @@ describe('RemoteMiraHostClient tool gateway', () => {
 });
 
 describe('RemoteMiraHostClient chat request', () => {
-  it('forwards the supplied canonical history in the SSE request body', async () => {
-    const store = new MemoryDeviceCredentialStore();
-    await store.save({
-      hostUrl: 'https://mira.example.ts.net',
-      relay: null,
-      credential: 'mira_device_device-1.secret',
-      deviceId: 'device-1',
+  const chatManifestPayload = {
+    ...manifestPayload,
+    device: {
+      ...manifestPayload.device,
       scopes: ['threads:read', 'messages:read', 'messages:write'],
-      savedAt: '2026-08-27T00:00:00.000Z',
-    });
+    },
+    routes: {
+      ...manifestPayload.routes,
+      messages: ['POST /proxy/chat/default'],
+    },
+  };
 
-    const json: JsonTransport = async request => request.parse(manifestPayload);
+  const hostHistory = [
+    {
+      id: 'user-old',
+      threadId: 'thread-1',
+      role: 'user' as const,
+      content: 'remember this',
+      parts: [{ type: 'text' as const, text: 'remember this' }],
+      createdAt: '2026-08-27T01:00:00.000Z',
+    },
+    {
+      id: 'assistant-old',
+      threadId: 'thread-1',
+      role: 'assistant' as const,
+      content: 'I remember',
+      parts: [{ type: 'text' as const, text: 'I remember' }],
+      createdAt: '2026-08-27T01:00:01.000Z',
+    },
+    {
+      id: 'tool-old',
+      threadId: 'thread-1',
+      role: 'tool' as const,
+      content: 'internal tool output',
+      parts: [{ type: 'text' as const, text: 'internal tool output' }],
+      createdAt: '2026-08-27T01:00:02.000Z',
+    },
+  ];
+
+  const makeChatJournal = () => {
+    const store = new MemoryDeviceCredentialStore();
+    const requests: RemoteJsonRequest<unknown>[] = [];
+    const json: JsonTransport = async request => {
+      requests.push(request);
+      if (request.path === '/threads/thread-1/messages') {
+        return request.parse(hostHistory);
+      }
+      return request.parse(chatManifestPayload);
+    };
     const sseMock = jest.fn();
     const sse = <T>(request: PostSseRequest<T>): PostSseSession<T> => {
       sseMock(request);
@@ -817,6 +866,19 @@ describe('RemoteMiraHostClient chat request', () => {
         events: (async function* () {})(),
       };
     };
+    return { store, requests, json, sse, sseMock };
+  };
+
+  it('reads the Host-owned canonical transcript and appends with its tail cursor', async () => {
+    const { store, json, sse, sseMock } = makeChatJournal();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read', 'messages:read', 'messages:write'],
+      savedAt: '2026-08-27T00:00:00.000Z',
+    });
     const client = new RemoteMiraHostClient(store, json, sse);
     await client.restoreConnection();
 
@@ -824,23 +886,6 @@ describe('RemoteMiraHostClient chat request', () => {
       threadId: 'thread-1',
       messageId: 'user-new',
       content: 'continue',
-      messages: [
-        {
-          id: 'user-old',
-          role: 'user',
-          parts: [{ type: 'text', text: 'remember this' }],
-        },
-        {
-          id: 'assistant-old',
-          role: 'assistant',
-          parts: [{ type: 'text', text: 'I remember' }],
-        },
-        {
-          id: 'user-new',
-          role: 'user',
-          parts: [{ type: 'text', text: 'continue' }],
-        },
-      ],
     });
 
     expect(sseMock).toHaveBeenCalledWith(
@@ -849,23 +894,46 @@ describe('RemoteMiraHostClient chat request', () => {
         body: expect.objectContaining({
           id: 'thread-1',
           messageId: 'user-new',
-          messages: [
-            {
-              id: 'user-old',
-              role: 'user',
-              parts: [{ type: 'text', text: 'remember this' }],
-            },
-            {
-              id: 'assistant-old',
-              role: 'assistant',
-              parts: [{ type: 'text', text: 'I remember' }],
-            },
-            {
-              id: 'user-new',
-              role: 'user',
-              parts: [{ type: 'text', text: 'continue' }],
-            },
-          ],
+          messages: [{
+            id: 'user-new',
+            role: 'user',
+            parts: [{ type: 'text', text: 'continue' }],
+          }],
+          appendAtTail: { expectedTailMessageId: 'tool-old' },
+        }),
+      }),
+    );
+  });
+
+  it('uses a null append cursor for an empty Host transcript', async () => {
+    const { store, sse, sseMock } = makeChatJournal();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      relay: null,
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read', 'messages:read', 'messages:write'],
+      savedAt: '2026-08-27T00:00:00.000Z',
+    });
+    const emptyHistoryJson: JsonTransport = async request => {
+      if (request.path === '/threads/thread-1/messages') {
+        return request.parse([]);
+      }
+      return request.parse(chatManifestPayload);
+    };
+    const client = new RemoteMiraHostClient(store, emptyHistoryJson, sse);
+    await client.restoreConnection();
+
+    await client.sendMessage({
+      threadId: 'thread-1',
+      messageId: 'first-1',
+      content: 'first turn',
+    });
+
+    expect(sseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          appendAtTail: { expectedTailMessageId: null },
         }),
       }),
     );

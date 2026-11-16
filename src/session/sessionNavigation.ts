@@ -10,8 +10,9 @@ const hasNonEmptyId = (value: string | null | undefined): boolean =>
 
 /**
  * Global session entry points open the selected Thread directly. workspaceId is
- * ownership/context metadata, not a navigation parent. Agent sessions are the
- * only exception: Host contract requires them to own a valid Workspace.
+ * ownership/context metadata, not a navigation parent. The Desktop Host
+ * can provision a private Agent workspace when workspaceId is null, so Cloud
+ * sessions must not be classified as legacy read-only by this field alone.
  *
  * `workspace-list` stays in the target union temporarily for callers compiled
  * against the older navigation contract, but this resolver no longer emits it.
@@ -24,6 +25,10 @@ export const resolveSessionOpenTarget = (
     session.source !== 'local-provider' &&
     !hasNonEmptyId(session.workspaceId)
   ) {
+    // Cloud Host owns effective private Agent workspaces and execution.
+    if (session.source === 'cloud-host') {
+      return { kind: 'chat' };
+    }
     return {
       kind: 'contract-error',
       message: '该 Agent 会话缺少项目归属，无法在移动端打开。',

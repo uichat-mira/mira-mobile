@@ -49,4 +49,10 @@ describe('MOB-042 local Agent Loop UI contract', () => {
     expect(cardSource).toContain('该工具调用已拒绝');
     expect(cardSource).toContain('运行失败');
   });
+
+  it('surfaces a visible non-error degradation notice when tools are skipped', () => {
+    expect(orchestrationSource).toContain("case 'notice'");
+    expect(orchestrationSource).toContain("'degraded'");
+    expect(cardSource).toContain('未使用任何工具');
+  });
 });

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -14,12 +15,15 @@ import {
 } from '../settings/SettingsComponents';
 import {
   DEFAULT_GENERAL_SETTINGS,
+  HAPTICS_STRENGTH_MAX,
+  HAPTICS_STRENGTH_MIN,
   loadGeneralSettings,
   saveGeneralSettings,
   type DefaultSessionSource,
   type GeneralSettings,
   type LaunchBehavior,
 } from '../settings/generalSettings';
+import { startContinuousVibration, stopContinuousVibration } from '../haptics/haptics';
 
 const defaultSessionSourceOptions: readonly SettingsChoice<DefaultSessionSource>[] = [
   { value: 'ask', label: '每次询问（默认）' },
@@ -52,6 +56,7 @@ export function GeneralSettingsScreen() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testingVibration, setTestingVibration] = useState(false);
   // Last value known to be on disk. A failed write rolls back to this instead of
   // leaving the UI on an optimistic value the user can no longer recover from.
   const persistedRef = useRef<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
@@ -84,6 +89,13 @@ export function GeneralSettingsScreen() {
 
   useEffect(() => loadSettings(), [loadSettings]);
 
+  // Stop the test vibration when leaving the screen so it never outlives the UI.
+  useEffect(() => {
+    return () => {
+      stopContinuousVibration();
+    };
+  }, []);
+
   const applySettings = useCallback((next: GeneralSettings) => {
     setSettings(next);
     setPersistenceError(null);
@@ -101,6 +113,16 @@ export function GeneralSettingsScreen() {
         setSaving(false);
       });
   }, []);
+
+  const toggleVibrationTest = useCallback(() => {
+    if (testingVibration) {
+      stopContinuousVibration();
+      setTestingVibration(false);
+    } else {
+      startContinuousVibration();
+      setTestingVibration(true);
+    }
+  }, [testingVibration]);
 
   const handleAction = useCallback((actionId: string) => {
     switch (actionId) {
@@ -201,7 +223,7 @@ export function GeneralSettingsScreen() {
           <View style={styles.flex}>
             <Text style={[styles.title, { color: colors.text.ink }]}>触感反馈</Text>
             <Text style={[styles.subtitle, { color: colors.text.muted }]}>
-              发送消息和新建会话时轻微振动
+              发送消息、收到 AI 回复时的振动
             </Text>
           </View>
           <Switch
@@ -212,6 +234,51 @@ export function GeneralSettingsScreen() {
             thumbColor={colors.bg.elevated}
           />
         </View>
+        <View
+          style={[
+            styles.strengthRow,
+            { backgroundColor: colors.bg.card, opacity: settings.hapticsEnabled ? 1 : 0.5 },
+          ]}
+        >
+          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>振动强度</Text>
+          <Slider
+            style={styles.strengthSlider}
+            minimumValue={HAPTICS_STRENGTH_MIN}
+            maximumValue={HAPTICS_STRENGTH_MAX}
+            step={1}
+            value={settings.hapticsStrength}
+            minimumTrackTintColor={colors.primary}
+            maximumTrackTintColor={colors.border.default}
+            thumbTintColor={colors.primary}
+            disabled={loadFailed || saving || !settings.hapticsEnabled}
+            onValueChange={(value) => {
+              // Live-update state so the slider thumb follows the finger
+              // smoothly. Persistence is debounced until the user releases,
+              // otherwise every drag frame would hit storage.
+              setSettings((current) => ({ ...current, hapticsStrength: Math.round(value) }));
+            }}
+            onSlidingComplete={(value) => {
+              applySettings({ ...settings, hapticsStrength: Math.round(value) });
+            }}
+          />
+          <Text style={[styles.strengthValue, { color: colors.text.muted }]}>
+            {settings.hapticsStrength}
+          </Text>
+        </View>
+        <Pressable
+          onPress={toggleVibrationTest}
+          style={({ pressed }) => [
+            styles.testButton,
+            { backgroundColor: testingVibration ? colors.status.error : colors.primary },
+            pressed && { opacity: 0.8 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={testingVibration ? '停止测试震动' : '测试震动'}
+        >
+          <Text style={[styles.testButtonText, { color: colors.onPrimary }]}>
+            {testingVibration ? '停止震动' : '测试震动（持续）'}
+          </Text>
+        </Pressable>
 
         <SettingsSectionHeader>更新</SettingsSectionHeader>
         <View style={[styles.surface, { backgroundColor: colors.bg.card }]}>
@@ -275,6 +342,25 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   title: { fontSize: fontSize.bodyMd, fontWeight: '500' },
   subtitle: { fontSize: fontSize.button, marginTop: spacing.xs },
+  testButton: {
+    minHeight: 44,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.full,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  testButtonText: { fontSize: fontSize.button, fontWeight: '600' },
+  strengthRow: {
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+    gap: spacing.xs,
+  },
+  strengthLabel: { fontSize: fontSize.button, fontWeight: '500' },
+  strengthSlider: { width: '100%', height: 40 },
+  strengthValue: { fontSize: fontSize.button, textAlign: 'right' },
   loadErrorBox: {
     borderRadius: radius.lg,
     padding: spacing.lg,
