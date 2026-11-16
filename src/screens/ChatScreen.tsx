@@ -211,7 +211,7 @@ export function ChatScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId, title: routeTitle, source, providerName, providerModel, cloudAccountId, cloudLegacyAgentReadOnly } = route.params;
+  const { sessionId, title: routeTitle, source, providerName, providerModel, cloudAccountId } = route.params;
   const activeCloudAccountId = useCloudAccountStore(state => state.account?.id);
   const cloudAccountStatus = useCloudAccountStore(state => state.status);
   const { colors } = useTheme();
@@ -305,17 +305,13 @@ export function ChatScreen() {
       setCloudCanSend(false);
       return;
     }
-    if (cloudLegacyAgentReadOnly) {
-      setCloudCanSend(false);
-      return;
-    }
     let active = true;
     setCloudCanSend(false);
     void runtime.canSendMessage?.(sessionId).then(allowed => {
       if (active) setCloudCanSend(allowed);
     }).catch(() => { if (active) setCloudCanSend(false); });
     return () => { active = false; };
-  }, [cloudAuthorityActive, cloudLegacyAgentReadOnly, isCloudHost, runtime, sessionId]);
+  }, [cloudAuthorityActive, isCloudHost, runtime, sessionId]);
 
   useEffect(() => {
     setIsSearchVisible(false);
@@ -770,7 +766,7 @@ export function ChatScreen() {
       if (
         !content ||
         isLoading ||
-        (isCloudHost && (cloudLegacyAgentReadOnly || !cloudAuthorityActive || !cloudCanSend)) ||
+        (isCloudHost && (!cloudAuthorityActive || !cloudCanSend)) ||
         (supportsLocalAgent && agentModeLoading)
       ) {
         return;
@@ -802,7 +798,6 @@ export function ChatScreen() {
       agentModeLoading,
       cloudAuthorityActive,
       cloudCanSend,
-      cloudLegacyAgentReadOnly,
       isCloudHost,
       inputText,
       isLoading,
@@ -1213,10 +1208,8 @@ export function ChatScreen() {
               style={[styles.input, { color: colors.text.ink }]}
               value={inputText}
               onChangeText={setInputText}
-              placeholder={isCloudHost && cloudLegacyAgentReadOnly
-                ? '该旧 Agent 会话仅供查看'
-                : isCloudHost && !cloudCanSend
-                  ? '当前 Cloud Host 仅支持读取会话' : '给 Mira 发消息...'}
+              placeholder={isCloudHost && !cloudCanSend
+                ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
               placeholderTextColor={colors.text.placeholder}
               multiline
               maxLength={500}
