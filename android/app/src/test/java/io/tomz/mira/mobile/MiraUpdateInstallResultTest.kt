@@ -28,7 +28,7 @@ class MiraUpdateInstallResultTest {
     assertEquals("更新安装包无效（状态码 4）", message(PackageInstaller.STATUS_FAILURE_INVALID))
     assertEquals("设备存储空间不足，无法安装更新（状态码 6）", message(PackageInstaller.STATUS_FAILURE_STORAGE))
     assertEquals("系统安装更新失败（状态码 123）", message(123))
-    assertEquals("系统已中止安装会话（状态码 3，原生码 -115)",
+    assertEquals("系统已中止安装会话（状态码 3，原生码 -115）",
       MiraUpdateInstallReceiver.installFailureText(PackageInstaller.STATUS_FAILURE_ABORTED, -115))
   }
 }
