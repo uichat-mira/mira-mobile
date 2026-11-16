@@ -5,10 +5,15 @@ import {
   threadToSession,
 } from '../api/miraHostClient';
 import {
+  remoteManifestSupportsChat,
+  remoteManifestSupportsThreadDelete,
+} from '../api/remoteHostBusiness';
+import {
   cloudRemoteBusinessClient,
   type CloudRemoteBusinessClient,
 } from '../cloud/cloudRemoteBusiness';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
+import { mapRemoteChatStream } from './remoteChatStream';
 
 const createMessageId = () =>
   `mobile-cloud-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -16,9 +21,13 @@ const createMessageId = () =>
 /**
  * An explicit Cloud Relay remote runtime. It must never touch the paired
  * Remote V1 device credential or switch to Tailscale on transport failure.
+ * The Thread/Message/Chat payload and stream contracts come from the shared
+ * Remote Host business client; this runtime only maps them for Cloud UI.
  */
 export class CloudHostRuntime implements ConversationRuntime {
   readonly kind = 'remote-host' as const;
+  // This describes Mobile's local Agent loop, not Host-owned Agent execution.
+  // The canonical Host thread may run Agent with an isolated private workspace.
   readonly supportsAgent = false;
   private currentAbort: (() => void) | null = null;
 
@@ -44,18 +53,15 @@ export class CloudHostRuntime implements ConversationRuntime {
   }
 
   async canDeleteSession(): Promise<boolean> {
-    const manifest = await this.cloud.getManifest();
-    return manifest.device.scopes.includes('messages:write') &&
-      manifest.routes.threads.includes('DELETE /threads/:id');
+    return remoteManifestSupportsThreadDelete(await this.cloud.getManifest());
   }
 
   async canSendMessage(sessionId?: string): Promise<boolean> {
     if (!sessionId) return false;
-    const manifest = await this.cloud.getManifest();
-    if (!manifest.device.scopes.includes('messages:write') ||
-        !manifest.routes.messages.includes('POST /proxy/chat/default')) return false;
+    if (!remoteManifestSupportsChat(await this.cloud.getManifest())) return false;
     const thread = await this.cloud.getThread(sessionId);
-    return !(thread.agentEnabled === true && !thread.workspaceId?.trim());
+    // Host may own a valid private Agent workspace while workspaceId is null.
+    return thread.status === 'active';
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -72,40 +78,26 @@ export class CloudHostRuntime implements ConversationRuntime {
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const thread = await this.cloud.getThread(sessionId);
-    if (thread.agentEnabled === true && !thread.workspaceId?.trim()) {
-      throw new RemoteHostError('CLOUD_AGENT_WORKSPACE_REQUIRED',
-        'This legacy Agent thread is read-only without a Workspace', 403);
+    if (thread.status !== 'active') {
+      throw new RemoteHostError('CLOUD_THREAD_NOT_ACTIVE',
+        'The Desktop thread is not active', 409);
     }
     const messageId = options?.messageId ?? createMessageId();
+    // Host owns the transcript, append cursor and Agent execution. The shared
+    // business client reads the canonical tail immediately before sending.
     const session = await this.cloud.sendMessage({
       threadId: sessionId,
       messageId,
       content: input,
-      ...(typeof options?.agentEnabled === 'boolean'
-        ? { agentEnabled: options.agentEnabled } : {}),
+      agentEnabled: thread.agentEnabled === true,
     });
     this.currentAbort = session.abort;
     const self = this;
     return (async function* () {
-      let sawFinish = false;
       try {
-        for await (const event of session.events) {
-          if (event.type === 'text-delta' && typeof event.delta === 'string') {
-            yield { type: 'text-delta' as const, delta: event.delta };
-          } else if (event.type === 'finish') {
-            sawFinish = true;
-            if (event.finishReason !== 'stop') {
-              throw new RemoteHostError('CHAT_FINISHED_WITH_ERROR',
-                'Mira Desktop returned a non-success chat finish');
-            }
-          } else if (event.type === 'error') {
-            throw new RemoteHostError('CHAT_STREAM_ERROR',
-              typeof event.errorText === 'string' ? event.errorText : 'Cloud Host chat failed');
-          }
+        for await (const event of mapRemoteChatStream(session)) {
+          yield event;
         }
-        if (!sawFinish) throw new RemoteHostError('CHAT_STREAM_INCOMPLETE',
-          'Cloud Host chat closed without a finish event');
-        yield { type: 'finish' as const, reason: 'stop' };
       } finally {
         if (self.currentAbort === session.abort) self.currentAbort = null;
       }

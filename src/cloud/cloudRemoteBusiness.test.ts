@@ -42,7 +42,7 @@ const thread = {
 
 const access = { target, tickets };
 
-const harness = (scopes?: RemoteDeviceScope[]) => {
+const harness = (scopes?: RemoteDeviceScope[], history: unknown[] = []) => {
   const entry = {
     discover: jest.fn(async () => access),
     assertCurrentAccess: jest.fn(),
@@ -52,7 +52,7 @@ const harness = (scopes?: RemoteDeviceScope[]) => {
     ['/remote/v1/manifest', manifest(scopes)],
     ['/threads?status=active&sortBy=updatedAt&sortOrder=desc', [thread]],
     ['/threads/remote-thread-1', thread],
-    ['/threads/remote-thread-1/messages', []],
+    ['/threads/remote-thread-1/messages', history],
     ['/threads', thread],
     ['/DELETE /threads/remote-thread-1', null],
   ]);
@@ -133,6 +133,65 @@ describe('MOB-080 Cloud-only business transport', () => {
       .toHaveLength(1);
   });
 
+  it('appends the Host canonical transcript and its last message as cursor', async () => {
+    const history = [
+      {
+        id: 'user-old', threadId: thread.id, role: 'user', content: 'remember this',
+        parts: [{ type: 'text', text: 'remember this' }],
+        createdAt: '2026-11-01T00:00:00.000Z',
+      },
+      {
+        id: 'assistant-old', threadId: thread.id, role: 'assistant',
+        content: 'I remember', parts: [{ type: 'text', text: 'I remember' }],
+        createdAt: '2026-11-01T00:00:01.000Z',
+      },
+      {
+        id: 'tool-old', threadId: thread.id, role: 'tool', content: 'internal',
+        parts: [{ type: 'text', text: 'internal' }],
+        createdAt: '2026-11-01T00:00:02.000Z',
+      },
+    ];
+    const { client, sse } = harness(undefined, history);
+    await client.sendMessage({
+      threadId: thread.id, messageId: 'mobile-new', content: 'continue',
+    });
+    expect(sse.mock.calls[0][2].body).toMatchObject({
+      appendAtTail: { expectedTailMessageId: 'tool-old' },
+      messages: [
+        {
+          id: 'user-old', role: 'user',
+          parts: [{ type: 'text', text: 'remember this' }],
+        },
+        {
+          id: 'assistant-old', role: 'assistant',
+          parts: [{ type: 'text', text: 'I remember' }],
+        },
+        {
+          id: 'mobile-new', role: 'user',
+          parts: [{ type: 'text', text: 'continue' }],
+        },
+      ],
+    });
+  });
+
+  it('refuses to send when the canonical Host transcript cannot be read', async () => {
+    const { client, json, sse } = harness();
+    json.mockImplementation(async <T>(
+      _target: CloudRelayTransportTarget,
+      _tickets: CloudRelayTicketProvider,
+      request: RemoteJsonRequest<T>,
+    ): Promise<T> => {
+      if (request.path.endsWith('/messages')) {
+        throw new RemoteHostError('RELAY_DISCONNECTED', 'Socket lost');
+      }
+      return request.parse(manifest());
+    });
+    await expect(client.sendMessage({
+      threadId: thread.id, messageId: 'no-history', content: 'must not write',
+    })).rejects.toMatchObject({ code: 'RELAY_DISCONNECTED' });
+    expect(sse).not.toHaveBeenCalled();
+  });
+
   it('opens Cloud chat SSE using the canonical Host request, without Legacy Authorization', async () => {
     const { client, sse, json } = harness();
     const stream = await client.sendMessage({
@@ -142,7 +201,7 @@ describe('MOB-080 Cloud-only business transport', () => {
       agentEnabled: true,
     });
     expect(stream.abort).toEqual(expect.any(Function));
-    expect(json).toHaveBeenCalledTimes(1);
+    expect(json).toHaveBeenCalledTimes(2);
     const [requestTarget, ticketSource, request] = sse.mock.calls[0];
     expect(requestTarget).toBe(target);
     expect(ticketSource).toBe(tickets);
@@ -155,6 +214,7 @@ describe('MOB-080 Cloud-only business transport', () => {
         id: thread.id,
         messageId: 'mobile-stable-1',
         agentEnabled: true,
+        appendAtTail: { expectedTailMessageId: null },
         messages: [{
           id: 'mobile-stable-1',
           role: 'user',
@@ -164,6 +224,21 @@ describe('MOB-080 Cloud-only business transport', () => {
     });
     expect(request.credential).not.toContain('ticket');
     expect(tickets.acquireClientTicket).not.toHaveBeenCalled();
+  });
+
+  it('does not open the chat stream after the Cloud account switches mid-send', async () => {
+    const { client, entry, sse } = harness();
+    let checks = 0;
+    entry.assertCurrentAccess.mockImplementation(() => {
+      checks += 1;
+      if (checks === 5) {
+        throw new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED', 'Switched account');
+      }
+    });
+    await expect(client.sendMessage({
+      threadId: thread.id, messageId: 'stale-send', content: 'do not send',
+    })).rejects.toMatchObject({ code: 'CLOUD_RELAY_SESSION_REJECTED' });
+    expect(sse).not.toHaveBeenCalled();
   });
 
   it('rejects response data after an account switch, rather than displaying stale sessions', async () => {

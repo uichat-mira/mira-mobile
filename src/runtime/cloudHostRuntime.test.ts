@@ -65,23 +65,24 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     ]);
     expect(client.sendMessage).toHaveBeenCalledWith({
       threadId: 'remote-1', content: 'Hello', messageId: 'stable-msg',
+      agentEnabled: false,
     });
   });
 
-  it('allows legacy Agent history reads but rejects every mutation without Workspace', async () => {
+  it('sends Host-owned private Agent threads as Agent (not Mobile local Agent)', async () => {
     const client = api();
     client.getThread.mockResolvedValueOnce({
       ...thread, agentEnabled: true, workspaceId: null,
     });
     const runtime = new CloudHostRuntime(client as never);
     await expect(runtime.getMessages('remote-1')).resolves.toHaveLength(1);
-    await expect(runtime.sendMessage('remote-1', 'do not run')).rejects.toMatchObject({
-      code: 'CLOUD_AGENT_WORKSPACE_REQUIRED', status: 403,
-    });
-    expect(client.sendMessage).not.toHaveBeenCalled();
+    await runtime.sendMessage('remote-1', 'run on Host', { agentEnabled: false });
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'remote-1', agentEnabled: true, content: 'run on Host',
+    }));
   });
 
-  it('checks canonical thread Workspace before enabling Cloud message input', async () => {
+  it('allows Agent private workspaces when Host grants messages:write and thread active', async () => {
     const client = api();
     client.getManifest.mockResolvedValue({
       ...manifest,
@@ -93,9 +94,19 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     client.getThread.mockResolvedValueOnce({
       ...thread, agentEnabled: true, workspaceId: null,
     });
-    await expect(runtime.canSendMessage('remote-1')).resolves.toBe(false);
+    await expect(runtime.canSendMessage('remote-1')).resolves.toBe(true);
     await expect(runtime.canSendMessage('remote-1')).resolves.toBe(true);
     expect(client.getThread).toHaveBeenCalledTimes(2);
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses to send on a thread that is no longer active', async () => {
+    const client = api();
+    client.getThread.mockResolvedValueOnce({ ...thread, status: 'archived' });
+    const runtime = new CloudHostRuntime(client as never);
+    await expect(runtime.sendMessage('remote-1', 'no-op')).rejects.toMatchObject({
+      code: 'CLOUD_THREAD_NOT_ACTIVE', status: 409,
+    });
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
