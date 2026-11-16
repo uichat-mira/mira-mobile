@@ -1,5 +1,6 @@
 import { cloudAuthService, CloudAuthServiceError } from './cloudAuthService';
 import { useCloudAccountStore } from './cloudAccountStore';
+import { cloudRelayEntry } from './cloudRelayEntry';
 
 jest.mock('./cloudAuthService', () => ({
   CloudAuthServiceError: class CloudAuthServiceError extends Error {
@@ -806,5 +807,41 @@ describe('MOB-081-C stale Cloud Account completions', () => {
       message: 'Invalid OAuth state',
       busy: false,
     });
+  });
+});
+
+describe('MOB-080 Cloud Relay lifecycle authority', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('closes Cloud Relay immediately when sign-out begins, before server confirmation', async () => {
+    setState();
+    const reset = jest.spyOn(cloudRelayEntry, 'reset').mockImplementation(() => undefined);
+    let finishLogout!: (result: { cleared: boolean; message: string }) => void;
+    (cloudAuthService.logout as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { finishLogout = resolve; }),
+    );
+
+    const operation = useCloudAccountStore.getState().signOut();
+    expect(reset).toHaveBeenCalledTimes(1);
+    finishLogout({ cleared: true, message: '退出成功' });
+    await operation;
+    expect(useCloudAccountStore.getState().status).toBe('signed_out');
+  });
+
+  it('stops active Cloud Relay requests before a device revoke resolves', async () => {
+    setState();
+    const reset = jest.spyOn(cloudRelayEntry, 'reset').mockImplementation(() => undefined);
+    let finishRevoke!: (result: { status: 'failed'; message: string }) => void;
+    (cloudAuthService.revokeDevice as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { finishRevoke = resolve; }),
+    );
+
+    const operation = useCloudAccountStore.getState().revokeDevice('other-device');
+    expect(reset).toHaveBeenCalledTimes(1);
+    finishRevoke({ status: 'failed', message: '撤销未确认' });
+    await operation;
+    expect(useCloudAccountStore.getState().status).toBe('signed_in');
   });
 });

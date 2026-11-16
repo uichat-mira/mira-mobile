@@ -140,9 +140,13 @@ class ApiCloudRelayTicketSource implements CloudRelayTicketProvider {
   constructor(
     private readonly api: CloudRelayApiLike,
     private readonly context: CloudRelaySessionContext,
+    private readonly isCurrent: () => boolean,
   ) {}
 
   async acquireClientTicket(room: string): Promise<string> {
+    if (!this.isCurrent()) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session is no longer active');
+    }
     if (room !== this.context.room) {
       throw failure(
         'CLOUD_RELAY_TICKET_INVALID',
@@ -160,6 +164,9 @@ class ApiCloudRelayTicketSource implements CloudRelayTicketProvider {
       throw ticketFailure(error);
     }
 
+    if (!this.isCurrent()) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during ticket issuance');
+    }
     if (ticket.claims.accountId !== this.context.accountId) {
       throw failure(
         'CLOUD_RELAY_TICKET_INVALID',
@@ -181,6 +188,8 @@ export class CloudRelayEntry {
   private readonly relayEndpoint: string | null;
   private readonly now: () => Date;
   private lastAccess: { key: string; access: CloudRelayAccess } | null = null;
+  private generation = 0;
+  private pendingDiscovery: Promise<CloudRelayAccess> | null = null;
 
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -190,11 +199,31 @@ export class CloudRelayEntry {
   }
 
   reset() {
+    this.generation += 1;
+    this.pendingDiscovery = null;
     this.lastAccess = null;
     closeCloudRelayConnections();
   }
 
-  async discover(): Promise<CloudRelayAccess> {
+  assertCurrentAccess(access: CloudRelayAccess): void {
+    if (this.lastAccess?.access !== access) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session is no longer active');
+    }
+  }
+
+  discover(): Promise<CloudRelayAccess> {
+    if (this.pendingDiscovery) return this.pendingDiscovery;
+    const pending = this.discoverOnce();
+    this.pendingDiscovery = pending;
+    const release = () => {
+      if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async discoverOnce(): Promise<CloudRelayAccess> {
+    const generation = this.generation;
     let stored;
     try {
       stored = await this.store.load();
@@ -204,6 +233,9 @@ export class CloudRelayEntry {
         'Mira Cloud session storage is unavailable',
         error,
       );
+    }
+    if (generation !== this.generation) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during discovery');
     }
     if (!stored) {
       this.reset();
@@ -238,6 +270,9 @@ export class CloudRelayEntry {
       throw discoveryFailure(error);
     }
 
+    if (generation !== this.generation) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during discovery');
+    }
     const host = selectCloudRelayHost(hosts);
     if (!host) {
       throw hosts.length === 0
@@ -268,9 +303,12 @@ export class CloudRelayEntry {
       },
       // The session token and the resulting ticket stay inside this provider;
       // callers only receive the public transport target.
-      tickets: new ApiCloudRelayTicketSource(this.api, context),
+      tickets: new ApiCloudRelayTicketSource(this.api, context, () => this.lastAccess?.access === access),
     };
     this.lastAccess = { key, access };
     return access;
   }
 }
+
+/** Shared Mobile Cloud entry; account lifecycle invalidates this exact instance. */
+export const cloudRelayEntry = new CloudRelayEntry();
