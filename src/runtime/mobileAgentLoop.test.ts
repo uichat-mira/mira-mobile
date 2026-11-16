@@ -1,5 +1,6 @@
 import type { RuntimeEvent } from './conversationRuntime';
 import { MobileAgentLoop } from './mobileAgentLoop';
+import { RemoteHostError } from '../api/remoteHttp';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
@@ -476,5 +477,149 @@ describe('MobileAgentLoop', () => {
     })(), { shouldPause: () => true }));
 
     expect(events).toEqual([{ type: 'run-paused', reason: 'app-suspended' }]);
+  });
+
+  it('continues without tools and emits a notice when the tool channel cannot be listed', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const calls: unknown[][] = [];
+    const loop = new MobileAgentLoop(gateway);
+
+    const events = await collect(
+      await loop.run(
+        [{ role: 'user', content: '1+5=?' }],
+        async (messages, tools) => {
+          calls.push([messages, tools]);
+          return (async function* () {
+            yield { type: 'text-delta' as const, delta: '5' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          })();
+        },
+        { onToolChannelUnavailable: 'continue-without-tools' },
+      ),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual([{ role: 'user', content: '1+5=?' }]);
+    expect(calls[0][1]).toEqual([]);
+    expect(events).toEqual([
+      { type: 'notice', code: 'tool-channel-unavailable' },
+      { type: 'text-delta', delta: '5' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+  it('emits discovery notices for a partially available toolset', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+      discoverTools: async () => ({
+        tools: [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+        notices: [{ code: 'toolset-degraded' }],
+      }),
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    const events = await collect(
+      await loop.run(
+        [{ role: 'user', content: '天气如何' }],
+        async () =>
+          (async function* () {
+            yield { type: 'text-delta' as const, delta: '晴' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+        { onToolChannelUnavailable: 'continue-without-tools' },
+      ),
+    );
+
+    expect(events).toEqual([
+      { type: 'notice', code: 'toolset-degraded' },
+      { type: 'text-delta', delta: '晴' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+  it('fails honestly when a degraded turn still requests tools', async () => {
+    const callTool = jest.fn(async () => ({ content: 'unused' }));
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool,
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      collect(
+        await loop.run(
+          [{ role: 'user', content: 'read the file' }],
+          async () =>
+            (async function* () {
+              yield { type: 'tool-call' as const, callId: 'c1', name: 'read_file', arguments: '{}' };
+              yield { type: 'finish' as const, reason: 'tool_calls' };
+            })(),
+          { onToolChannelUnavailable: 'continue-without-tools' },
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'TOOL_CHANNEL_UNAVAILABLE' });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a lost tool scope instead of degrading to a plain answer', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new RemoteHostError(
+          'REMOTE_SCOPE_REQUIRED',
+          'tool scope is missing',
+          403,
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      loop.run(
+        [],
+        async () =>
+          (async function* () {
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+        { onToolChannelUnavailable: 'continue-without-tools' },
+      ),
+    ).rejects.toMatchObject({ code: 'REMOTE_SCOPE_REQUIRED' });
+  });
+
+  it('surfaces the tool-channel failure by default instead of silently continuing', async () => {
+    const gateway: ToolGatewayClient = {
+      listTools: async () => {
+        throw new ToolGatewayError(
+          'TOOL_CHANNEL_UNAVAILABLE',
+          'tool channel unreachable',
+        );
+      },
+      callTool: async () => ({ content: 'unused' }),
+    };
+    const loop = new MobileAgentLoop(gateway);
+
+    await expect(
+      loop.run(
+        [],
+        async () =>
+          (async function* () {
+            yield { type: 'finish' as const, reason: 'stop' };
+          })(),
+      ),
+    ).rejects.toMatchObject({ code: 'TOOL_CHANNEL_UNAVAILABLE' });
   });
 });

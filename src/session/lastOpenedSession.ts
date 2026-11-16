@@ -70,7 +70,8 @@ export async function loadLastOpenedSession(
     return {
       sessionId: candidate.sessionId,
       title: typeof candidate.title === 'string' && candidate.title.trim() ? candidate.title : '会话',
-      source: candidate.source === 'local-provider' ? 'local-provider' : 'remote-host',
+      source: candidate.source === 'local-provider' ? 'local-provider'
+        : candidate.source === 'cloud-host' ? 'cloud-host' : 'remote-host',
       providerName: typeof candidate.providerName === 'string' ? candidate.providerName : null,
       providerModel: typeof candidate.providerModel === 'string' ? candidate.providerModel : null,
     };

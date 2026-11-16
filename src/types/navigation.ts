@@ -1,7 +1,7 @@
 export type RootStackParamList = {
   Bootstrap: undefined;
   SessionList: undefined;
-  Chat: { sessionId: string; title: string; source?: 'remote-host' | 'local-provider'; providerName?: string | null; providerModel?: string | null };
+  Chat: { sessionId: string; title: string; source?: 'remote-host' | 'local-provider' | 'cloud-host'; cloudAccountId?: string; providerName?: string | null; providerModel?: string | null };
   WorkspaceList: undefined;
   WorkspaceDetail: { workspaceId: string; workspaceName: string };
   HostConfig:
@@ -16,6 +16,8 @@ export type RootStackParamList = {
       }
     | undefined;
   LocalProviderConfig: undefined;
+  CloudAccount: undefined;
+  CloudAuthCallback: { code?: string; state?: string; error?: string } | undefined;
   Settings: undefined;
   Search: undefined;
   Personalization: undefined;

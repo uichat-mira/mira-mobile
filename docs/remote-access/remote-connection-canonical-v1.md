@@ -131,6 +131,28 @@ Mobile 判断某项远程能力可用时，必须同时满足：
 - 因此客户端不得把“cancel 返回 200”解释成“取消一定成功生效”；必须以响应体中的 `Run.status` 为最终事实。
 
 
+### 7.2 Canonical Chat 追加合同（DSK-013 / MOB-082）
+
+此合同适用于 **Cloud Auth + Relay** 与 **paired Remote Host（Direct / Relay）**，
+只统一业务接口，不统一身份凭据或 Transport。
+
+- 远程会话发送走 `POST /proxy/chat/default`，必须只携带**本轮一条 User 消息**、
+  稳定 `messageId` 和 `appendAtTail.expectedTailMessageId`。
+  后者为 Host 当前 canonical 末尾消息 ID；只有空线程才允许 `null`。
+- 当前 Mobile 在发送前读取 Host `GET /threads/:id/messages` 来取得该游标。
+  因此可用的 Chat 发送能力同时要求 `messages:read` 与 `messages:write`，
+  以及 manifest 声明 `POST /proxy/chat/default`。
+  此条件不改变 Thread 创建/删除自己的权限要求。
+- Host 在同一 SQLite 事务检查 owner、线程末尾、重复消息 ID、上轮未完成状态。
+  过期游标和未完成回合返回 409，不删历史、不新开 Provider/Agent/Tool。
+  Mobile 不得因网络结果不确定自动把失败请求重放为新消息。
+- 模型 Chat / RAG / Agent 上下文由 Host canonical 历史构造。
+  Mobile 不上传 UI 全量历史；Desktop 本地明确选择祖先编辑分支的行为保持独立。
+- 仅 Host 明确确认生成错误、标记 `failed` 后，用户才可以主动追加新回合。
+  尚未判明结果的断线回合继续 `pending`，不能自动重放工具副作用。
+- Agent 模式以 Host canonical 线程为准；`workspaceId=null` 不代表没有可用的
+  Host 私有 Agent workspace，更不能绕过已有 Run 审批与 Tool Gateway 权限。
+
 MOB-024 增加当前能力：
 
 ```text

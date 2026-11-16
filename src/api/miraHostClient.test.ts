@@ -41,17 +41,10 @@ describe('PairedRemoteMiraHostClient chat stream contract', () => {
       threadId: 'thread-1',
       messageId: 'user-1',
       content: 'hello',
-      messages: [
-        {
-          id: 'user-1',
-          role: 'user',
-          parts: [{ type: 'text', text: 'hello' }],
-        },
-      ],
     });
   });
 
-  it('sends canonical conversation history before the new user message', async () => {
+  it('delegates canonical history assembly to the shared Host business client', async () => {
     const { client, getMessages, sendMessage } = makeClient(
       [{ type: 'finish', finishReason: 'stop' }],
       [
@@ -63,49 +56,17 @@ describe('PairedRemoteMiraHostClient chat stream contract', () => {
           parts: [{ type: 'text', text: 'remember this' }],
           createdAt: '2026-08-27T01:00:00.000Z',
         },
-        {
-          id: 'assistant-old',
-          threadId: 'thread-1',
-          role: 'assistant',
-          content: 'I remember',
-          parts: [{ type: 'text', text: 'I remember' }],
-          createdAt: '2026-08-27T01:00:01.000Z',
-        },
-        {
-          id: 'tool-old',
-          threadId: 'thread-1',
-          role: 'tool',
-          content: 'internal tool output',
-          parts: [{ type: 'text', text: 'internal tool output' }],
-          createdAt: '2026-08-27T01:00:02.000Z',
-        },
       ],
     );
 
     await collect(await client.sendMessage('thread-1', 'what was it?', 'user-new'));
 
-    expect(getMessages).toHaveBeenCalledWith('thread-1');
-    expect(sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messages: [
-          {
-            id: 'user-old',
-            role: 'user',
-            parts: [{ type: 'text', text: 'remember this' }],
-          },
-          {
-            id: 'assistant-old',
-            role: 'assistant',
-            parts: [{ type: 'text', text: 'I remember' }],
-          },
-          {
-            id: 'user-new',
-            role: 'user',
-            parts: [{ type: 'text', text: 'what was it?' }],
-          },
-        ],
-      }),
-    );
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      messageId: 'user-new',
+      content: 'what was it?',
+    });
   });
 
   it('turns finish error and error events into explicit failures', async () => {

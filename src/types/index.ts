@@ -1,6 +1,6 @@
 import type { RemoteMessagePart } from '../protocol/remoteHostV1';
 
-export type SessionSource = 'remote-host' | 'local-provider';
+export type SessionSource = 'remote-host' | 'local-provider' | 'cloud-host';
 
 export interface MiraHostConfig {
   hostUrl: string;

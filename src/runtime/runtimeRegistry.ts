@@ -1,34 +1,42 @@
 import type { Session, SessionSource } from '../types';
+import { RemoteHostError } from '../api/remoteHttp';
 import { LocalProviderRuntime } from './localProviderRuntime';
 import { RemoteHostRuntime } from './remoteHostRuntime';
+import { CloudHostRuntime } from './cloudHostRuntime';
 import type { ConversationRuntime } from './conversationRuntime';
-import { remoteToolGatewayClient } from '../tools/remoteToolGatewayClient';
+import { mobileToolGatewayClient } from '../tools/mobileToolGatewayClient';
 
 export type SessionSourceFilter = 'all' | SessionSource;
 
 export class RuntimeRegistry {
   readonly remote: RemoteHostRuntime;
+  readonly cloud: CloudHostRuntime;
   readonly local: LocalProviderRuntime;
 
   constructor(
-    local = new LocalProviderRuntime({ toolGateway: remoteToolGatewayClient }),
+    local = new LocalProviderRuntime({ toolGateway: mobileToolGatewayClient }),
     remote = new RemoteHostRuntime(),
+    cloud = new CloudHostRuntime(),
   ) {
     this.local = local;
     this.remote = remote;
+    this.cloud = cloud;
   }
 
   runtimeForSession(sessionId: string, source?: SessionSource): ConversationRuntime {
-    if (source) return source === 'local-provider' ? this.local : this.remote;
+    if (source === 'local-provider') return this.local;
+    if (source === 'cloud-host') return this.cloud;
+    if (source) return this.remote;
     return sessionId.startsWith('local-') ? this.local : this.remote;
   }
 
   runtimeForSource(source: SessionSource): ConversationRuntime {
-    return source === 'local-provider' ? this.local : this.remote;
+    return source === 'local-provider' ? this.local : source === 'cloud-host' ? this.cloud : this.remote;
   }
 
   async listSessions(filter: SessionSourceFilter = 'all'): Promise<Session[]> {
     if (filter === 'remote-host') return this.remote.listSessions();
+    if (filter === 'cloud-host') return this.cloud.listSessions();
     if (filter === 'local-provider') return this.local.listSessions();
     const results = await Promise.allSettled([
       this.remote.listSessions(),
@@ -36,8 +44,15 @@ export class RuntimeRegistry {
     ]);
     const sessions = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
     if (sessions.length === 0) {
-      const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-      if (failure) throw failure.reason;
+      const [remote, local] = results;
+      // A missing Desktop pairing is not a global list failure. Users who
+      // only configure a Local Provider legitimately have no Remote threads.
+      if (local.status === 'rejected') throw local.reason;
+      if (remote.status === 'rejected' &&
+          !(remote.reason instanceof RemoteHostError &&
+            remote.reason.code === 'PAIRING_REQUIRED')) {
+        throw remote.reason;
+      }
     }
     return sessions.sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
   }

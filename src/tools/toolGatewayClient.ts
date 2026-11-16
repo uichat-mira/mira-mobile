@@ -27,6 +27,21 @@ export interface ToolApprovalRequest {
 
 export type ToolApprovalDecision = 'approved' | 'rejected';
 
+/**
+ * Non-fatal findings from tool discovery. These must be user-visible so a
+ * partially available toolset is never presented as complete.
+ */
+export type ToolDiscoveryNoticeCode = 'toolset-degraded';
+
+export interface ToolDiscoveryNotice {
+  code: ToolDiscoveryNoticeCode;
+}
+
+export interface ToolDiscoveryResult {
+  tools: readonly ToolManifest[];
+  notices: readonly ToolDiscoveryNotice[];
+}
+
 export type ToolApprovalResolution =
   | { status: 'completed'; result: ToolCallResult }
   | { status: 'rejected' };
@@ -56,6 +71,12 @@ export class ToolGatewayError extends Error {
  */
 export interface ToolGatewayClient {
   listTools(): Promise<readonly ToolManifest[]>;
+  /**
+   * Discovery with partial-availability information. Gateways that can degrade
+   * (for example local tools staying usable while the Host is unreachable)
+   * implement this; callers fall back to `listTools()` when absent.
+   */
+  discoverTools?(): Promise<ToolDiscoveryResult>;
   callTool(
     request: ToolCallRequest,
     options?: { signal?: AbortSignal },

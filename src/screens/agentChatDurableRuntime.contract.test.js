@@ -21,7 +21,7 @@ describe('MOB-043 durable Agent observation lifecycle', () => {
     expect(source).toContain('observationGenerationRef.current += 1');
     expect(source).toContain('generation !== observationGenerationRef.current');
     expect(source).toContain('runRef.current = null');
-    expect(source).toContain('[appActive, observationGeneration, runId, sessionId]');
+    expect(source).toContain('[appActive, observationGeneration, runId, sessionId, runRuntime, refreshCanonicalMessages]');
   });
 });
 

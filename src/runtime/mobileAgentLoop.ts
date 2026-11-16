@@ -5,6 +5,7 @@ import {
   ToolGatewayError,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  type ToolDiscoveryNotice,
   type ToolGatewayClient,
   type ToolManifest,
 } from '../tools/toolGatewayClient';
@@ -16,6 +17,18 @@ export interface MobileAgentLoopOptions {
   maxToolResultBytes?: number;
   shouldPause?: () => boolean;
   signal?: AbortSignal;
+  /**
+   * Reaction when the approved remote tool channel cannot be listed.
+   *
+   * - 'fail' (default): rethrow the tool-channel error so the caller can map it
+   *   to an actionable message.
+   * - 'continue-without-tools': run the model without tools so an ordinary turn
+   *   stays answerable while the tool channel is unreachable. Tools are only
+   *   skipped, never fabricated, a non-error notice marks the skipped tooling,
+   *   and a model round that still requests tools fails the turn honestly
+   *   instead of succeeding without the requested capability.
+   */
+  onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
   requestApproval?: (
     approval: ToolApprovalRequest,
   ) => Promise<ToolApprovalDecision>;
@@ -28,6 +41,10 @@ export type AgentModelCall = (
 
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+const isDegradableToolChannelError = (error: unknown): boolean =>
+  error instanceof ToolGatewayError &&
+  error.code === 'TOOL_CHANNEL_UNAVAILABLE';
 
 const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
@@ -46,8 +63,39 @@ export class MobileAgentLoop {
     modelCall: AgentModelCall,
     options: MobileAgentLoopOptions = {},
   ): Promise<AsyncIterable<RuntimeEvent>> {
-    const manifests = await this.gateway.listTools();
-    const tools = manifests.map(toOpenAiTool);
+    let manifests: readonly ToolManifest[];
+    let tools: OpenAiTool[];
+    let toolChannelUnavailable = false;
+    let discoveryNotices: readonly ToolDiscoveryNotice[] = [];
+    try {
+      if (this.gateway.discoverTools) {
+        const discovery = await this.gateway.discoverTools();
+        manifests = discovery.tools;
+        discoveryNotices = discovery.notices;
+      } else {
+        manifests = await this.gateway.listTools();
+      }
+      tools = manifests.map(toOpenAiTool);
+    } catch (error) {
+      // Only an absent/unreachable channel may degrade to a plain model round.
+      // A lost scope or a protocol defect must surface as the real failure so
+      // the user gets re-pair or bug-report guidance instead of a vague
+      // "temporarily unavailable" message.
+      if (
+        (options.onToolChannelUnavailable ?? 'fail') !==
+          'continue-without-tools' ||
+        !isDegradableToolChannelError(error)
+      ) {
+        throw error;
+      }
+      // Agent mode must not turn an otherwise plain turn into a failure merely
+      // because the approved remote tool channel is unreachable. Continue
+      // without tools, and emit a notice below so the run is not silently
+      // presented as a full Agent run.
+      manifests = [];
+      tools = [];
+      toolChannelUnavailable = true;
+    }
     const maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     const maxToolResultBytes = options.maxToolResultBytes;
     const deadline = Date.now() + (options.overallTimeoutMs ?? DEFAULT_OVERALL_TIMEOUT_MS);
@@ -56,6 +104,19 @@ export class MobileAgentLoop {
     const shouldPause = options.shouldPause ?? (() => false);
 
     return (async function* () {
+      if (toolChannelUnavailable) {
+        yield {
+          type: 'notice' as const,
+          code: 'tool-channel-unavailable' as const,
+        };
+      } else {
+        // Partial availability (for example local-only tools while the Host is
+        // unreachable) is surfaced before the first model round so the turn is
+        // never presented as a complete Agent run.
+        for (const notice of discoveryNotices) {
+          yield { type: 'notice' as const, code: notice.code };
+        }
+      }
       const messages = [...initialMessages];
       let rounds = 0;
       while (true) {
@@ -93,6 +154,15 @@ export class MobileAgentLoop {
         }
 
         if (pendingCalls.length === 0 || finishReason !== 'tool_calls') return;
+        if (toolChannelUnavailable) {
+          // The model requested tools although none were offered: this turn
+          // demonstrably required them. Fail honestly instead of returning an
+          // ordinary answer that silently lacks the requested capability.
+          throw new ToolGatewayError(
+            'TOOL_CHANNEL_UNAVAILABLE',
+            'The model requested tools while the tool channel was unavailable',
+          );
+        }
         if (rounds >= maxToolRounds) {
           yield { type: 'error' as const, message: `Tool round limit reached (${maxToolRounds})` };
           return;

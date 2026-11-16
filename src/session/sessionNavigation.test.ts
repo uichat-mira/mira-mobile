@@ -35,7 +35,16 @@ describe('resolveSessionOpenTarget', () => {
     ).toEqual({ kind: 'chat' });
   });
 
-  it('rejects Agent sessions that violate the workspace ownership contract', () => {
+  it('opens Host Agent sessions with private workspace even when workspaceId is null', () => {
+    expect(resolveSessionOpenTarget({
+      workspaceId: null, agentEnabled: true, source: 'cloud-host',
+    })).toEqual({ kind: 'chat' });
+    expect(resolveSessionOpenTarget({
+      workspaceId: '   ', agentEnabled: true, source: 'cloud-host',
+    })).toEqual({ kind: 'chat' });
+  });
+
+  it('rejects paired Agent sessions that violate the workspace ownership contract', () => {
     expect(
       resolveSessionOpenTarget({ workspaceId: '   ', agentEnabled: true }),
     ).toEqual({

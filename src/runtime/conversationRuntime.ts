@@ -39,6 +39,16 @@ export type RuntimeEvent =
       type: 'run-paused';
       reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected';
     }
+  /**
+   * Non-error, user-visible signal that does not stop the turn. Emitted, for
+   * example, when Agent mode proceeds without tools because the approved tool
+   * channel is unreachable; the UI must surface it so the skipped tooling is
+   * never hidden from the user.
+   */
+  | {
+      type: 'notice';
+      code: 'tool-channel-unavailable' | 'toolset-degraded';
+    }
   | { type: 'error'; message: string };
 
 export interface ConversationRuntime {
@@ -50,6 +60,8 @@ export interface ConversationRuntime {
   getMessages(sessionId: string): Promise<ChatMessage[]>;
   /** Snapshot read used for canonical UI state such as the session title. */
   getSession?(sessionId: string): Promise<Session>;
+  /** Server-confirmed message write permission (Cloud Host pilot). */
+  canSendMessage?(sessionId?: string): Promise<boolean>;
   sendMessage(
     sessionId: string,
     input: string,

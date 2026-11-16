@@ -306,12 +306,22 @@ export function LocalProviderConfigScreen() {
   const createSession = useCallback(async () => {
     try {
       const session = await runtimeRegistry.createLocalSession(undefined, config.id);
-      navigation.replace('Chat', {
-        sessionId: session.id,
-        title: session.title,
-        source: 'local-provider',
-        providerName: config.name,
-        providerModel: config.model,
+      // The first local chat must have sessions and Settings behind it.
+      navigation.reset({
+        index: 1,
+        routes: [
+          { name: 'SessionList' },
+          {
+            name: 'Chat',
+            params: {
+              sessionId: session.id,
+              title: session.title,
+              source: 'local-provider',
+              providerName: config.name,
+              providerModel: config.model,
+            },
+          },
+        ],
       });
     } catch (error) {
       Alert.alert('无法新建本地对话', error instanceof Error ? error.message : '请先保存 Local Provider 配置。');

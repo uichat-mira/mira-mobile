@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
       android:name=".MainApplication"
@@ -35,6 +36,11 @@
           android:name="android.support.FILE_PROVIDER_PATHS"
           android:resource="@xml/mira_share_paths" />
       </provider>
+      <!-- PackageInstaller result callbacks are delivered through a private
+           explicit PendingIntent. No APK file URIs leave this app. -->
+      <receiver
+        android:name=".MiraUpdateInstallReceiver"
+        android:exported="false" />
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
@@ -51,6 +57,12 @@
             <category android:name="android.intent.category.DEFAULT" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="mira" android:host="pair" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="mira-mobile" android:host="oauth" android:path="/callback" />
         </intent-filter>
       </activity>
     </application>

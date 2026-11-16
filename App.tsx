@@ -24,6 +24,8 @@ import { ReportErrorScreen } from './src/screens/ReportErrorScreen';
 import { AboutScreen } from './src/screens/AboutScreen';
 import { LicenseScreen } from './src/screens/LicenseScreen';
 import { SecurityScreen } from './src/screens/SecurityScreen';
+import { CloudAccountScreen } from './src/screens/CloudAccountScreen';
+import { CloudAuthCallbackScreen } from './src/screens/CloudAuthCallbackScreen';
 import {
   PluginsScreen,
   ShiyanSceneConfigScreen,
@@ -41,16 +43,19 @@ import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import { TailscaleConnectivityLifecycle } from './src/connectivity/TailscaleConnectivityLifecycle';
 import { useAppBootstrap } from './src/bootstrap/useAppBootstrap';
 import { useAppLifecycle } from './src/bootstrap/useAppLifecycle';
+import { useCloudAccountBootstrap } from './src/cloud/useCloudAccountBootstrap';
 import { ShareCardCaptureRoot } from './src/share/ShareCardCapture';
+import { AppUpdateOverlay } from './src/update/AppUpdateOverlay';
 import type { RootStackParamList } from './src/types/navigation';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const linking: LinkingOptions<RootStackParamList> = {
-  prefixes: ['mira://'],
+  prefixes: ['mira://', 'mira-mobile://'],
   config: {
     screens: {
       HostConfig: 'pair',
+      CloudAuthCallback: 'oauth/callback',
     },
   },
 };
@@ -73,23 +78,21 @@ function StatusBarThemed() {
 function AppInner() {
   const bootstrap = useAppBootstrap();
   const bootstrapChecked = bootstrap !== null;
-  const hasDeviceCredential = bootstrap?.hasDeviceCredential ?? false;
   const restoreTarget = bootstrap?.restoreTarget ?? null;
   const startupRestoreHandled = useRef(false);
 
   useAppLifecycle();
+  useCloudAccountBootstrap();
 
-  // SessionList remains the stack root for an authenticated launch. A valid
-  // restore target is consumed exactly once from SessionList's first focus and
-  // pushed with the same Chat navigation contract as a normal list selection.
-  // This preserves #206's restore intent without making Chat an unreturnable root.
+  // SessionList is always the root, even without paired Desktop credentials.
+  // A last-opened Chat is pushed above it so Back reaches sessions/Settings.
   if (!bootstrapChecked) return null;
 
   return (
     <>
       <TailscaleConnectivityLifecycle />
       <Stack.Navigator
-        initialRouteName={hasDeviceCredential ? 'SessionList' : 'Bootstrap'}
+        initialRouteName="SessionList"
         screenOptions={{ headerShown: false }}
       >
         <Stack.Screen name="Bootstrap" component={BootstrapScreen} />
@@ -110,6 +113,8 @@ function AppInner() {
         <Stack.Screen name="HostConfig" component={HostConfigScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
         <Stack.Screen name="LocalProviderConfig" component={LocalProviderConfigScreen} />
+        <Stack.Screen name="CloudAccount" component={CloudAccountScreen} />
+        <Stack.Screen name="CloudAuthCallback" component={CloudAuthCallbackScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />
         <Stack.Screen name="General" component={GeneralSettingsScreen} />
@@ -141,6 +146,7 @@ function App() {
     <ThemeProvider>
       <SafeAreaProvider>
         <ShareCardCaptureRoot />
+        <AppUpdateOverlay />
         <NavigationContainer linking={linking}>
           <StatusBarThemed />
           <AppInner />

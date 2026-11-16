@@ -6,7 +6,6 @@ import {
   parseRemoteChatStreamEvent,
   parseRemoteManifest,
   parseRemoteMemoryOverview,
-  parseRemoteMessage,
   parseRemoteThread,
   parseRemoteToolGatewayStreamEvent,
   parseRemoteToolInvocationProjection,
@@ -47,6 +46,16 @@ import {
   openRelayPostSse,
   requestRelayJson,
 } from './remoteRelay';
+import {
+  RemoteHostBusinessClient,
+  remoteManifestSupportsChat,
+  type RemoteHostBusinessChannel,
+  type RemoteHostBusinessChatRequest,
+  type RemoteHostBusinessJsonRequest,
+  type SendRemoteMessageInput,
+} from './remoteHostBusiness';
+
+export type { SendRemoteMessageInput } from './remoteHostBusiness';
 
 export interface MobileDeviceIdentity {
   name: string;
@@ -89,19 +98,6 @@ export interface RemoteToolApprovalInput {
   toolId: string;
   args?: Record<string, unknown>;
   signal?: AbortSignal;
-}
-
-export interface SendRemoteMessageInput {
-  threadId: string;
-  messageId: string;
-  content: string;
-  messages?: Array<{
-    id?: string;
-    role: 'system' | 'user' | 'assistant';
-    parts: RemoteMessage['parts'];
-  }>;
-  agentEnabled?: boolean;
-  requestedToolGroupIds?: string[];
 }
 
 type RemoteJsonTransport = <T>(request: RemoteJsonRequest<T>) => Promise<T>;
@@ -148,6 +144,14 @@ export interface RemotePushBindingAcceptResponse {
 }
 
 const DIRECT_RETRY_COOLDOWN_MS = 30_000;
+
+// Local capability gates are 403-shaped business errors, not proof that the
+// paired-device credential itself is invalid.
+const LOCAL_GRANT_ERROR_CODES = new Set([
+  'THREAD_CREATE_UNAVAILABLE',
+  'THREAD_DELETE_UNAVAILABLE',
+  'MESSAGES_WRITE_UNAVAILABLE',
+]);
 
 const parseArray = <T>(
   value: unknown,
@@ -230,6 +234,7 @@ const REMOTE_MEMORY_ROUTES = {
 export class RemoteMiraHostClient {
   private activeCredential: StoredDeviceCredential | null = null;
   private directRetryAfter = 0;
+  private readonly business: RemoteHostBusinessClient;
 
   constructor(
     private readonly credentialStore: DeviceCredentialStore = deviceCredentialStore,
@@ -237,7 +242,11 @@ export class RemoteMiraHostClient {
     private readonly sseTransport: RemoteSseTransport = openPostSse,
     private readonly relayJsonTransport: RemoteRelayJsonTransport = requestRelayJson,
     private readonly relaySseTransport: RemoteRelaySseTransport = openRelayPostSse,
-  ) {}
+  ) {
+    this.business = new RemoteHostBusinessClient({
+      openChannel: () => this.openBusinessChannel(),
+    });
+  }
 
   isSecureStorageAvailable() {
     return this.credentialStore.isAvailable();
@@ -392,105 +401,23 @@ export class RemoteMiraHostClient {
   }
 
   async getManifest(signal?: AbortSignal): Promise<RemoteManifest> {
-    const credential = await this.requireCredential();
-    return this.getManifestWithCredential(credential, signal);
+    return this.business.getManifest(signal);
   }
 
   async listThreads(): Promise<RemoteThread[]> {
-    return this.withCredential(credential =>
-      this.requestCredentialJson(credential, {
-        path: '/threads?status=active&sortBy=updatedAt&sortOrder=desc',
-        credential: credential.credential,
-        parse: value => parseArray(value, parseRemoteThread, 'threads'),
-      }),
-    );
+    return this.business.listThreads();
   }
 
   async getThread(threadId: string): Promise<RemoteThread> {
-    return this.withCredential(credential =>
-      this.requestCredentialJson(credential, {
-        path: `/threads/${encodeURIComponent(threadId)}`,
-        credential: credential.credential,
-        parse: parseRemoteThread,
-      }),
-    );
+    return this.business.getThread(threadId);
   }
 
   async getMessages(threadId: string): Promise<RemoteMessage[]> {
-    return this.withCredential(credential =>
-      this.requestCredentialJson(credential, {
-        path: `/threads/${encodeURIComponent(threadId)}/messages`,
-        credential: credential.credential,
-        parse: value => parseArray(value, parseRemoteMessage, 'messages'),
-      }),
-    );
+    return this.business.getMessages(threadId);
   }
 
   async createThread(title?: string): Promise<RemoteThread> {
-    return this.withCredential(async credential => {
-      const operation: JsonOperation<RemoteThread> = {
-        path: '/threads',
-        method: 'POST',
-        credential: credential.credential,
-        body: title ? { title } : {},
-        parse: parseRemoteThread,
-      };
-      const order = this.transportOrder(credential);
-      let lastError: unknown = new RemoteHostError(
-        'REMOTE_ENDPOINT_UNAVAILABLE',
-        'No Mira remote endpoint is available for creating a thread',
-      );
-
-      // Pick a reachable transport using an idempotent manifest probe first.
-      // Once POST /threads is dispatched we never replay it through another
-      // transport because a lost response cannot prove the Host did not create it.
-      for (let index = 0; index < order.length; index += 1) {
-        const transport = order[index];
-        try {
-          await this.requestJsonOnTransport(credential, transport, {
-            path: '/remote/v1/manifest',
-            credential: credential.credential,
-            parse: parseRemoteManifest,
-          });
-          if (transport === 'direct') this.directRetryAfter = 0;
-        } catch (error) {
-          lastError = error;
-          const hasNext = index + 1 < order.length;
-          if (!hasNext) throw error;
-          if (transport === 'direct' && isDirectNetworkError(error)) {
-            this.directRetryAfter = Date.now() + DIRECT_RETRY_COOLDOWN_MS;
-            continue;
-          }
-          if (transport === 'relay' && isRelayTransportError(error)) {
-            continue;
-          }
-          throw error;
-        }
-
-        try {
-          return await this.requestJsonOnTransport(
-            credential,
-            transport,
-            operation,
-          );
-        } catch (error) {
-          if (
-            (transport === 'direct' && isDirectNetworkError(error)) ||
-            (transport === 'relay' && isRelayTransportError(error))
-          ) {
-            throw new RemoteHostError(
-              'THREAD_CREATE_UNCERTAIN',
-              'Mira Host may have created the conversation; refresh the conversation list before retrying',
-              undefined,
-              error,
-            );
-          }
-          throw error;
-        }
-      }
-
-      throw lastError;
-    });
+    return this.business.createThread(title);
   }
 
   async renameThread(threadId: string, title: string): Promise<RemoteThread> {
@@ -506,98 +433,13 @@ export class RemoteMiraHostClient {
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    return this.withCredential(credential =>
-      this.requestCredentialJson(credential, {
-        path: `/threads/${encodeURIComponent(threadId)}`,
-        method: 'DELETE',
-        credential: credential.credential,
-        parse: () => undefined,
-      }),
-    );
+    return this.business.deleteThread(threadId);
   }
 
   async sendMessage(
     input: SendRemoteMessageInput,
   ): Promise<PostSseSession<RemoteChatStreamEvent>> {
-    const content = input.content.trim();
-    if (!content) {
-      throw new RemoteHostError('EMPTY_MESSAGE', 'Message content cannot be empty');
-    }
-    if (!input.messageId.trim()) {
-      throw new RemoteHostError(
-        'MESSAGE_ID_REQUIRED',
-        'A stable message id is required for reconnect-safe sending',
-      );
-    }
-
-    const messages = input.messages?.length
-      ? input.messages
-      : [
-          {
-            id: input.messageId,
-            role: 'user' as const,
-            parts: [{ type: 'text' as const, text: content }],
-          },
-        ];
-
-    return this.withCredential(async credential => {
-      const sseOperation: SseOperation<RemoteChatStreamEvent> = {
-        path: '/proxy/chat/default',
-        credential: credential.credential,
-        body: {
-          id: input.threadId,
-          messageId: input.messageId,
-          messages,
-          ...(typeof input.agentEnabled === 'boolean'
-            ? { agentEnabled: input.agentEnabled }
-            : {}),
-          ...(input.requestedToolGroupIds
-            ? { requestedToolGroupIds: input.requestedToolGroupIds }
-            : {}),
-        },
-        parse: parseRemoteChatStreamEvent,
-      };
-
-      // Probe with an idempotent manifest read before opening the side-effecting
-      // chat stream. This chooses Direct or Relay without blindly replaying POST.
-      // If the selected transport fails between the probe and the SSE open, retry
-      // with the other transport.
-      const order = this.transportOrder(credential);
-      let lastError: unknown = new RemoteHostError(
-        'REMOTE_ENDPOINT_UNAVAILABLE',
-        'No Mira remote endpoint is available for sending a message',
-      );
-
-      for (let index = 0; index < order.length; index += 1) {
-        const transport = order[index];
-        try {
-          // Probe — idempotent, safe to retry.
-          await this.requestJsonOnTransport(credential, transport, {
-            path: '/remote/v1/manifest',
-            credential: credential.credential,
-            parse: parseRemoteManifest,
-          });
-          if (transport === 'direct') this.directRetryAfter = 0;
-          // Open SSE on the confirmed transport.
-          return this.openSseOnTransport(credential, transport, sseOperation);
-        } catch (error) {
-          lastError = error;
-          const hasNext = index + 1 < order.length;
-          if (!hasNext) throw error;
-
-          if (transport === 'direct' && isDirectNetworkError(error)) {
-            this.directRetryAfter = Date.now() + DIRECT_RETRY_COOLDOWN_MS;
-            continue;
-          }
-          if (transport === 'relay' && isRelayTransportError(error)) {
-            continue;
-          }
-          throw error;
-        }
-      }
-
-      throw lastError;
-    });
+    return this.business.sendMessage(input);
   }
 
   async createPushBindingDescriptor(input: {
@@ -967,6 +809,110 @@ export class RemoteMiraHostClient {
         headers: { Authorization: `Bearer ${credential.credential}` },
       };
     });
+  }
+
+  private async openBusinessChannel(): Promise<RemoteHostBusinessChannel> {
+    const credential = await this.requireCredential();
+    return {
+      request: <T>(request: RemoteHostBusinessJsonRequest<T>) =>
+        this.runWithCredential(() =>
+          this.requestCredentialJson(credential, {
+            ...request,
+            credential: credential.credential,
+          }),
+        ),
+      mutateOnce: <T>(
+        request: RemoteHostBusinessJsonRequest<T>,
+        uncertainCode: string,
+        assertManifest: (manifest: RemoteManifest) => void,
+      ) =>
+        this.runWithCredential(() =>
+          this.dispatchCredentialJsonMutationOnce(
+            credential,
+            { ...request, credential: credential.credential },
+            uncertainCode,
+            assertManifest,
+          ),
+        ),
+      openChatStream: (request: RemoteHostBusinessChatRequest) =>
+        this.runWithCredential(() =>
+          this.openChatStreamWithCredential(credential, request),
+        ),
+    };
+  }
+
+  private async openChatStreamWithCredential(
+    credential: StoredDeviceCredential,
+    request: RemoteHostBusinessChatRequest,
+  ): Promise<PostSseSession<RemoteChatStreamEvent>> {
+    const sseOperation: SseOperation<RemoteChatStreamEvent> = {
+      path: request.path,
+      credential: credential.credential,
+      body: request.body,
+      parse: parseRemoteChatStreamEvent,
+    };
+
+    // Probe with an idempotent manifest read before opening the side-effecting
+    // chat stream. The probe may pick another transport, but POST itself is
+    // dispatched at most once.
+    const order = this.transportOrder(credential);
+    let lastError: unknown = new RemoteHostError(
+      'REMOTE_ENDPOINT_UNAVAILABLE',
+      'No Mira remote endpoint is available for sending a message',
+    );
+
+    for (let index = 0; index < order.length; index += 1) {
+      const transport = order[index];
+      try {
+        const manifest = await this.requestJsonOnTransport(credential, transport, {
+          path: '/remote/v1/manifest',
+          credential: credential.credential,
+          parse: parseRemoteManifest,
+        });
+        if (!remoteManifestSupportsChat(manifest)) {
+          throw new RemoteHostError(
+            'MESSAGES_WRITE_UNAVAILABLE',
+            '当前 Mira Host 未授权移动端发送消息',
+            403,
+          );
+        }
+        if (transport === 'direct') this.directRetryAfter = 0;
+        return this.openSseOnTransport(credential, transport, sseOperation);
+      } catch (error) {
+        lastError = error;
+        const hasNext = index + 1 < order.length;
+        if (!hasNext) throw error;
+
+        if (transport === 'direct' && isDirectNetworkError(error)) {
+          this.directRetryAfter = Date.now() + DIRECT_RETRY_COOLDOWN_MS;
+          continue;
+        }
+        if (transport === 'relay' && isRelayTransportError(error)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async runWithCredential<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        error instanceof RemoteHostError &&
+        (error.status === 401 ||
+          (error.status === 403 && !LOCAL_GRANT_ERROR_CODES.has(error.code)))
+      ) {
+        this.activeCredential = null;
+        await this.credentialStore.clear();
+      }
+      throw error;
+    }
   }
 
   private async selectPairingTransport(
@@ -1345,7 +1291,8 @@ export class RemoteMiraHostClient {
     } catch (error) {
       if (
         error instanceof RemoteHostError &&
-        (error.status === 401 || error.status === 403)
+        (error.status === 401 ||
+          (error.status === 403 && !LOCAL_GRANT_ERROR_CODES.has(error.code)))
       ) {
         this.activeCredential = null;
         await this.credentialStore.clear();

@@ -20,7 +20,7 @@
 	<string>APPL</string>
 	<!-- Mirrored from package.json; buildTruth.contract.test.js prevents drift. -->
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.13</string>
+	<string>0.3.28</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
@@ -33,9 +33,17 @@
 				<string>mira</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.tomz.mira.mobile.cloud-oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mira-mobile</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>16</string>
+	<string>30</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

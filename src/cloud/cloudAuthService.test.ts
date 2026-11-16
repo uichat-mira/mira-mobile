@@ -1,0 +1,941 @@
+import {
+  CloudAuthRequestError,
+  type CloudAuthApiLike,
+  type IssuedCloudSession,
+  type OAuthCodeExchangeRequest,
+} from './cloudAuthApi';
+import { MiraCloudAuthService } from './cloudAuthService';
+import {
+  MiraCloudInstallationIdentity,
+  MemoryCloudInstallationStore,
+} from './cloudInstallationIdentity';
+import { MemoryCloudOAuthPendingStore } from './cloudOAuthPendingStore';
+import {
+  MemoryCloudSessionStore,
+  type StoredCloudSession,
+} from './cloudSessionStore';
+import { bytesToBase64Url, codeChallengeForVerifier } from './pkce';
+import type { SecureRandomModule } from './secureStorage';
+
+const fixedNow = () => new Date('2026-10-25T11:00:00.000Z');
+
+const issued: IssuedCloudSession = {
+  sessionToken: 'mcs_v1.session-id.session-secret',
+  account: { id: 'account-1', username: 'alice' },
+  expiresAt: '2026-11-25T11:00:00.000Z',
+};
+
+const code = `mca_v1.${'a'.repeat(22)}.${'b'.repeat(43)}`;
+
+const makeRandom = () => {
+  let counter = 1;
+  const randomBytes = async (length: number) => {
+    const bytes = Uint8Array.from(
+      { length },
+      (_, index) => (counter + index) & 0xff,
+    );
+    counter += length;
+    return bytesToBase64Url(bytes);
+  };
+  const module: SecureRandomModule = {
+    get: async () => null,
+    set: async () => undefined,
+    remove: async () => undefined,
+    randomBytes,
+  };
+  return { randomBytes, module };
+};
+
+const createHarness = () => {
+  const sessionStore = new MemoryCloudSessionStore();
+  const installationStore = new MemoryCloudInstallationStore();
+  const pendingStore = new MemoryCloudOAuthPendingStore();
+  const opened: string[] = [];
+  const random = makeRandom();
+  const installationIdentity = new MiraCloudInstallationIdentity(
+    installationStore,
+    random.module,
+    fixedNow,
+  );
+  const api: CloudAuthApiLike = {
+    exchangeAuthorizationCode: jest.fn(),
+    getSession: jest.fn(),
+    renewSession: jest.fn(),
+    logout: jest.fn(),
+    listDevices: jest.fn(),
+    revokeDevice: jest.fn(),
+  };
+  const service = new MiraCloudAuthService({
+    sessionStore,
+    installationIdentity,
+    pendingStore,
+    api,
+    openBrowser: async url => {
+      opened.push(url);
+    },
+    now: fixedNow,
+    randomBytes: random.randomBytes,
+    baseUrl: 'https://test.cloud-auth.tomzlab.cn',
+  });
+  return {
+    service,
+    sessionStore,
+    installationStore,
+    pendingStore,
+    opened,
+    api,
+  };
+};
+
+const storedSession = (
+  overrides: Partial<StoredCloudSession> = {},
+): StoredCloudSession => ({
+  schemaVersion: 1,
+  sessionToken: issued.sessionToken,
+  account: issued.account,
+  expiresAt: issued.expiresAt,
+  savedAt: '2026-10-25T11:00:00.000Z',
+  ...overrides,
+});
+
+describe('Mira Cloud OAuth service', () => {
+  it('opens the exact system-browser authorization request and stores only pending PKCE state', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+
+    expect(harness.opened).toHaveLength(1);
+    const url = new URL(harness.opened[0] ?? '');
+    expect(url.origin).toBe('https://test.cloud-auth.tomzlab.cn');
+    expect(url.pathname).toBe('/v1/oauth/authorize');
+    expect(url.searchParams.get('client_id')).toBe('mira-mobile');
+    expect(url.searchParams.get('redirect_uri')).toBe(
+      'mira-mobile://oauth/callback',
+    );
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('response_type')).toBe('code');
+
+    const pending = harness.pendingStore.peek();
+    expect(pending).not.toBeNull();
+    expect(url.searchParams.get('state')).toBe(pending?.state);
+    expect(url.searchParams.get('code_challenge')).toBe(
+      codeChallengeForVerifier(pending?.codeVerifier ?? ''),
+    );
+    expect(JSON.stringify(pending)).not.toContain('sessionToken');
+    expect(JSON.stringify(pending)).not.toContain('password');
+
+    const installation = harness.installationStore.peek();
+    expect(installation?.installationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+  });
+
+  it('exchanges the callback exactly once and persists the issued Cloud Session', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    const installation = harness.installationStore.peek();
+    if (!installation) throw new Error('Expected installation identity');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(
+      issued,
+    );
+
+    const state = await harness.service.completeSignIn({
+      code,
+      state: pending?.state,
+    });
+
+    expect(state).toEqual({
+      status: 'signed_in',
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.api.exchangeAuthorizationCode).toHaveBeenCalledWith({
+      code,
+      codeVerifier: pending.codeVerifier,
+      installationId: installation.installationId,
+    } satisfies OAuthCodeExchangeRequest);
+    expect(harness.sessionStore.peek()).toMatchObject({
+      sessionToken: issued.sessionToken,
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.pendingStore.peek()).toBeNull();
+  });
+
+  it('shows only bounded dev transport evidence and never native exception details', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'network',
+        'sensitive native transport exception',
+        'MOB081_FETCH_HEALTH_NETWORK',
+      ),
+    );
+
+    await expect(
+      harness.service.completeSignIn({ code, state: pending.state }),
+    ).rejects.toMatchObject({
+      kind: 'network',
+      code: 'MOB081_FETCH_HEALTH_NETWORK',
+      message: expect.stringContaining('MOB081_FETCH_HEALTH_NETWORK'),
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.pendingStore.peek()).toBeNull();
+  });
+
+  it('surfaces a safe native error detail but not arbitrary exception content', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw code_verifier=secret',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET)',
+      ),
+    );
+    await expect(harness.service.completeSignIn({ code, state: pending.state }))
+      .rejects.toMatchObject({
+        message: expect.stringContaining('错误详情：Android OkHttp: NETWORK SocketException (CONNECTION_RESET)'),
+      });
+
+    await harness.service.beginSignIn();
+    const next = harness.pendingStore.peek();
+    if (!next) throw new Error('Expected another OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError(
+        'network', 'unsafe raw error',
+        'MOB081_FETCH_HEALTH_NETWORK',
+        'Android OkHttp: NETWORK SocketException (CONNECTION_RESET) code_verifier=private',
+      ),
+    );
+    try {
+      await harness.service.completeSignIn({ code, state: next.state });
+      throw new Error('Expected network failure');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).not.toContain('code_verifier');
+      expect(message).not.toContain('错误详情：');
+    }
+  });
+
+  it('rejects a mismatched state before redeeming the code', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+
+    await expect(
+      harness.service.completeSignIn({
+        code,
+        state: 'state-0123456789-abcdef',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_state' });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.pendingStore.peek()).not.toBeNull();
+  });
+
+  it('treats a browser cancellation as a safe non-authorizing outcome', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+
+    await expect(
+      harness.service.completeSignIn({
+        state: pending?.state,
+        error: 'access_denied',
+      }),
+    ).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.pendingStore.peek()).toBeNull();
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('restores a valid session on a normal cold start without another browser login', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'signed_in',
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.opened).toHaveLength(0);
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('preserves a newly exchanged session after the old cold-start restore rejects', async () => {
+    const harness = createHarness();
+    const oldToken = 'mcs_v1.old-id.old-secret';
+    await harness.sessionStore.save(storedSession({ sessionToken: oldToken }));
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+
+    let rejectOld!: (error: unknown) => void;
+    let markRestoreStarted!: () => void;
+    const restoreStarted = new Promise<void>(resolve => {
+      markRestoreStarted = resolve;
+    });
+    (harness.api.getSession as jest.Mock).mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        rejectOld = reject;
+        markRestoreStarted();
+      }),
+    );
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(
+      issued,
+    );
+
+    const restoring = harness.service.restoreSession();
+    const signingIn = harness.service.completeSignIn({
+      code,
+      state: pending.state,
+    });
+
+    // The serialized restore waits one extra microtask before reading storage.
+    await restoreStarted;
+    expect(harness.api.getSession).toHaveBeenCalledWith(oldToken);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    rejectOld(new CloudAuthRequestError('rejected', 'Old session revoked'));
+
+    await expect(restoring).resolves.toEqual({ status: 'session_rejected' });
+    await expect(signingIn).resolves.toMatchObject({
+      status: 'signed_in',
+      account: issued.account,
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('makes a restore started during code exchange observe the new session', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const pending = harness.pendingStore.peek();
+    if (!pending) throw new Error('Expected pending OAuth transaction');
+    (harness.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValue(issued);
+
+    const signingIn = harness.service.completeSignIn({
+      code,
+      state: pending.state,
+    });
+    const restoring = harness.service.restoreSession();
+
+    await expect(signingIn).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(restoring).resolves.toMatchObject({ status: 'signed_in' });
+    expect(harness.api.getSession).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('recovers a saved session when an overlapping OAuth callback is invalid', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    await harness.service.beginSignIn();
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    const callback = harness.service.completeSignIn({
+      code,
+      state: 'invalid-oauth-state',
+    });
+    // This restore starts while the callback exchange is still queued.
+    const restoring = harness.service.restoreSession();
+
+    await expect(callback).rejects.toMatchObject({ kind: 'invalid_state' });
+    await expect(restoring).resolves.toEqual({
+      status: 'signed_in',
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('clears local authority when the server explicitly rejects the session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'rejected',
+        'Mira Cloud session was rejected',
+        'AUTH_REAUTH_REQUIRED',
+      ),
+    );
+
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'session_rejected',
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps the saved session during a temporary Cloud outage', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'cloud_unavailable',
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    expect(harness.sessionStore.peek()).not.toBeNull();
+  });
+
+  it('requires reauthentication when the stored session is already expired', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(
+      storedSession({ expiresAt: '2026-10-24T11:00:00.000Z' }),
+    );
+
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'session_rejected',
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.api.getSession).not.toHaveBeenCalled();
+  });
+
+  it('does not claim logout when the remote revoke cannot be reached', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.logout as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    const result = await harness.service.logout();
+
+    expect(result).toMatchObject({ remote: 'failed', cleared: false });
+    expect(harness.sessionStore.peek()).not.toBeNull();
+  });
+
+  it('clears local Cloud authority after a confirmed remote logout', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.logout as jest.Mock).mockResolvedValue(undefined);
+
+    const result = await harness.service.logout();
+
+    expect(result).toMatchObject({ remote: 'revoked', cleared: true });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('clears local Cloud authority when the server already rejected the token during logout', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.logout as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'rejected',
+        'Mira Cloud session was rejected',
+        'AUTH_REAUTH_REQUIRED',
+      ),
+    );
+
+    const result = await harness.service.logout();
+
+    expect(result).toMatchObject({
+      remote: 'already_revoked',
+      cleared: true,
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  const nearExpirySession = () =>
+    storedSession({
+      expiresAt: '2026-10-25T11:05:00.000Z',
+      savedAt: '2026-10-25T10:00:00.000Z',
+    });
+
+  const readyForRenewal = async (harness: ReturnType<typeof createHarness>) => {
+    await harness.sessionStore.save(nearExpirySession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: nearExpirySession().expiresAt,
+    });
+  };
+
+  it('rotates near expiry, persists the new credential before declaring signed in, and restores it after restart', async () => {
+    const harness = createHarness();
+    const rotated = {
+      ...issued,
+      sessionToken: 'mcs_v1.new-id.new-secret',
+    };
+    await readyForRenewal(harness);
+    (harness.api.renewSession as jest.Mock).mockResolvedValue(rotated);
+
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'signed_in',
+      account: issued.account,
+      expiresAt: rotated.expiresAt,
+    });
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+    expect(harness.api.renewSession).toHaveBeenCalledWith(issued.sessionToken);
+    expect(harness.sessionStore.peek()).toMatchObject({
+      sessionToken: rotated.sessionToken,
+      expiresAt: rotated.expiresAt,
+      savedAt: fixedNow().toISOString(),
+    });
+
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: rotated.expiresAt,
+    });
+    await expect(harness.service.restoreSession()).resolves.toMatchObject({
+      status: 'signed_in',
+    });
+    expect(harness.api.getSession).toHaveBeenLastCalledWith(rotated.sessionToken);
+    expect(harness.api.renewSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not renew an ordinary session far from expiry', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+    await expect(harness.service.restoreSession()).resolves.toMatchObject({
+      status: 'signed_in',
+    });
+    expect(harness.api.renewSession).not.toHaveBeenCalled();
+  });
+
+  it('coalesces simultaneous restores and serializes logout after token rotation', async () => {
+    const harness = createHarness();
+    await readyForRenewal(harness);
+    const rotated = { ...issued, sessionToken: 'mcs_v1.rotated.secret' };
+    let resolveRenew!: (value: IssuedCloudSession) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      markStarted = resolve;
+    });
+    (harness.api.renewSession as jest.Mock).mockImplementation(
+      () => new Promise<IssuedCloudSession>(resolve => {
+        resolveRenew = resolve;
+        markStarted();
+      }),
+    );
+    (harness.api.logout as jest.Mock).mockResolvedValue(undefined);
+
+    const one = harness.service.restoreSession();
+    const two = harness.service.restoreSession();
+    await started;
+    const loggingOut = harness.service.logout();
+    expect(harness.api.logout).not.toHaveBeenCalled();
+
+    resolveRenew(rotated);
+    await expect(one).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(two).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(loggingOut).resolves.toMatchObject({
+      remote: 'revoked',
+      cleared: true,
+    });
+    expect(harness.api.renewSession).toHaveBeenCalledTimes(1);
+    expect(harness.api.logout).toHaveBeenCalledWith(rotated.sessionToken);
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('fails closed when the remote token rotated but secure storage refuses the new token', async () => {
+    const harness = createHarness();
+    await readyForRenewal(harness);
+    (harness.api.renewSession as jest.Mock).mockResolvedValue({
+      ...issued,
+      sessionToken: 'mcs_v1.rotated.secret',
+    });
+    jest.spyOn(harness.sessionStore, 'save').mockRejectedValueOnce(
+      new Error('secure storage write failed'),
+    );
+
+    await expect(harness.service.restoreSession()).resolves.toMatchObject({
+      status: 'session_rejected',
+      message: expect.stringContaining('重新登录'),
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps a pending-unknown rotation offline until a fresh server check determines rejection', async () => {
+    const harness = createHarness();
+    await readyForRenewal(harness);
+    (harness.api.renewSession as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('network', 'Mira Cloud request timed out'),
+    );
+
+    await expect(harness.service.restoreSession()).resolves.toMatchObject({
+      status: 'cloud_unavailable',
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+    expect(harness.api.renewSession).toHaveBeenCalledTimes(1);
+
+    (harness.api.getSession as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('rejected', 'Old bearer was rotated'),
+    );
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'session_rejected',
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.api.renewSession).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['rejected', 'session_rejected', false],
+    ['unavailable', 'cloud_unavailable', true],
+  ] as const)(
+    'classifies renewal %s as %s while preserving only appropriate local records',
+    async (kind, status, keep) => {
+      const harness = createHarness();
+      await readyForRenewal(harness);
+      (harness.api.renewSession as jest.Mock).mockRejectedValueOnce(
+        new CloudAuthRequestError(kind, 'renew unavailable or rejected'),
+      );
+      await expect(harness.service.restoreSession()).resolves.toMatchObject({
+        status,
+      });
+      expect(harness.sessionStore.peek() !== null).toBe(keep);
+    },
+  );
+});
+
+const device = {
+  id: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11',
+  platform: 'mobile' as const,
+  clientName: 'Mira Mobile',
+  clientVersion: '0.3.17',
+  createdAt: '2026-10-20T08:00:00.000Z',
+  lastSeenAt: '2026-10-25T09:00:00.000Z',
+  revokedAt: null,
+};
+
+const revokedDevice = {
+  ...device,
+  id: '4d6f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a22',
+  clientName: 'Mira Desktop',
+  platform: 'desktop' as const,
+  revokedAt: '2026-10-25T10:00:00.000Z',
+};
+
+describe('Mira Cloud device service', () => {
+  it('lists devices with the authoritative stored session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toEqual({
+      status: 'listed',
+      devices: [device],
+    });
+    expect(harness.api.listDevices).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('clears local Cloud authority when the device list is rejected', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Mira Cloud session was rejected'),
+    );
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'rejected',
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps the saved session when the device list is temporarily unavailable', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.listDevices as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'unavailable',
+      reason: 'network',
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('revokes another device without changing this installation session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(revokedDevice);
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    const result = await harness.service.revokeDevice(revokedDevice.id);
+
+    expect(result).toMatchObject({
+      status: 'revoked',
+      device: revokedDevice,
+      session: {
+        status: 'signed_in',
+        account: issued.account,
+        expiresAt: issued.expiresAt,
+      },
+    });
+    expect(harness.api.revokeDevice).toHaveBeenCalledWith(
+      issued.sessionToken,
+      revokedDevice.id,
+    );
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('invalidates local Cloud authority when the confirmed revoke removed this session', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'rejected',
+        'Mira Cloud session was rejected',
+        'AUTH_REAUTH_REQUIRED',
+      ),
+    );
+
+    await expect(
+      harness.service.revokeDevice(device.id),
+    ).resolves.toMatchObject({
+      status: 'revoked',
+      device,
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('keeps a confirmed revoke result but reports unknown local session when verification cannot reach Cloud', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(revokedDevice);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud request timed out'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'revoked',
+      device: revokedDevice,
+      session: {
+        status: 'cloud_unavailable',
+        account: issued.account,
+        expiresAt: issued.expiresAt,
+      },
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('does not treat a failed DELETE as revoked and leaves the session intact', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('network', 'Mira Cloud is unreachable'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'network',
+    });
+    expect(harness.api.getSession).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('reports a missing device separately from an unconfirmed revoke', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError(
+        'not_found',
+        'Mira Cloud could not find the requested resource',
+        'DEVICE_NOT_FOUND',
+      ),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'not_found',
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('clears local authority when DELETE itself is rejected', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Mira Cloud session was rejected'),
+    );
+
+    await expect(
+      harness.service.revokeDevice(revokedDevice.id),
+    ).resolves.toMatchObject({ status: 'rejected' });
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+
+  it('serializes logout before a later revoke and does not send DELETE with a cleared token', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const installationId = harness.installationStore.peek()?.installationId;
+    expect(installationId).toBeDefined();
+    await harness.sessionStore.save(storedSession());
+    let releaseLogout!: () => void;
+    let logoutStarted!: () => void;
+    const started = new Promise<void>(resolve => { logoutStarted = resolve; });
+    (harness.api.logout as jest.Mock).mockImplementationOnce(
+      () => new Promise<void>(resolve => {
+        releaseLogout = resolve;
+        logoutStarted();
+      }),
+    );
+
+    const logout = harness.service.logout();
+    await started;
+    const revoke = harness.service.revokeDevice(device.id);
+    releaseLogout();
+
+    await expect(logout).resolves.toMatchObject({
+      remote: 'revoked', cleared: true,
+    });
+    await expect(revoke).resolves.toEqual({ status: 'signed_out' });
+    expect(harness.api.revokeDevice).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(
+      installationId,
+    );
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+  });
+
+  it('keeps the installation identity when this device is revoked', async () => {
+    const harness = createHarness();
+    const id = await harness.service.beginSignIn().then(
+      () => harness.installationStore.peek()?.installationId,
+    );
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Session revoked'),
+    );
+
+    await expect(harness.service.revokeDevice(device.id)).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(id);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+  });
+
+  it('runs a fresh authoritative session check after revoke instead of reusing a pre-revoke restore', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    let resolveOldRestore!: (value: {
+      account: typeof issued.account;
+      expiresAt: string;
+    }) => void;
+    let markOldRestoreStarted!: () => void;
+    const oldRestoreStarted = new Promise<void>(resolve => {
+      markOldRestoreStarted = resolve;
+    });
+    (harness.api.getSession as jest.Mock)
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveOldRestore = resolve;
+            markOldRestoreStarted();
+          }),
+      )
+      .mockRejectedValueOnce(
+        new CloudAuthRequestError('rejected', 'New revoke invalidated session'),
+      );
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue(device);
+
+    const restoring = harness.service.restoreSession();
+    await oldRestoreStarted;
+    const revoking = harness.service.revokeDevice(device.id);
+    resolveOldRestore({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+    });
+
+    await expect(restoring).resolves.toMatchObject({ status: 'signed_in' });
+    await expect(revoking).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.api.getSession).toHaveBeenCalledTimes(2);
+    expect(harness.sessionStore.peek()).toBeNull();
+  });
+});
+
+describe('MOB-081-C revocation and installation identity closeout', () => {
+  it('does not re-register or change installation ID after revoked-device rejection', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const originalInstallationId = harness.installationStore.peek()?.installationId;
+    await harness.sessionStore.save(storedSession());
+    (harness.api.revokeDevice as jest.Mock).mockResolvedValue({
+      ...device,
+      revokedAt: '2026-10-25T11:00:00.000Z',
+    });
+    (harness.api.getSession as jest.Mock).mockRejectedValue(
+      new CloudAuthRequestError('rejected', 'Device session was revoked'),
+    );
+
+    await expect(harness.service.revokeDevice(device.id)).resolves.toMatchObject({
+      status: 'revoked',
+      session: { status: 'session_rejected' },
+    });
+    expect(harness.sessionStore.peek()).toBeNull();
+    await expect(harness.service.revokeDevice(device.id)).resolves.toEqual({
+      status: 'signed_out',
+    });
+    await expect(harness.service.restoreSession()).resolves.toEqual({
+      status: 'signed_out',
+    });
+    expect(harness.api.revokeDevice).toHaveBeenCalledTimes(1);
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.api.renewSession).not.toHaveBeenCalled();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+  });
+
+  it('repeated logout is idempotent and preserves the independent installation identity', async () => {
+    const harness = createHarness();
+    await harness.service.beginSignIn();
+    const originalInstallationId = harness.installationStore.peek()?.installationId;
+    await harness.sessionStore.save(storedSession());
+    (harness.api.logout as jest.Mock).mockResolvedValue(undefined);
+
+    const first = harness.service.logout();
+    const second = harness.service.logout();
+    await expect(first).resolves.toMatchObject({
+      remote: 'revoked',
+      cleared: true,
+    });
+    await expect(second).resolves.toMatchObject({
+      remote: 'already_signed_out',
+      cleared: true,
+    });
+    expect(harness.api.logout).toHaveBeenCalledTimes(1);
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+
+    // A stray invalid callback after logout is never an implicit login.
+    await expect(harness.service.completeSignIn({
+      code,
+      state: 'invalid-oauth-state',
+    })).rejects.toMatchObject({ kind: 'invalid_state' });
+    expect(harness.api.exchangeAuthorizationCode).not.toHaveBeenCalled();
+    expect(harness.installationStore.peek()?.installationId).toBe(originalInstallationId);
+  });
+});
