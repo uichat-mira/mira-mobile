@@ -27,9 +27,12 @@ import { saveLastOpenedSession } from '../session/lastOpenedSession';
 const DISCOVERY_POLL_MS = 1_500;
 export function AgentChatScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
-  const { sessionId, title, source, providerName, providerModel } = route.params;
-  const cloudAccountId = useCloudAccountStore(state =>
+  const { sessionId, title, source, providerName, providerModel, cloudAccountId: routeCloudAccountId } = route.params;
+  const activeCloudAccountId = useCloudAccountStore(state =>
     state.status === 'signed_in' ? state.account?.id ?? null : null);
+  // An open Agent thread belongs to its route-selected Cloud account.
+  const cloudAuthorityActive = source !== 'cloud-host' ||
+    (Boolean(routeCloudAccountId) && routeCloudAccountId === activeCloudAccountId);
 
   useEffect(() => {
     void saveLastOpenedSession({
@@ -42,15 +45,16 @@ export function AgentChatScreen() {
   }, [sessionId, title, source, providerName, providerModel]);
 
   if (source === 'local-provider' || sessionId.startsWith('local-') ||
-      (source === 'cloud-host' && !cloudAccountId)) {
+      !cloudAuthorityActive) {
+    // ChatScreen already prevents wrong-account history reads and sends.
     return <ChatScreen />;
   }
 
   return <RemoteAgentChatOverlay
-    key={source === 'cloud-host' ? `cloud:${cloudAccountId}` : `paired:${sessionId}`}
+    key={source === 'cloud-host' ? `cloud:${routeCloudAccountId}` : `paired:${sessionId}`}
     sessionId={sessionId}
     source={source === 'cloud-host' ? 'cloud-host' : 'remote-host'}
-    cloudAccountId={cloudAccountId}
+    cloudAccountId={source === 'cloud-host' ? routeCloudAccountId ?? null : null}
   />;
 }
 

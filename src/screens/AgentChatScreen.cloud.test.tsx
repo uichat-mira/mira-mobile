@@ -124,6 +124,32 @@ describe('AgentChatScreen Cloud source routing', () => {
     expect(mockPairedClient.getMessages).not.toHaveBeenCalled();
   });
 
+  it('does not rebind account-A Agent to another signed-in account', async () => {
+    await act(async () => {
+      tree = renderer.create(<AgentChatScreen />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const { CloudHostAgentRunClient } = jest.requireMock('../cloud/cloudHostAgentRunClient');
+    expect(CloudHostAgentRunClient).toHaveBeenCalledTimes(1);
+    const readsBefore = mockCloudClient.getMessages.mock.calls.length;
+    const runsBefore = mockHostRunClient.getAgentRun.mock.calls.length;
+    mockCloudState = { status: 'signed_in', account: { id: 'account-b' } };
+    await act(async () => {
+      tree?.update(<AgentChatScreen />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(CloudHostAgentRunClient).toHaveBeenCalledTimes(1);
+    expect(tree!.root.findAll(node => Boolean(node.props.onAction && node.props.run)))
+      .toHaveLength(0);
+    expect(mockCloudClient.getMessages).toHaveBeenCalledTimes(readsBefore);
+    expect(mockHostRunClient.getAgentRun).toHaveBeenCalledTimes(runsBefore);
+    expect(mockHostRunClient.approveAgentRun).not.toHaveBeenCalled();
+    expect(mockHostRunClient.rejectAgentRun).not.toHaveBeenCalled();
+    expect(mockHostRunClient.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
   it('unmounts Cloud Agent controller when the Cloud identity signs out', async () => {
     await act(async () => {
       tree = renderer.create(<AgentChatScreen />);
