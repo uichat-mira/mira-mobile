@@ -9,6 +9,12 @@ import type {
   RemoteManifest,
 } from '../protocol/remoteHostV1';
 
+/** Same Host Agent Run business contract, independent of Cloud/paired transport. */
+export type HostAgentRunClient = Pick<
+  RemoteMiraHostClient,
+  'getManifest' | 'getAgentRun' | 'approveAgentRun' | 'rejectAgentRun' | 'cancelAgentRun'
+>;
+
 export type DurableHostAgentAction = 'approve' | 'reject' | 'cancel';
 
 const AGENT_ROUTES = {
@@ -82,7 +88,7 @@ export function assertDurableHostRunBelongsToThread(
 
 export class DurableHostAgentRuntimeAdapter {
   constructor(
-    private readonly remote: RemoteMiraHostClient = remoteMiraHostClient,
+    private readonly remote: HostAgentRunClient = remoteMiraHostClient,
     private readonly pollIntervalMs = 1_200,
   ) {}
 
