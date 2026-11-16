@@ -68,6 +68,19 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     });
   });
 
+  it('allows legacy Agent history reads but rejects every mutation without Workspace', async () => {
+    const client = api();
+    client.getThread.mockResolvedValueOnce({
+      ...thread, agentEnabled: true, workspaceId: null,
+    });
+    const runtime = new CloudHostRuntime(client as never);
+    await expect(runtime.getMessages('remote-1')).resolves.toHaveLength(1);
+    await expect(runtime.sendMessage('remote-1', 'do not run')).rejects.toMatchObject({
+      code: 'CLOUD_AGENT_WORKSPACE_REQUIRED', status: 403,
+    });
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('rejects partial chat streams, without fabricating a finish', async () => {
     const client = api();
     client.sendMessage.mockResolvedValueOnce({

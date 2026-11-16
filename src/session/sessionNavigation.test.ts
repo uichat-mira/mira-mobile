@@ -35,7 +35,16 @@ describe('resolveSessionOpenTarget', () => {
     ).toEqual({ kind: 'chat' });
   });
 
-  it('rejects Agent sessions that violate the workspace ownership contract', () => {
+  it('opens legacy Cloud Agent history without Workspace read-only', () => {
+    expect(resolveSessionOpenTarget({
+      workspaceId: null, agentEnabled: true, source: 'cloud-host',
+    })).toEqual({ kind: 'chat', cloudLegacyAgentReadOnly: true });
+    expect(resolveSessionOpenTarget({
+      workspaceId: '   ', agentEnabled: true, source: 'cloud-host',
+    })).toEqual({ kind: 'chat', cloudLegacyAgentReadOnly: true });
+  });
+
+  it('rejects paired Agent sessions that violate the workspace ownership contract', () => {
     expect(
       resolveSessionOpenTarget({ workspaceId: '   ', agentEnabled: true }),
     ).toEqual({

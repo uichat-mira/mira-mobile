@@ -284,6 +284,48 @@ describe('SessionListScreen session collection', () => {
     }
   });
 
+  it('navigates a Workspace-less legacy Cloud Agent to read-only Chat', async () => {
+    const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
+    const previous = useCloudAccountStore.getState();
+    const { useNavigation } = jest.requireMock('@react-navigation/native');
+    const navigation = { navigate: jest.fn(), goBack: jest.fn() };
+    (useNavigation as jest.Mock).mockReturnValue(navigation);
+    runtimeRegistry.listSessions.mockImplementation(async (filter: string) =>
+      filter === 'cloud-host'
+        ? [{ id: 'old-agent', title: '旧 Agent 会话', source: 'cloud-host',
+          workspaceId: null, agentEnabled: true,
+          updatedAt: new Date('2026-11-16T02:00:00.000Z') }]
+        : []
+    );
+    useCloudAccountStore.setState({
+      status: 'signed_in', account: { id: 'account-a', username: 'alice' },
+      initialized: true,
+    });
+    let tree!: ReactTestRenderer;
+    try {
+      tree = await renderScreen();
+      const picker = tree.root.findAll(node =>
+        node.props.accessibilityLabel === '切换到 Mira Cloud')[0];
+      await act(async () => {
+        picker.props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const row = tree.root.findAll(node =>
+        node.props.accessibilityLabel === '旧 Agent 会话')[0];
+      await act(async () => row.props.onPress());
+      expect(navigation.navigate).toHaveBeenCalledWith('Chat', expect.objectContaining({
+        sessionId: 'old-agent',
+        source: 'cloud-host',
+        cloudLegacyAgentReadOnly: true,
+      }));
+    } finally {
+      if (tree) await act(async () => tree.unmount());
+      useCloudAccountStore.setState(previous);
+    }
+  });
+
   it('does not keep previous-source rows visible while a filter reload is pending', async () => {
     let resolveLocal!: (value: unknown[]) => void;
     runtimeRegistry.listSessions.mockImplementation((filter: string) => {

@@ -210,6 +210,8 @@ export function SessionListScreen() {
       title: session.title,
       source: session.source,
       ...(session.source === 'cloud-host' ? { cloudAccountId } : {}),
+      ...(target.kind === 'chat' && target.cloudLegacyAgentReadOnly
+        ? { cloudLegacyAgentReadOnly: true } : {}),
       providerName: session.providerName,
       providerModel: session.providerModel,
     });

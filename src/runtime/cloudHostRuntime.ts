@@ -68,6 +68,11 @@ export class CloudHostRuntime implements ConversationRuntime {
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    const thread = await this.cloud.getThread(sessionId);
+    if (thread.agentEnabled === true && !thread.workspaceId?.trim()) {
+      throw new RemoteHostError('CLOUD_AGENT_WORKSPACE_REQUIRED',
+        'This legacy Agent thread is read-only without a Workspace', 403);
+    }
     const messageId = options?.messageId ?? createMessageId();
     const session = await this.cloud.sendMessage({
       threadId: sessionId,

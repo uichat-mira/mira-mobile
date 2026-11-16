@@ -1,7 +1,7 @@
 import type { Session } from '../types';
 
 export type SessionOpenTarget =
-  | { kind: 'chat' }
+  | { kind: 'chat'; cloudLegacyAgentReadOnly?: true }
   | { kind: 'workspace-list' }
   | { kind: 'contract-error'; message: string };
 
@@ -24,6 +24,11 @@ export const resolveSessionOpenTarget = (
     session.source !== 'local-provider' &&
     !hasNonEmptyId(session.workspaceId)
   ) {
+    // Cloud legacy Agent history may be read; the missing Workspace still
+    // forbids Agent execution and all future messages on this thread.
+    if (session.source === 'cloud-host') {
+      return { kind: 'chat', cloudLegacyAgentReadOnly: true };
+    }
     return {
       kind: 'contract-error',
       message: '该 Agent 会话缺少项目归属，无法在移动端打开。',
