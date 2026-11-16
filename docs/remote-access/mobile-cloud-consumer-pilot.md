@@ -52,6 +52,18 @@ later has a broader grant. Paired Remote Host's existing Agent Workspace
 contract remains enforced. History still requires the separate
 messages:read effective Host grant; threads:read alone is not sufficient.
 
-Tool Gateway, attachments, alternate entry surfaces (Drawer/Search), full
-account-isolation/device-revocation pilot, and test/prod release promotion
-remain MOB-080 follow-ups; this slice must not close the Issue.
+When the Host manifest and effective Cloud grant provide the Agent scopes,
+Mobile now uses the **same DurableHostAgentRuntimeAdapter and AgentChatScreen**
+for the Cloud source as for paired Remote Host. The Cloud transport supplies
+only the authenticated Host Agent Run requests; all run identity, pending
+approval, approve/reject/cancel and safe resume semantics stay in the existing
+Host-owned Agent contract. Cloud logout/account switch invalidates the active
+Agent observer and pending actions. This change does **not** grant new scopes,
+unlock new Mobile-local tools or override Desktop Harness approval policy.
+Agent message-send availability still depends on the separate Host append-turn
+integration and coordinated Mobile business-client work.
+
+Standalone Cloud Tool Gateway invocation/approval, attachments, alternate entry
+surfaces (Drawer/Search), full account-isolation/device-revocation pilot and
+test/prod release promotion remain MOB-080 follow-ups; this slice must not
+close the Issue.

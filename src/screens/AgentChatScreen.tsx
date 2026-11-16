@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 import { useFocusEffect, useRoute, type RouteProp } from '@react-navigation/native';
 import {
@@ -9,9 +9,15 @@ import {
   type AgentRunAction,
 } from '../agent/remoteAgentApproval';
 import { miraHostClient } from '../api/miraHostClient';
+import { CloudHostAgentRunClient } from '../cloud/cloudHostAgentRunClient';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { AgentRunApprovalCard } from '../agent/AgentRunApprovalCard';
 import type { RemoteAgentRun } from '../protocol/remoteHostV1';
-import { durableHostAgentRuntime } from '../runtime/durableHostAgentRuntime';
+import {
+  DurableHostAgentRuntimeAdapter,
+  durableHostAgentRuntime,
+} from '../runtime/durableHostAgentRuntime';
+import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { spacing } from '../theme/tokens';
 import type { ChatMessage } from '../types';
 import type { RootStackParamList } from '../types/navigation';
@@ -22,6 +28,8 @@ const DISCOVERY_POLL_MS = 1_500;
 export function AgentChatScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
   const { sessionId, title, source, providerName, providerModel } = route.params;
+  const cloudAccountId = useCloudAccountStore(state =>
+    state.status === 'signed_in' ? state.account?.id ?? null : null);
 
   useEffect(() => {
     void saveLastOpenedSession({
@@ -33,14 +41,35 @@ export function AgentChatScreen() {
     }).catch(() => undefined);
   }, [sessionId, title, source, providerName, providerModel]);
 
-  if (source === 'local-provider' || sessionId.startsWith('local-')) {
+  if (source === 'local-provider' || sessionId.startsWith('local-') ||
+      (source === 'cloud-host' && !cloudAccountId)) {
     return <ChatScreen />;
   }
 
-  return <RemoteAgentChatOverlay sessionId={sessionId} />;
+  return <RemoteAgentChatOverlay
+    key={source === 'cloud-host' ? `cloud:${cloudAccountId}` : `paired:${sessionId}`}
+    sessionId={sessionId}
+    source={source === 'cloud-host' ? 'cloud-host' : 'remote-host'}
+    cloudAccountId={cloudAccountId}
+  />;
 }
 
-function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
+function RemoteAgentChatOverlay({
+  sessionId,
+  source,
+  cloudAccountId,
+}: {
+  sessionId: string;
+  source: 'cloud-host' | 'remote-host';
+  cloudAccountId: string | null;
+}) {
+  const client = source === 'cloud-host' ? runtimeRegistry.cloud : miraHostClient;
+  const runRuntime = useMemo(
+    () => source === 'cloud-host' && cloudAccountId
+      ? new DurableHostAgentRuntimeAdapter(new CloudHostAgentRunClient(cloudAccountId))
+      : durableHostAgentRuntime,
+    [source, cloudAccountId],
+  );
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RemoteAgentRun | null>(null);
   const [loading, setLoading] = useState(false);
@@ -99,7 +128,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
       setLoading(true);
       setError(null);
       try {
-        const nextRun = await loadAgentRunForMessages(sessionId, messages);
+        const nextRun = await loadAgentRunForMessages(sessionId, messages, runRuntime);
         if (requestSequenceRef.current !== sequence) return;
         runRef.current = nextRun;
         setRun(nextRun);
@@ -118,17 +147,23 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
         }
       }
     },
-    [sessionId],
+    [sessionId, runRuntime],
   );
 
-  useEffect(
-    () =>
-      miraHostClient.subscribeMessageSnapshots(snapshot => {
-        if (snapshot.sessionId !== sessionId) return;
-        void syncAgentRun(snapshot.messages);
-      }),
-    [sessionId, syncAgentRun],
-  );
+  useEffect(() => {
+    // Paired Remote V1 already publishes Host snapshots; Cloud has its own
+    // independently authorized history read in the discovery loop below.
+    if (source === 'cloud-host') return undefined;
+    return miraHostClient.subscribeMessageSnapshots(snapshot => {
+      if (snapshot.sessionId !== sessionId) return;
+      void syncAgentRun(snapshot.messages);
+    });
+  }, [source, sessionId, syncAgentRun]);
+
+  const refreshCanonicalMessages = useCallback(async () => {
+    const messages = await client.getMessages(sessionId);
+    if (source === 'cloud-host') await syncAgentRun(messages);
+  }, [client, source, sessionId, syncAgentRun]);
 
   useFocusEffect(
     useCallback(() => {
@@ -139,7 +174,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
 
       const refreshMessages = async () => {
         try {
-          await miraHostClient.getMessages(sessionId);
+          await refreshCanonicalMessages();
         } catch (refreshError) {
           if (!active || !runIdRef.current) return;
           setError(getAgentRunErrorMessage(refreshError));
@@ -156,7 +191,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
         }
       };
 
-      void miraHostClient
+      void client
         .getSession(sessionId)
         .then(async session => {
           if (!active || !session.agentEnabled) return;
@@ -177,7 +212,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
         if (discoveryTimer) clearTimeout(discoveryTimer);
         requestSequenceRef.current += 1;
       };
-    }, [appActive, sessionId]),
+    }, [appActive, sessionId, client, refreshCanonicalMessages]),
   );
 
   useFocusEffect(
@@ -190,7 +225,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
 
       void (async () => {
         try {
-          for await (const nextRun of durableHostAgentRuntime.observeRun(
+          for await (const nextRun of runRuntime.observeRun(
             sessionId,
             runId,
             controller.signal,
@@ -212,7 +247,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
             generation === observationGenerationRef.current &&
             runIdRef.current === runId
           ) {
-            await miraHostClient.getMessages(sessionId);
+            await refreshCanonicalMessages();
           }
         } catch (observeError) {
           if (!active || controller.signal.aborted || runIdRef.current !== runId) return;
@@ -226,19 +261,18 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
         active = false;
         controller.abort();
       };
-    }, [appActive, observationGeneration, runId, sessionId]),
+    }, [appActive, observationGeneration, runId, sessionId, runRuntime, refreshCanonicalMessages]),
   );
 
   const retry = useCallback(() => {
     setError(null);
     setLoading(true);
-    void miraHostClient
-      .getMessages(sessionId)
+    void refreshCanonicalMessages()
       .catch(retryError => {
         setLoading(false);
         if (runIdRef.current) setError(getAgentRunErrorMessage(retryError));
       });
-  }, [sessionId]);
+  }, [refreshCanonicalMessages]);
 
   const handleAction = useCallback(
     async (action: AgentRunAction) => {
@@ -249,14 +283,14 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
       requestSequenceRef.current += 1;
 
       try {
-        const updated = await applyAgentRunAction(sessionId, run.id, action);
+        const updated = await applyAgentRunAction(sessionId, run.id, action, runRuntime);
         runIdRef.current = updated.id;
         runRef.current = updated;
         setRunId(updated.id);
         setRun(updated);
 
         try {
-          await miraHostClient.getMessages(sessionId);
+          await refreshCanonicalMessages();
         } catch (refreshError) {
           setError(getAgentRunErrorMessage(refreshError));
         }
@@ -267,7 +301,7 @@ function RemoteAgentChatOverlay({ sessionId }: { sessionId: string }) {
         setActionInFlight(null);
       }
     },
-    [run, sessionId],
+    [run, sessionId, runRuntime, refreshCanonicalMessages],
   );
 
   return (
