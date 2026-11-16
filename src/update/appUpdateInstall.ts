@@ -31,7 +31,8 @@ export type AppUpdateErrorCode =
   | 'UPDATE_FILE_MISSING'
   | 'UPDATE_FILE_OUTSIDE_CACHE'
   | 'UPDATE_PERMISSION_REQUIRED'
-  | 'UPDATE_INSTALL_FAILED';
+  | 'UPDATE_INSTALL_FAILED'
+  | 'UPDATE_CONFIRMATION_UNAVAILABLE';
 
 /**
  * Native rejections arrive as plain `{ code, message }` objects rather than
@@ -52,17 +53,32 @@ interface MiraAppUpdateNativeModule {
   download(url: string, sha256: string, fileName: string): Promise<string>;
   cancelDownload(): Promise<void>;
   install(filePath: string, sha256: string): Promise<number>;
+  confirmInstall?(sessionId: number): Promise<void>;
   canInstallPackages(): Promise<boolean>;
   openInstallPermissionSettings(): Promise<void>;
 }
 
 const PROGRESS_EVENT = 'MiraAppUpdateProgress';
 const INSTALL_FAILURE_EVENT = 'MiraAppUpdateInstallFailure';
+const INSTALL_CONFIRMATION_EVENT = 'MiraAppUpdateConfirmationRequired';
 
 export interface UpdateInstallFailure {
   sessionId: number;
   message: string;
 }
+
+/** Android has returned STATUS_PENDING_USER_ACTION for this session. */
+export const observeUpdateInstallConfirmations = (
+  onConfirmation: (sessionId: number) => void,
+): { remove(): void } =>
+  DeviceEventEmitter.addListener(INSTALL_CONFIRMATION_EVENT, (payload: unknown) => {
+    if (!isRecord(payload)) return;
+    const { sessionId } = payload;
+    if (typeof sessionId !== 'number' || !Number.isSafeInteger(sessionId) || sessionId <= 0) {
+      return;
+    }
+    onConfirmation(sessionId);
+  });
 
 /** Reject malformed/stale native callbacks before they enter the UI state. */
 export const observeUpdateInstallFailures = (
@@ -208,6 +224,25 @@ export const installDownloadedUpdate = async (
   }
 };
 
+/**
+ * The only foreground confirmation path. This is invoked by a real user tap;
+ * native launches Android's system-provided confirmation Intent from Activity.
+ */
+export const confirmUpdateInstallation = async (sessionId: number): Promise<void> => {
+  const nativeModule = getNativeModule();
+  if (nativeModule?.confirmInstall === undefined) {
+    throw new AppUpdateInstallError(
+      'UPDATE_CONFIRMATION_UNAVAILABLE',
+      'Install confirmation is not supported by this native build',
+    );
+  }
+  try {
+    await nativeModule.confirmInstall(sessionId);
+  } catch (error) {
+    throw toAppUpdateError(error);
+  }
+};
+
 export const canInstallPackages = async (): Promise<boolean> => {
   const nativeModule = getNativeModule();
   if (nativeModule === null) return false;
@@ -264,6 +299,7 @@ const ERROR_MESSAGES: Record<AppUpdateErrorCode, string> = {
   UPDATE_FILE_OUTSIDE_CACHE: '安装包位置异常，请重新下载。',
   UPDATE_PERMISSION_REQUIRED: UPDATE_PERMISSION_MESSAGE,
   UPDATE_INSTALL_FAILED: '无法启动系统安装，请稍后重试。',
+  UPDATE_CONFIRMATION_UNAVAILABLE: '安装确认请求已失效，请重新下载更新。',
 };
 
 export const updateInstallErrorMessage = (error: unknown): string => {

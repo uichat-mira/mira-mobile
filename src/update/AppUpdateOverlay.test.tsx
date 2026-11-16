@@ -193,6 +193,14 @@ describe('AppUpdateOverlay', () => {
     expect(useAppUpdateStore.getState().flow).not.toBeNull();
   });
 
+  it('shows a user-initiated system installer confirmation action', () => {
+    setFlow(flowWith({ status: 'confirmation-required' }));
+    const texts = textsOf(renderOverlay());
+    expect(texts).toContain('准备安装更新');
+    expect(texts).toContain('继续安装');
+    expect(texts.some((value) => value.includes('Android 系统确认界面'))).toBe(true);
+  });
+
   it('explains a permission stop with an actionable label', () => {
     setFlow(
       flowWith({

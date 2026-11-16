@@ -3,11 +3,19 @@ import { useAppUpdateStore } from './appUpdateStore';
 
 const mockDownloadUpdate = jest.fn();
 const mockInstallDownloadedUpdate = jest.fn();
+const mockConfirmUpdateInstallation = jest.fn();
 const mockCancelUpdateDownload = jest.fn();
 const mockOpenInstallPermissionSettings = jest.fn();
 const mockCanInstallPackages = jest.fn();
 const mockIsInAppUpdateSupported = jest.fn();
 let installFailureHandler: ((event: { sessionId: number; message: string }) => void) | null = null;
+let installConfirmationHandler: ((sessionId: number) => void) | null = null;
+const mockObserveUpdateInstallConfirmations = jest.fn((callback: typeof installConfirmationHandler) => {
+  installConfirmationHandler = callback;
+  return { remove: () => {
+    if (installConfirmationHandler === callback) installConfirmationHandler = null;
+  } };
+});
 const mockObserveUpdateInstallFailures = jest.fn((callback: typeof installFailureHandler) => {
   installFailureHandler = callback;
   return { remove: () => { if (installFailureHandler === callback) installFailureHandler = null; } };
@@ -19,6 +27,9 @@ jest.mock('./appUpdateInstall', () => {
     ...actual,
     downloadUpdate: (...args: unknown[]) => mockDownloadUpdate(...args),
     installDownloadedUpdate: (...args: unknown[]) => mockInstallDownloadedUpdate(...args),
+    confirmUpdateInstallation: (...args: unknown[]) => mockConfirmUpdateInstallation(...args),
+    observeUpdateInstallConfirmations: (callback: (sessionId: number) => void) =>
+      mockObserveUpdateInstallConfirmations(callback),
     observeUpdateInstallFailures: (callback: (event: { sessionId: number; message: string }) => void) =>
       mockObserveUpdateInstallFailures(callback),
     cancelUpdateDownload: (...args: unknown[]) => mockCancelUpdateDownload(...args),
@@ -71,12 +82,15 @@ const progressCallbackFor = (callIndex: number) =>
 beforeEach(() => {
   mockDownloadUpdate.mockReset();
   mockInstallDownloadedUpdate.mockReset();
+  mockConfirmUpdateInstallation.mockReset();
   mockCancelUpdateDownload.mockReset();
   mockOpenInstallPermissionSettings.mockReset();
   mockCanInstallPackages.mockReset();
   mockIsInAppUpdateSupported.mockReset();
   mockObserveUpdateInstallFailures.mockClear();
+  mockObserveUpdateInstallConfirmations.mockClear();
   installFailureHandler = null;
+  installConfirmationHandler = null;
   mockCancelUpdateDownload.mockResolvedValue(undefined);
   mockOpenInstallPermissionSettings.mockResolvedValue(undefined);
   mockCanInstallPackages.mockResolvedValue(true);
@@ -260,6 +274,54 @@ describe('system installer terminal callbacks', () => {
     useAppUpdateStore.getState().dismiss();
     oldHandler?.({ sessionId: 42, message: '旧事件' });
     expect(currentFlow()).toBeNull();
+  });
+});
+
+describe('foreground user-confirmed install', () => {
+  it('does not automatically open the Android installer on a pending callback', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    mockInstallDownloadedUpdate.mockResolvedValue(42);
+    mockConfirmUpdateInstallation.mockResolvedValue(undefined);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    installConfirmationHandler?.(42);
+    expect(currentFlow()?.status).toBe('confirmation-required');
+    expect(mockConfirmUpdateInstallation).not.toHaveBeenCalled();
+
+    useAppUpdateStore.getState().confirmInstall();
+    await flush();
+    expect(mockConfirmUpdateInstallation).toHaveBeenCalledWith(42);
+    expect(currentFlow()?.status).toBe('handed-off');
+  });
+
+  it('buffers a pending confirmation received before install Promise resolves', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    const install = deferred<number>();
+    mockInstallDownloadedUpdate.mockReturnValue(install.promise);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    installConfirmationHandler?.(42);
+    install.resolve(42);
+    await flush();
+    expect(currentFlow()?.status).toBe('confirmation-required');
+  });
+
+  it('keeps a terminal failure visible if it races the confirmation launch', async () => {
+    mockDownloadUpdate.mockResolvedValue('/cache/mira-update/mira-0.4.0-dev.apk');
+    mockInstallDownloadedUpdate.mockResolvedValue(42);
+    const confirm = deferred<void>();
+    mockConfirmUpdateInstallation.mockReturnValue(confirm.promise);
+    useAppUpdateStore.getState().start(release);
+    await flush();
+    installConfirmationHandler?.(42);
+    useAppUpdateStore.getState().confirmInstall();
+    installFailureHandler?.({ sessionId: 42, message: '系统已中止安装会话（状态码 3）' });
+    confirm.resolve();
+    await flush();
+    expect(currentFlow()).toMatchObject({
+      status: 'failed',
+      errorMessage: '系统已中止安装会话（状态码 3）',
+    });
   });
 });
 
