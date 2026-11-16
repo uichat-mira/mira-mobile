@@ -36,6 +36,7 @@ export function AppUpdateOverlay() {
   const flow = useAppUpdateStore((state) => state.flow);
   const cancel = useAppUpdateStore((state) => state.cancel);
   const retry = useAppUpdateStore((state) => state.retry);
+  const confirmInstall = useAppUpdateStore((state) => state.confirmInstall);
   const dismiss = useAppUpdateStore((state) => state.dismiss);
   const openPermissionSettings = useAppUpdateStore(
     (state) => state.openPermissionSettings,
@@ -56,6 +57,8 @@ export function AppUpdateOverlay() {
         return '正在启动系统安装';
       case 'handed-off':
         return '请在系统安装界面完成安装';
+      case 'confirmation-required':
+        return '准备安装更新';
       case 'permission-required':
         return '需要安装权限';
       default:
@@ -73,6 +76,8 @@ export function AppUpdateOverlay() {
         return '下载已完成并通过校验。';
       case 'handed-off':
         return '安装完成后重新打开 Mira 即可使用新版本。';
+      case 'confirmation-required':
+        return '安装包已校验。点击「继续安装」打开 Android 系统确认界面。';
       default:
         return flow.errorMessage ?? '请稍后重试。';
     }
@@ -140,6 +145,17 @@ export function AppUpdateOverlay() {
           )}
 
           <View style={styles.actions}>
+            {flow.status === 'confirmation-required' && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={confirmInstall}
+                style={[styles.button, { backgroundColor: colors.primary }]}
+              >
+                <Text style={[styles.buttonText, { color: colors.onPrimary }]}>
+                  继续安装
+                </Text>
+              </Pressable>
+            )}
             {flow.status === 'failed' && (
               <Pressable
                 accessibilityRole="button"

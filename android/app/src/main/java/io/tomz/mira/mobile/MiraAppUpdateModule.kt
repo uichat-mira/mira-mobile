@@ -27,6 +27,7 @@ import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -123,6 +124,30 @@ class MiraAppUpdateModule(
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("UPDATE_INSTALL_FAILED", error.message ?: "Unable to open install permission settings", error)
+    }
+  }
+
+  /**
+   * Foreground user gesture starts the system installer. A BroadcastReceiver
+   * startActivity() can be silently denied by Android/OEM BAL restrictions.
+   */
+  @ReactMethod
+  fun confirmInstall(sessionId: Int, promise: Promise) {
+    val activity = reactApplicationContext.currentActivity
+    val confirmation = pendingConfirmations[sessionId]
+    if (activity !is MainActivity || !MainActivity.isVisible || activity.isFinishing ||
+      confirmation == null) {
+      promise.reject("UPDATE_CONFIRMATION_UNAVAILABLE", "Install confirmation is no longer available")
+      return
+    }
+    activity.runOnUiThread {
+      try {
+        activity.startActivity(confirmation)
+        pendingConfirmations.remove(sessionId)
+        promise.resolve(null)
+      } catch (error: Exception) {
+        promise.reject("UPDATE_INSTALL_FAILED", "Unable to show system install confirmation", error)
+      }
     }
   }
 
@@ -340,6 +365,8 @@ class MiraAppUpdateModule(
     private const val MODULE_NAME = "MiraAppUpdate"
     private const val PROGRESS_EVENT = "MiraAppUpdateProgress"
     private const val INSTALL_FAILURE_EVENT = "MiraAppUpdateInstallFailure"
+    private const val INSTALL_CONFIRMATION_EVENT = "MiraAppUpdateConfirmationRequired"
+    private val pendingConfirmations = ConcurrentHashMap<Int, Intent>()
     @Volatile private var activeReactContext: WeakReference<ReactApplicationContext>? = null
 
     fun hasForegroundActivity(): Boolean {
@@ -350,13 +377,32 @@ class MiraAppUpdateModule(
       return activity is MainActivity && MainActivity.isVisible && !activity.isFinishing
     }
 
-    fun publishInstallFailure(sessionId: Int, message: String) {
-      val reactContext = activeReactContext?.get() ?: return
-      if (!reactContext.hasActiveReactInstance()) return
+    /**
+     * Store the system-generated Intent only while the in-app confirmation is
+     * pending. The user opens it from Mira's visible Activity.
+     */
+    fun requestInstallConfirmation(sessionId: Int, confirmation: Intent): Boolean {
+      val reactContext = activeReactContext?.get() ?: return false
+      if (!reactContext.hasActiveReactInstance() || !hasForegroundActivity()) return false
+      pendingConfirmations[sessionId] = confirmation
+      reactContext.emitDeviceEvent(INSTALL_CONFIRMATION_EVENT, Arguments.createMap().apply {
+        putInt("sessionId", sessionId)
+      })
+      return true
+    }
+
+    fun clearInstallConfirmation(sessionId: Int) {
+      pendingConfirmations.remove(sessionId)
+    }
+
+    fun publishInstallFailure(sessionId: Int, message: String): Boolean {
+      val reactContext = activeReactContext?.get() ?: return false
+      if (!reactContext.hasActiveReactInstance()) return false
       reactContext.emitDeviceEvent(INSTALL_FAILURE_EVENT, Arguments.createMap().apply {
         putInt("sessionId", sessionId)
         putString("message", message)
       })
+      return true
     }
     private const val UPDATE_DIRECTORY_NAME = "mira-update"
     private const val UPDATE_FILE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
@@ -392,16 +438,19 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
       }
       if (confirmation == null) {
         reportFailure(context, sessionId, "系统未提供安装确认界面")
-      } else {
+      } else if (!MiraAppUpdateModule.requestInstallConfirmation(sessionId, confirmation)) {
+        // The app is backgrounded: keep the existing notification fallback.
         launchOrNotify(context, sessionId, confirmation)
       }
       return
     }
 
+    MiraAppUpdateModule.clearInstallConfirmation(sessionId)
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     manager.cancel(sessionId)
     if (status != PackageInstaller.STATUS_SUCCESS) {
-      reportFailure(context, sessionId, installFailureText(status))
+      val legacy = intent.getIntExtra(EXTRA_LEGACY_STATUS_KEY, Int.MIN_VALUE)
+      reportFailure(context, sessionId, installFailureText(status, legacy))
     }
   }
 
@@ -410,14 +459,6 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
   // the system's confirmation intent instead of relying on OEM-specific BAL.
   private fun launchOrNotify(context: Context, sessionId: Int, confirmation: Intent) {
     confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    if (MiraAppUpdateModule.hasForegroundActivity()) {
-      try {
-        context.startActivity(confirmation)
-        return
-      } catch (_: Exception) {
-        // A foreground OEM may still refuse the launch; offer user gesture.
-      }
-    }
     if (
       Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
       context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -462,13 +503,18 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
   }
 
   private fun reportFailure(context: Context, sessionId: Int, message: String) {
-    MiraAppUpdateModule.publishInstallFailure(sessionId, message)
-    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    // Do not duplicate the error in an in-app dialog and an Android Toast.
+    if (!MiraAppUpdateModule.publishInstallFailure(sessionId, message)) {
+      Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
   }
 
   companion object {
     const val ACTION_INSTALL_RESULT = "io.tomz.mira.mobile.APP_UPDATE_INSTALL_RESULT"
     const val EXTRA_EXPECTED_SESSION_ID = "expectedSessionId"
+
+    // Android AOSP defines this as a hidden/system API; it may be absent on OEM builds.
+    private const val EXTRA_LEGACY_STATUS_KEY = "android.content.pm.extra.LEGACY_STATUS"
 
     /** A disabled app/channel cannot be trusted to deliver an install action. */
     internal fun canPresentConfirmationNotification(
@@ -479,14 +525,19 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
         (channelImportance == null || channelImportance != NotificationManager.IMPORTANCE_NONE)
 
     /** Bounded, credential-free explanations that can be unit tested. */
-    internal fun installFailureText(status: Int): String = when (status) {
-      PackageInstaller.STATUS_FAILURE_ABORTED -> "更新安装已取消"
+    internal fun installFailureText(status: Int, legacyCode: Int = Int.MIN_VALUE): String {
+      val reason = when (status) {
+      PackageInstaller.STATUS_FAILURE_ABORTED -> "系统已中止安装会话"
       PackageInstaller.STATUS_FAILURE_BLOCKED -> "系统安全策略阻止安装更新"
       PackageInstaller.STATUS_FAILURE_CONFLICT -> "更新包与已安装应用冲突"
       PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> "更新包与当前设备不兼容"
       PackageInstaller.STATUS_FAILURE_INVALID -> "更新安装包无效"
       PackageInstaller.STATUS_FAILURE_STORAGE -> "设备存储空间不足，无法安装更新"
-      else -> "系统安装更新失败（状态码 ${status}）"
+      else -> "系统安装更新失败"
+      }
+      // Do not expose EXTRA_STATUS_MESSAGE; it can contain private device paths.
+      val legacy = if (legacyCode == Int.MIN_VALUE) "" else "，原生码 ${legacyCode}"
+      return "${reason}（状态码 ${status}${legacy}）"
     }
   }
 }

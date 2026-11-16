@@ -4,11 +4,13 @@ import {
   AppUpdateInstallError,
   canInstallPackages,
   cancelUpdateDownload,
+  confirmUpdateInstallation,
   downloadUpdate,
   installDownloadedUpdate,
   isInAppUpdateSupported,
   openInstallPermissionSettings,
   observeUpdateInstallFailures,
+  observeUpdateInstallConfirmations,
   parseUpdateProgress,
   toAppUpdateError,
   updateFileName,
@@ -20,6 +22,7 @@ type ProgressHandler = (payload: unknown) => void;
 const mockDownload = jest.fn();
 const mockCancelDownload = jest.fn();
 const mockInstall = jest.fn();
+const mockConfirmInstall = jest.fn();
 const mockCanInstallPackages = jest.fn();
 const mockOpenInstallPermissionSettings = jest.fn();
 const mockListeners = new Map<string, ProgressHandler[]>();
@@ -33,6 +36,7 @@ jest.mock('react-native', () => ({
       download: (...args: unknown[]) => mockDownload(...args),
       cancelDownload: (...args: unknown[]) => mockCancelDownload(...args),
       install: (...args: unknown[]) => mockInstall(...args),
+      confirmInstall: (...args: unknown[]) => mockConfirmInstall(...args),
       canInstallPackages: (...args: unknown[]) => mockCanInstallPackages(...args),
       openInstallPermissionSettings: (...args: unknown[]) =>
         mockOpenInstallPermissionSettings(...args),
@@ -75,6 +79,7 @@ beforeEach(() => {
   mockDownload.mockReset();
   mockCancelDownload.mockReset();
   mockInstall.mockReset();
+  mockConfirmInstall.mockReset();
   mockCanInstallPackages.mockReset();
   mockOpenInstallPermissionSettings.mockReset();
   mockListeners.clear();
@@ -282,6 +287,35 @@ describe('installer failure notifications', () => {
     });
     expect(handler).toHaveBeenCalledTimes(1);
     subscription.remove();
+  });
+});
+
+describe('foreground system install confirmation', () => {
+  it('accepts only valid native session IDs', () => {
+    const onPending = jest.fn();
+    const subscription = observeUpdateInstallConfirmations(onPending);
+    (mockListeners.get('MiraAppUpdateConfirmationRequired') ?? []).forEach((callback) => {
+      callback({ sessionId: 42 });
+      callback({ sessionId: '42' });
+      callback({ sessionId: 0 });
+      callback({});
+    });
+    expect(onPending).toHaveBeenCalledTimes(1);
+    expect(onPending).toHaveBeenCalledWith(42);
+    subscription.remove();
+  });
+
+  it('starts the installer confirmation only after an explicit request', async () => {
+    mockConfirmInstall.mockResolvedValue(undefined);
+    await confirmUpdateInstallation(42);
+    expect(mockConfirmInstall).toHaveBeenCalledWith(42);
+  });
+
+  it('does not silently succeed when the native confirmation API is missing', async () => {
+    delete NativeModules.MiraAppUpdate.confirmInstall;
+    await expect(confirmUpdateInstallation(42)).rejects.toMatchObject({
+      code: 'UPDATE_CONFIRMATION_UNAVAILABLE',
+    });
   });
 });
 

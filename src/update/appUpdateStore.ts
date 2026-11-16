@@ -4,11 +4,13 @@ import {
   UPDATE_PERMISSION_MESSAGE,
   canInstallPackages,
   cancelUpdateDownload,
+  confirmUpdateInstallation,
   downloadUpdate,
   installDownloadedUpdate,
   isInAppUpdateSupported,
   openInstallPermissionSettings,
   observeUpdateInstallFailures,
+  observeUpdateInstallConfirmations,
   type UpdateInstallFailure,
   toAppUpdateError,
   updateInstallErrorMessage,
@@ -23,6 +25,7 @@ export type AppUpdateFlowStatus =
   | 'downloading'
   | 'installing'
   | 'handed-off'
+  | 'confirmation-required'
   | 'permission-required'
   | 'failed';
 
@@ -40,6 +43,7 @@ interface AppUpdateState {
   cancel(): void;
   retry(): void;
   openPermissionSettings(): void;
+  confirmInstall(): void;
   dismiss(): void;
 }
 
@@ -50,9 +54,13 @@ interface AppUpdateState {
  */
 let activeRun = 0;
 let activeInstallFailureListener: { remove(): void } | null = null;
-const stopListeningForInstallFailure = (): void => {
+let activeInstallConfirmationListener: { remove(): void } | null = null;
+let activeInstallSessionId: number | null = null;
+const stopListeningForInstallEvents = (): void => {
   activeInstallFailureListener?.remove();
+  activeInstallConfirmationListener?.remove();
   activeInstallFailureListener = null;
+  activeInstallConfirmationListener = null;
 };
 
 export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
@@ -68,7 +76,8 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
   };
 
   const beginRun = (release: AppRelease): void => {
-    stopListeningForInstallFailure();
+    stopListeningForInstallEvents();
+    activeInstallSessionId = null;
     activeRun += 1;
     const run = activeRun;
 
@@ -120,6 +129,20 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
 
         let sessionId: number | null = null;
         const earlyFailures: UpdateInstallFailure[] = [];
+        const earlyConfirmations: number[] = [];
+        activeInstallConfirmationListener = observeUpdateInstallConfirmations((confirmationId) => {
+          if (run !== activeRun) return;
+          if (sessionId === null) {
+            if (earlyConfirmations.length < 4) earlyConfirmations.push(confirmationId);
+            return;
+          }
+          if (confirmationId !== sessionId) return;
+          set((state) =>
+            state.flow === null || state.flow.status === 'failed'
+              ? state
+              : { flow: { ...state.flow, status: 'confirmation-required' } },
+          );
+        });
         activeInstallFailureListener = observeUpdateInstallFailures((failure) => {
           if (run !== activeRun) return;
           if (sessionId === null) {
@@ -128,22 +151,30 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
             return;
           }
           if (failure.sessionId !== sessionId) return;
-          stopListeningForInstallFailure();
+          stopListeningForInstallEvents();
           markStopped(run, 'failed', failure.message);
         });
         sessionId = await installDownloadedUpdate(filePath, release.sha256);
         if (run !== activeRun) return;
-        set((state) =>
-          state.flow === null ? state : { flow: { ...state.flow, status: 'handed-off' } },
-        );
-        const early = earlyFailures.find((failure) => failure.sessionId === sessionId);
-        if (early !== undefined) {
-          stopListeningForInstallFailure();
-          markStopped(run, 'failed', early.message);
+        activeInstallSessionId = sessionId;
+        const earlyFailure = earlyFailures.find((failure) => failure.sessionId === sessionId);
+        if (earlyFailure !== undefined) {
+          stopListeningForInstallEvents();
+          markStopped(run, 'failed', earlyFailure.message);
+        } else {
+          const needsConfirmation = earlyConfirmations.includes(sessionId);
+          set((state) =>
+            state.flow === null ? state : {
+              flow: {
+                ...state.flow,
+                status: needsConfirmation ? 'confirmation-required' : 'handed-off',
+              },
+            },
+          );
         }
       } catch (error) {
         if (run !== activeRun) return;
-        stopListeningForInstallFailure();
+        stopListeningForInstallEvents();
         const code = toAppUpdateError(error).code;
         if (code === 'UPDATE_CANCELLED') {
           set({ flow: null });
@@ -163,7 +194,7 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
 
     start: (release) => {
       const { flow } = get();
-      if (flow !== null && (flow.status === 'downloading' || flow.status === 'installing')) {
+      if (flow !== null && (flow.status === 'downloading' || flow.status === 'installing' || flow.status === 'confirmation-required')) {
         return;
       }
       beginRun(release);
@@ -172,7 +203,8 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
     cancel: () => {
       const { flow } = get();
       if (flow === null) return;
-      stopListeningForInstallFailure();
+      stopListeningForInstallEvents();
+      activeInstallSessionId = null;
       activeRun += 1;
       set({ flow: null });
       void cancelUpdateDownload();
@@ -184,6 +216,24 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
       beginRun(flow.release);
     },
 
+    confirmInstall: () => {
+      const { flow } = get();
+      const sessionId = activeInstallSessionId;
+      if (flow?.status !== 'confirmation-required' || sessionId === null) return;
+      const run = activeRun;
+      set({ flow: { ...flow, status: 'installing' } });
+      void confirmUpdateInstallation(sessionId).then(() => {
+        if (run !== activeRun) return;
+        set((state) =>
+          state.flow?.status !== 'installing'
+            ? state
+            : { flow: { ...state.flow, status: 'handed-off' } },
+        );
+      }).catch((error: unknown) => {
+        markStopped(run, 'failed', updateInstallErrorMessage(error));
+      });
+    },
+
     openPermissionSettings: () => {
       void openInstallPermissionSettings().catch(() => {
         // The overlay already explains the permission; failing to open the
@@ -193,7 +243,8 @@ export const useAppUpdateStore = create<AppUpdateState>()((set, get) => {
 
     dismiss: () => {
       if (get().flow === null) return;
-      stopListeningForInstallFailure();
+      stopListeningForInstallEvents();
+      activeInstallSessionId = null;
       activeRun += 1;
       set({ flow: null });
     },
