@@ -10,7 +10,6 @@ import {
   type RemoteMiraHostClient,
 } from './remoteMiraHost';
 import type {
-  RemoteChatStreamEvent,
   RemoteManifest,
   RemoteMemoryKind,
   RemoteMemoryOverview,
@@ -18,10 +17,17 @@ import type {
   RemoteThread,
 } from '../protocol/remoteHostV1';
 import { RemoteHostError } from './remoteHttp';
+import {
+  remoteManifestSupportsThreadCreate,
+  remoteManifestSupportsThreadDelete,
+} from './remoteHostBusiness';
 import { readThreadMediaText } from './threadMedia';
 import type { MiraHostApi } from './miraHost';
+import {
+  mapRemoteChatStream,
+  type RemoteRuntimeToolEvent,
+} from '../runtime/remoteChatStream';
 
-const THREAD_CREATE_ROUTE = 'POST /threads';
 const THREAD_MEDIA_ROUTE = 'GET /threads/:id/media/:mediaId/content';
 
 // Reasoning models can leak <think> blocks into Host-derived thread titles.
@@ -64,14 +70,6 @@ export const messageToChatMessage = (message: RemoteMessage): ChatMessage => ({
   metadata: message.metadata,
 });
 
-const supportsThreadCreation = (manifest: RemoteManifest): boolean =>
-  manifest.device.scopes.includes('messages:write') &&
-  manifest.routes.threads.includes(THREAD_CREATE_ROUTE);
-
-const supportsThreadDeletion = (manifest: RemoteManifest): boolean =>
-  manifest.device.scopes.includes('messages:write') &&
-  manifest.routes.threads.includes('DELETE /threads/:id');
-
 const supportsThreadMediaRead = (manifest: RemoteManifest): boolean =>
   manifest.device.scopes.includes('artifacts:read') &&
   manifest.routes.artifacts.includes(THREAD_MEDIA_ROUTE);
@@ -84,28 +82,6 @@ const unsupportedMutation = (operation: string): never => {
 
 const createMessageId = () =>
   `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-const toContextMessage = (message: RemoteMessage) => {
-  if (message.role === 'tool') return null;
-
-  const text =
-    message.content.trim() ||
-    message.parts
-      .filter((part): part is Extract<typeof part, { type: 'text' }> =>
-        part.type === 'text',
-      )
-      .map(part => part.text)
-      .join('\n')
-      .trim();
-
-  if (!text) return null;
-
-  return {
-    id: message.id,
-    role: message.role,
-    parts: [{ type: 'text' as const, text }],
-  };
-};
 
 export interface CanonicalMessageSnapshot {
   sessionId: string;
@@ -126,9 +102,7 @@ type MessageSnapshotListener = (snapshot: CanonicalMessageSnapshot) => void;
  */
 export class PairedRemoteMiraHostClient implements MiraHostApi {
   private currentSendAbort: (() => void) | null = null;
-  private lastRuntimeEvents: Array<
-    Extract<RemoteChatStreamEvent, { type: 'data-tool-event' | 'data-execution-node' }>
-  > = [];
+  private lastRuntimeEvents: RemoteRuntimeToolEvent[] = [];
   private readonly messageSnapshotListeners = new Set<MessageSnapshotListener>();
 
   constructor(private readonly remote: RemoteMiraHostClient) {}
@@ -174,7 +148,7 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
 
   async createSession(title?: string): Promise<Session> {
     const manifest = await this.remote.getManifest();
-    if (!supportsThreadCreation(manifest)) {
+    if (!remoteManifestSupportsThreadCreate(manifest)) {
       throw new RemoteHostError(
         'THREAD_CREATE_UNAVAILABLE',
         '当前 Mira Host 未授权移动端新建会话',
@@ -186,7 +160,7 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
 
   async canDeleteSession(): Promise<boolean> {
     try {
-      return supportsThreadDeletion(await this.remote.getManifest());
+      return remoteManifestSupportsThreadDelete(await this.remote.getManifest());
     } catch {
       return false;
     }
@@ -194,7 +168,7 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
 
   async deleteSession(sessionId: string): Promise<void> {
     const manifest = await this.remote.getManifest();
-    if (!supportsThreadDeletion(manifest)) {
+    if (!remoteManifestSupportsThreadDelete(manifest)) {
       throw new RemoteHostError(
         'THREAD_DELETE_UNAVAILABLE',
         '当前 Mira Host 未授权移动端删除会话',
@@ -305,80 +279,27 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
       throw new Error('A stable message id is required');
     }
 
-    const canonicalMessages = await this.remote.getMessages(sessionId);
-    const contextMessages = canonicalMessages
-      .filter(message => message.id !== stableMessageId)
-      .map(toContextMessage)
-      .filter((message): message is NonNullable<typeof message> => Boolean(message));
-    contextMessages.push({
-      id: stableMessageId,
-      role: 'user',
-      parts: [{ type: 'text', text: content }],
-    });
-
+    // The shared business client reads the Host-owned canonical transcript and
+    // builds the append cursor. This wrapper only adapts the stream for the
+    // legacy screen-facing MiraHostApi surface.
     const session = await this.remote.sendMessage({
       threadId: sessionId,
       messageId: stableMessageId,
       content,
-      messages: contextMessages,
     });
     this.lastRuntimeEvents = [];
     this.currentSendAbort = session.abort;
 
     const self = this;
     return (async function* () {
-      let sawFinish = false;
       try {
-        for await (const event of session.events) {
-          if (
-            (event.type === 'data-tool-event' || event.type === 'data-execution-node') &&
-            event.data &&
-            typeof event.data === 'object' &&
-            !Array.isArray(event.data)
-          ) {
-            self.lastRuntimeEvents.push(
-              event as Extract<
-                RemoteChatStreamEvent,
-                { type: 'data-tool-event' | 'data-execution-node' }
-              >,
-            );
-            continue;
-          }
-          if (event.type === 'finish') {
-            sawFinish = true;
-            if (event.finishReason === 'error') {
-              throw new RemoteHostError(
-                'CHAT_FINISHED_WITH_ERROR',
-                'Mira Host finished the chat with an error',
-              );
-            }
-            if (event.finishReason !== 'stop') {
-              throw new RemoteHostError(
-                'INVALID_FINISH_REASON',
-                `Mira Host returned unsupported finish reason: ${event.finishReason}`,
-              );
-            }
-            continue;
-          }
-          if (event.type === 'text-delta' && typeof event.delta === 'string') {
-            yield event.delta;
-            continue;
-          }
-          if (event.type === 'error') {
-            const errorText =
-              'errorText' in event && typeof event.errorText === 'string'
-                ? event.errorText
-                : 'Mira Host stream failed';
-            throw new RemoteHostError('CHAT_STREAM_ERROR', errorText);
-          }
-        }
-        // [DONE] only closes the SSE reader. A successful chat must also have
-        // an explicit finish event from the shared Host stream contract.
-        if (!sawFinish) {
-          throw new RemoteHostError(
-            'CHAT_STREAM_INCOMPLETE',
-            'Mira Host closed the chat stream before finish was received',
-          );
+        for await (const event of mapRemoteChatStream(
+          session,
+          (runtimeEvent: RemoteRuntimeToolEvent) => {
+            self.lastRuntimeEvents.push(runtimeEvent);
+          },
+        )) {
+          if (event.type === 'text-delta') yield event.delta;
         }
       } finally {
         if (self.currentSendAbort === session.abort) {
