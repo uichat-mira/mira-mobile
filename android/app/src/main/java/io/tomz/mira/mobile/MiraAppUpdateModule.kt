@@ -133,7 +133,7 @@ class MiraAppUpdateModule(
    */
   @ReactMethod
   fun confirmInstall(sessionId: Int, promise: Promise) {
-    val activity = currentActivity
+    val activity = reactApplicationContext.currentActivity
     val confirmation = pendingConfirmations[sessionId]
     if (activity !is MainActivity || !MainActivity.isVisible || activity.isFinishing ||
       confirmation == null) {
@@ -449,7 +449,7 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     manager.cancel(sessionId)
     if (status != PackageInstaller.STATUS_SUCCESS) {
-      val legacy = intent.getIntExtra(PackageInstaller.EXTRA_LEGACY_STATUS, Int.MIN_VALUE)
+      val legacy = intent.getIntExtra(EXTRA_LEGACY_STATUS_KEY, Int.MIN_VALUE)
       reportFailure(context, sessionId, installFailureText(status, legacy))
     }
   }
@@ -512,6 +512,9 @@ class MiraUpdateInstallReceiver : BroadcastReceiver() {
   companion object {
     const val ACTION_INSTALL_RESULT = "io.tomz.mira.mobile.APP_UPDATE_INSTALL_RESULT"
     const val EXTRA_EXPECTED_SESSION_ID = "expectedSessionId"
+
+    // Android AOSP defines this as a hidden/system API; it may be absent on OEM builds.
+    private const val EXTRA_LEGACY_STATUS_KEY = "android.content.pm.extra.LEGACY_STATUS"
 
     /** A disabled app/channel cannot be trusted to deliver an install action. */
     internal fun canPresentConfirmationNotification(
