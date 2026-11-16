@@ -12,7 +12,7 @@ const message = {
 };
 const manifest = {
   device: { scopes: ['threads:read'], id: 'cloud-mobile' },
-  routes: { threads: ['GET /threads'], messages: [] },
+  routes: { threads: ['GET /threads'], messages: [] as string[] },
 };
 const api = () => ({
   listThreads: jest.fn(async () => [thread]),
@@ -78,6 +78,24 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     await expect(runtime.sendMessage('remote-1', 'do not run')).rejects.toMatchObject({
       code: 'CLOUD_AGENT_WORKSPACE_REQUIRED', status: 403,
     });
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('checks canonical thread Workspace before enabling Cloud message input', async () => {
+    const client = api();
+    client.getManifest.mockResolvedValue({
+      ...manifest,
+      device: { ...manifest.device, scopes: ['threads:read', 'messages:write'] },
+      routes: { ...manifest.routes, messages: ['POST /proxy/chat/default'] },
+    });
+    const runtime = new CloudHostRuntime(client as never);
+    await expect(runtime.canSendMessage()).resolves.toBe(false);
+    client.getThread.mockResolvedValueOnce({
+      ...thread, agentEnabled: true, workspaceId: null,
+    });
+    await expect(runtime.canSendMessage('remote-1')).resolves.toBe(false);
+    await expect(runtime.canSendMessage('remote-1')).resolves.toBe(true);
+    expect(client.getThread).toHaveBeenCalledTimes(2);
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 

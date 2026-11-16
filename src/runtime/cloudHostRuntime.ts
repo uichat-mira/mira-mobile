@@ -49,10 +49,13 @@ export class CloudHostRuntime implements ConversationRuntime {
       manifest.routes.threads.includes('DELETE /threads/:id');
   }
 
-  async canSendMessage(): Promise<boolean> {
+  async canSendMessage(sessionId?: string): Promise<boolean> {
+    if (!sessionId) return false;
     const manifest = await this.cloud.getManifest();
-    return manifest.device.scopes.includes('messages:write') &&
-      manifest.routes.messages.includes('POST /proxy/chat/default');
+    if (!manifest.device.scopes.includes('messages:write') ||
+        !manifest.routes.messages.includes('POST /proxy/chat/default')) return false;
+    const thread = await this.cloud.getThread(sessionId);
+    return !(thread.agentEnabled === true && !thread.workspaceId?.trim());
   }
 
   async deleteSession(sessionId: string): Promise<void> {

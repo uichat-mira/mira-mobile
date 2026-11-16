@@ -61,7 +61,7 @@ export interface ConversationRuntime {
   /** Snapshot read used for canonical UI state such as the session title. */
   getSession?(sessionId: string): Promise<Session>;
   /** Server-confirmed message write permission (Cloud Host pilot). */
-  canSendMessage?(): Promise<boolean>;
+  canSendMessage?(sessionId?: string): Promise<boolean>;
   sendMessage(
     sessionId: string,
     input: string,

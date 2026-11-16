@@ -311,11 +311,11 @@ export function ChatScreen() {
     }
     let active = true;
     setCloudCanSend(false);
-    void runtime.canSendMessage?.().then(allowed => {
+    void runtime.canSendMessage?.(sessionId).then(allowed => {
       if (active) setCloudCanSend(allowed);
     }).catch(() => { if (active) setCloudCanSend(false); });
     return () => { active = false; };
-  }, [cloudAuthorityActive, cloudLegacyAgentReadOnly, isCloudHost, runtime]);
+  }, [cloudAuthorityActive, cloudLegacyAgentReadOnly, isCloudHost, runtime, sessionId]);
 
   useEffect(() => {
     setIsSearchVisible(false);
