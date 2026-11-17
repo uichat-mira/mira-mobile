@@ -120,8 +120,9 @@ jobs:
   worker:
     needs: enrollment
     permissions:
+      actions: read
       contents: write
-      issues: read
+      issues: write
       pull-requests: write
     uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@24302fcb183e7922e9d8c500722a6828186171df
     with:
