@@ -44,12 +44,19 @@ describe('resolveSessionOpenTarget', () => {
     })).toEqual({ kind: 'chat' });
   });
 
-  it('rejects paired Agent sessions that violate the workspace ownership contract', () => {
+  it('opens paired Agent sessions without a public project as direct chat', () => {
+    // Desktop's current default-Agent thread has no public workspaceId; the Host
+    // owns a private Agent workspace for it. Blocking that state made ordinary
+    // Desktop conversations unusable on Mobile.
     expect(
       resolveSessionOpenTarget({ workspaceId: '   ', agentEnabled: true }),
-    ).toEqual({
-      kind: 'contract-error',
-      message: '该 Agent 会话缺少项目归属，无法在移动端打开。',
-    });
+    ).toEqual({ kind: 'chat' });
+    expect(
+      resolveSessionOpenTarget({
+        workspaceId: null,
+        agentEnabled: true,
+        source: 'remote-host',
+      }),
+    ).toEqual({ kind: 'chat' });
   });
 });

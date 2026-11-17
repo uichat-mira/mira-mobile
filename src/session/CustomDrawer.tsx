@@ -201,7 +201,12 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const createRemoteChat = useCallback(async () => {
     setCreatingChat(true);
     try {
-      const session = await miraHostClient.createSession();
+      // Desktop's current canonical conversation is an Agent thread. Creating a
+      // legacy non-Agent thread here produced conversations the Desktop UI no
+      // longer defaults to, so a new Remote chat asks for Agent explicitly.
+      const session = await miraHostClient.createSession(undefined, {
+        agentEnabled: true,
+      });
       onClose();
       navigation.navigate('Chat', {
         sessionId: session.id,
