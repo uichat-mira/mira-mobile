@@ -32,7 +32,10 @@ describe('MOB-039 dual-entry session source flow', () => {
   it('asks for the conversation source before creating from the drawer', () => {
     expect(drawer).toContain("Alert.alert('新建会话', '选择会话来源'");
     expect(drawer).toContain("text: '远程连接'");
-    expect(drawer).toContain('miraHostClient.createSession()');
+    // Desktop's canonical new conversation is an Agent thread, so a new Remote
+    // chat must request Agent mode instead of creating a legacy plain thread.
+    expect(drawer).toContain('miraHostClient.createSession(undefined, {');
+    expect(drawer).toContain('agentEnabled: true');
     expect(drawer).toContain("text: '本地连接'");
     expect(drawer).toContain("navigation.navigate('LocalProviderConfig')");
   });

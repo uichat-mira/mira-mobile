@@ -43,6 +43,8 @@ import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { RemoteHostError } from '../api/remoteHttp';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
+import { useThreadPinStore } from '../store/threadPinStore';
+import { removeLastOpenedSession } from '../session/lastOpenedSession';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, shadows, sizing, spacing } from '../theme/tokens';
 import { AssistantMarkdown } from '../chat/AssistantMarkdown';
@@ -535,6 +537,87 @@ export function ChatScreen() {
   const clearSearchFocus = useCallback(() => {
     setSearchFocusMessageId(null);
   }, []);
+
+  const removePinnedThread = useThreadPinStore((state) => state.unpinThread);
+  const [canDelete, setCanDelete] = useState(isLocalProvider);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    if (isLocalProvider) {
+      setCanDelete(true);
+      return () => {
+        active = false;
+      };
+    }
+    // Deletion is a Host-authorized mutation, so the menu must reflect the
+    // current manifest grant instead of always offering a dead action.
+    const check = isCloudHost
+      ? runtimeRegistry.cloud.canDeleteSession()
+      : miraHostClient.canDeleteSession();
+    void check
+      .then((allowed) => {
+        if (active) setCanDelete(allowed);
+      })
+      .catch(() => {
+        if (active) setCanDelete(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isCloudHost, isLocalProvider]);
+
+  const handleDelete = useCallback(() => {
+    if (isDeleting || !canDelete) return;
+    const message = isLocalProvider
+      ? `确定删除“${sessionTitle}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      : `确定删除“${sessionTitle}”吗？此操作会同步删除桌面端线程。`;
+    Alert.alert('删除会话', message, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          setIsDeleting(true);
+          void (async () => {
+            try {
+              await runtimeRegistry.deleteSession(sessionId, source);
+              void removeLastOpenedSession(sessionId).catch(() => undefined);
+              const cleanup = await Promise.allSettled([
+                removePinnedThread(sessionId),
+                clearThreadRead(sessionId),
+              ]);
+              if (cleanup.some((result) => result.status === 'rejected')) {
+                Alert.alert(
+                  '会话已删除',
+                  '会话已删除，但本机置顶或未读状态清理未完成，请重新打开应用后检查。',
+                );
+              }
+              navigation.goBack();
+            } catch (error) {
+              const failure =
+                error instanceof Error && error.message
+                  ? error.message
+                  : '无法删除该会话，请重试。';
+              Alert.alert('删除失败', failure);
+            } finally {
+              setIsDeleting(false);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [
+    canDelete,
+    clearThreadRead,
+    isDeleting,
+    isLocalProvider,
+    navigation,
+    removePinnedThread,
+    sessionId,
+    sessionTitle,
+    source,
+  ]);
 
   const upsertAgentActivity = useCallback(
     (
@@ -1060,6 +1143,13 @@ export function ChatScreen() {
         shareDisabled={shareDisabled}
         shareDisabledAccessibilityLabel={shareAccessibilityLabel}
         onFindInChat={openSearch}
+        onDelete={handleDelete}
+        deleteDisabled={isDeleting || !canDelete}
+        deleteDisabledAccessibilityLabel={
+          isDeleting
+            ? '删除会话，正在删除'
+            : '删除会话，当前 Mira Host 未授权删除'
+        }
       />
 
       <ShareMessageSelector

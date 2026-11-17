@@ -6,8 +6,6 @@ jest.mock('lucide-react-native', () => ({
   Archive: () => null,
   ChevronRight: () => null,
   FolderPlus: () => null,
-  House: () => null,
-  Paperclip: () => null,
   Search: () => null,
   Share2: () => null,
   Trash2: () => null,
@@ -90,5 +88,78 @@ describe('ConversationMenu share entry', () => {
     expect(onShare).not.toHaveBeenCalled();
 
     await ReactTestRenderer.act(async () => renderer!.unmount());
+  });
+});
+
+describe('ConversationMenu action availability', () => {
+  const render = async (props: Partial<React.ComponentProps<typeof ConversationMenu>>) => {
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <ConversationMenu
+          visible
+          title="Mira 对话"
+          anchor={{ top: 10, right: 10 }}
+          onClose={jest.fn()}
+          {...props}
+        />,
+      );
+    });
+    return renderer!;
+  };
+
+  const labels = (root: ReactTestRenderer.ReactTestInstance) =>
+    root
+      .findAll((node) => node.props.accessibilityRole === 'button')
+      .map((node) => node.props.accessibilityLabel as string);
+
+  test('no longer offers the unimplemented placeholder entries', async () => {
+    const renderer = await render({ onShare: jest.fn() });
+    const all = labels(renderer.root);
+
+    expect(all.some((label) => label.startsWith('已上传文件'))).toBe(false);
+    expect(all.some((label) => label.startsWith('添加到首页'))).toBe(false);
+    expect(all).toContain('分享');
+    // "添加到项目" has no Host contract yet, so it stays present but disabled
+    // with an explicit reason rather than silently doing nothing.
+    expect(all).toContain('添加到项目，暂不可用');
+
+    await ReactTestRenderer.act(async () => renderer.unmount());
+  });
+
+  test('enables delete when the runtime authorized it and invokes the handler', async () => {
+    const onDelete = jest.fn();
+    const onClose = jest.fn();
+    const renderer = await render({ onDelete, onClose });
+
+    const remove = findButtonByLabel(renderer.root, '删除');
+    expect(remove).toBeDefined();
+    expect(remove!.props.accessibilityState).toEqual({ disabled: false });
+
+    await ReactTestRenderer.act(async () => {
+      remove!.props.onPress();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledTimes(1);
+
+    await ReactTestRenderer.act(async () => renderer.unmount());
+  });
+
+  test('keeps delete disabled with an explicit reason when the Host denies it', async () => {
+    const onDelete = jest.fn();
+    const renderer = await render({
+      onDelete,
+      deleteDisabled: true,
+      deleteDisabledAccessibilityLabel: '删除会话，当前 Mira Host 未授权删除',
+    });
+
+    const remove = findButtonByLabel(
+      renderer.root,
+      '删除会话，当前 Mira Host 未授权删除',
+    );
+    expect(remove!.props.disabled).toBe(true);
+    expect(onDelete).not.toHaveBeenCalled();
+
+    await ReactTestRenderer.act(async () => renderer.unmount());
   });
 });
