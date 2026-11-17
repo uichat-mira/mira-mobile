@@ -123,7 +123,7 @@ jobs:
       contents: write
       issues: read
       pull-requests: write
-    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@1380017dbedd147fdfec4c5b2404443e12967182
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@24302fcb183e7922e9d8c500722a6828186171df
     with:
       issue_number: ${{ fromJSON(needs.enrollment.outputs.issue_number) }}
       base_branch: dev
