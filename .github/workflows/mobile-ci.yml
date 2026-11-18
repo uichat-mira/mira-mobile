@@ -308,8 +308,7 @@ jobs:
           unzip -tq "$apk"
           unzip -Z1 "$apk" > "$entries"
           grep -Fxq 'assets/index.android.bundle' "$entries"
-          unzip -p "$apk" assets/index.android.bundle > "$RUNNER_TEMP/mobile-release.bundle"
-          node scripts/verify-cloud-release-bundle.cjs "$RUNNER_TEMP/mobile-release.bundle"
+          unzip -p "$apk" assets/index.android.bundle | node scripts/verify-cloud-release-bundle.cjs
           grep -Fxq 'lib/arm64-v8a/libreact_codegen_rnsvg.so' "$entries"
           bad_abis=$(awk -F/ '$1 == "lib" && $2 != "arm64-v8a" { print $2 }' "$entries" | sort -u)
           if [ -n "$bad_abis" ]; then
@@ -446,7 +445,7 @@ jobs:
 
           test -f "$app_path/Info.plist"
           test -f "$app_path/main.jsbundle"
-          node scripts/verify-cloud-release-bundle.cjs "$app_path/main.jsbundle"
+          node scripts/verify-cloud-release-bundle.cjs < "$app_path/main.jsbundle"
 
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")
           test -n "$executable"
