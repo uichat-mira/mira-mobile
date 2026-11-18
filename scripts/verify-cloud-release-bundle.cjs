@@ -3,13 +3,14 @@
 
 const { readFileSync } = require('node:fs');
 
-const bundlePath = process.argv[2];
-if (!bundlePath) {
-  console.error('Usage: node scripts/verify-cloud-release-bundle.cjs <bundled-js-path>');
+// The release workflow supplies the bundle via stdin. Never accept a
+// filesystem path from command-line arguments in CI or agent workflows.
+if (process.argv.length > 2) {
+  console.error('Usage: provide the bundled JavaScript bytes on stdin');
   process.exit(2);
 }
 
-const bundle = readFileSync(bundlePath);
+const bundle = readFileSync(0);
 const requiredOrigins = [
   'https://cloud-auth.tomzlab.cn',
   'https://cloud-relay.tomz.io',
