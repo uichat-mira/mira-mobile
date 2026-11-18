@@ -124,7 +124,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@24302fcb183e7922e9d8c500722a6828186171df
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@980fd8179bcaf8823189a0ff4c6622027c5883b4
     with:
       issue_number: ${{ fromJSON(needs.enrollment.outputs.issue_number) }}
       base_branch: dev
@@ -136,3 +136,4 @@ jobs:
         npm test -- --runInBand
     secrets:
       opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
+      haomai_reporter_hmac_secret: ${{ secrets.HAOMAI_REPORTER_HMAC_SECRET }}
