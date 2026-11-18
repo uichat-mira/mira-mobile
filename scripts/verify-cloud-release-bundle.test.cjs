@@ -35,7 +35,7 @@ test('rejects missing Relay, even when Cloud Auth is present', () => {
   withFixture(auth, bundle => {
     const result = spawnSync(process.execPath, [verifier, bundle], { encoding: 'utf8' });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /Relay origin is missing/);
+    assert.match(result.stderr, /Official Cloud origin is missing.*cloud-relay/);
   });
 });
 
