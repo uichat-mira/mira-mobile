@@ -15,19 +15,8 @@ describe('Mira Cloud OAuth configuration', () => {
     expect(CLOUD_AUTH_REDIRECT_URI).toBe('mira-mobile://oauth/callback');
   });
 
-  it('selects the reviewed production and test origins without guessing a path', () => {
-    expect(resolveCloudAuthBaseUrl('prod')).toBe(
-      'https://cloud-auth.tomzlab.cn',
-    );
-    expect(resolveCloudAuthBaseUrl('test')).toBe(
-      'https://test.cloud-auth.tomzlab.cn',
-    );
-    expect(resolveCloudAuthBaseUrl('dev')).toBe(
-      'https://cloud-auth.tomzlab.cn',
-    );
-    expect(resolveCloudAuthBaseUrl('predev')).toBe(
-      'https://test.cloud-auth.tomzlab.cn',
-    );
+  it('always uses the approved Cloud Auth origin, independent of release channel', () => {
+    expect(resolveCloudAuthBaseUrl()).toBe('https://cloud-auth.tomzlab.cn');
   });
 
   it('rejects insecure or ambiguous authorization origins', () => {
@@ -42,12 +31,12 @@ describe('Mira Cloud OAuth configuration', () => {
 
   it('builds the OPS-016 authorization request with S256 and no secret', () => {
     const url = buildCloudAuthorizationUrl(
-      'https://test.cloud-auth.tomzlab.cn',
+      resolveCloudAuthBaseUrl(),
       { state, codeChallenge },
     );
     const parsed = new URL(url);
 
-    expect(parsed.origin).toBe('https://test.cloud-auth.tomzlab.cn');
+    expect(parsed.origin).toBe('https://cloud-auth.tomzlab.cn');
     expect(parsed.pathname).toBe('/v1/oauth/authorize');
     expect(Object.fromEntries(parsed.searchParams)).toEqual({
       response_type: 'code',

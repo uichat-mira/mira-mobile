@@ -1,14 +1,11 @@
-import { releaseChannel } from 'mira-release-channel';
-
 /**
  * The hosted Cloud Relay is one Mira-operated, shared multi-account service.
  * This endpoint is platform-owned deployment configuration, never a field the
  * end user supplies or a per-account Relay instance. Each account/device is
  * isolated by Cloud Auth tickets, server-owned rooms and Desktop Host grants.
  *
- * Until the official Cloud-only service endpoint is actually provisioned for
- * this release channel, fail closed rather than sending Cloud credentials to
- * the existing Legacy `relay.tomz.io` endpoint.
+ * This service is approved for all active release channels. Never substitute
+ * Legacy `relay.tomz.io` if Cloud Auth or the official Relay is unavailable.
  */
 export const normalizeCloudRelayBaseUrl = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/u, '');
@@ -41,13 +38,10 @@ export const resolveCloudRelayBaseUrl = (
 };
 
 /**
- * Official shared Cloud-only Worker, verified by deployed module comparison and mobile 5G HTTPS.
- * Release-channel owned endpoint, not a per-user setting or Legacy Relay.
- * Other channels remain explicitly unconfigured until provisioned.
+ * Release channel identifies the app/update artifact, not its Cloud transport.
+ * All supported builds use the same operator-managed Cloud-only Relay.
  */
-export const officialCloudRelayEndpoint = (
-  channel: 'predev' | 'dev' | 'test' | 'prod' = releaseChannel,
-): string | null =>
-  channel === 'dev'
-    ? 'https://cloud-relay.tomz.io'
-    : null;
+const OFFICIAL_CLOUD_RELAY_BASE_URL = 'https://cloud-relay.tomz.io';
+
+export const officialCloudRelayEndpoint = (): string =>
+  OFFICIAL_CLOUD_RELAY_BASE_URL;
