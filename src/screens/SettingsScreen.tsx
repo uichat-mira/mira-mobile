@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   ChevronLeft,
@@ -79,19 +79,26 @@ export function SettingsScreen() {
   const [disconnecting, setDisconnecting] = useState(false);
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
-  const [localConfigured, setLocalConfigured] = useState(false);
+  const [providerCount, setProviderCount] = useState(0);
   const cloudStatus = useCloudAccountStore((state) => state.status);
   const cloudAccount = useCloudAccountStore((state) => state.account);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    void new ProviderConfigStore().load().then((configs) => {
-      if (!cancelled) setLocalConfigured(configs.length > 0);
-    }).catch(() => {
-      if (!cancelled) setLocalConfigured(false);
-    });
-    return () => { cancelled = true; };
-  }, []);
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void new ProviderConfigStore()
+        .load()
+        .then((configs) => {
+          if (!cancelled) setProviderCount(configs.length);
+        })
+        .catch(() => {
+          if (!cancelled) setProviderCount(0);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
 
   const remoteHasError = !['idle', 'probing', 'ready'].includes(remoteConnectivityState);
   const remoteVisualStatus: ConnectionVisualStatus = remoteHasError
@@ -161,7 +168,7 @@ export function SettingsScreen() {
         navigation.navigate('HostConfig');
         break;
       case 'local-provider':
-        navigation.navigate('LocalProviderConfig');
+        navigation.navigate('LocalProviderList');
         break;
       case 'disconnect-host':
         requestDisconnect();
@@ -251,12 +258,12 @@ export function SettingsScreen() {
         <RowGroup onAction={handleSettingAction}>
           <Row
             icon={MessageCircle}
-            title="本地连接"
+            title="模型直连"
+            subtitle={providerCount > 0 ? `${providerCount} 个已保存配置 · 未验证连接` : '未配置'}
             actionId="local-provider"
             isFirst
             isLast={false}
-            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
-            showChevron={false}
+            showChevron
           />
           <Row
             icon={Monitor}

@@ -30,14 +30,17 @@ describe('MOB-039 dual-entry session source flow', () => {
   });
 
   it('asks for the conversation source before creating from the drawer', () => {
-    expect(drawer).toContain("Alert.alert('新建会话', '选择会话来源'");
-    expect(drawer).toContain("text: '远程连接'");
+    expect(drawer).toContain('sourcePickerVisible');
+    expect(drawer).toContain('<SettingsChoiceModal');
+    expect(drawer).toContain('title="选择聊天方式"');
+    expect(drawer).toContain("value: 'remote', label: '远程连接'");
     // Desktop's canonical new conversation is an Agent thread, so a new Remote
     // chat must request Agent mode instead of creating a legacy plain thread.
     expect(drawer).toContain('miraHostClient.createSession(undefined, {');
     expect(drawer).toContain('agentEnabled: true');
-    expect(drawer).toContain("text: '本地连接'");
-    expect(drawer).toContain("navigation.navigate('LocalProviderConfig')");
+    expect(drawer).toContain("value: 'local', label: '本地连接'");
+    expect(drawer).toContain("navigation.navigate('LocalProviderList', forChat ? { mode: 'create' } : undefined)");
+    expect(drawer).toContain('handleOpenLocalProvider(true)');
   });
 
   it('renders a readable local Provider source label', () => {

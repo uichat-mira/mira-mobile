@@ -15,7 +15,8 @@ export type RootStackParamList = {
         code?: string;
       }
     | undefined;
-  LocalProviderConfig: undefined;
+  LocalProviderList: { mode?: 'create' } | undefined;
+  LocalProviderEdit: { providerId?: string } | undefined;
   CloudAccount: undefined;
   CloudAuthCallback: { code?: string; state?: string; error?: string } | undefined;
   Settings: undefined;
