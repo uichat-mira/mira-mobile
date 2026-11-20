@@ -8,6 +8,8 @@ export interface SettingsChoice<T extends string> {
   value: T;
   label: string;
   swatch?: string;
+  description?: string;
+  accessibilityLabel?: string;
 }
 
 interface SettingsChoiceModalProps<T extends string> {
@@ -17,10 +19,11 @@ interface SettingsChoiceModalProps<T extends string> {
   onChange: (value: T) => void;
   onClose: () => void;
   withinModal?: boolean;
+  title?: string;
 }
 
 export function SettingsChoiceModal<T extends string>({
-  visible, value, options, onChange, onClose, withinModal = false,
+  visible, value, options, onChange, onClose, withinModal = false, title,
 }: SettingsChoiceModalProps<T>) {
   const { colors } = useTheme();
   const [mounted, setMounted] = React.useState(visible);
@@ -75,33 +78,57 @@ export function SettingsChoiceModal<T extends string>({
   }
 
   const body = (
-    <Pressable style={styles.backdrop} onPress={requestClose}>
+    <Pressable
+      style={[styles.backdrop, withinModal && styles.drawerBackdrop]}
+      onPress={requestClose}
+    >
         <Animated.View
           pointerEvents="none"
           style={[
             StyleSheet.absoluteFill,
             styles.backdropOverlay,
             { backgroundColor: colors.overlay, opacity: progress },
+            withinModal && styles.drawerOverlay,
           ]}
         />
         <Animated.View
-          style={[styles.menu, { backgroundColor: colors.bg.elevated }, menuStyle]}
+          style={[styles.menu, withinModal && styles.drawerMenu, { backgroundColor: colors.bg.elevated }, menuStyle]}
           onStartShouldSetResponder={() => true}
         >
+          {title ? (
+            <Text style={[styles.menuTitle, { color: colors.text.muted }]}>{title}</Text>
+          ) : null}
           {options.map((option) => (
             <Pressable
               key={option.value}
-              style={({ pressed }) => [styles.option, pressed && { backgroundColor: colors.bg.soft }]}
+              style={({ pressed }) => [
+                styles.option,
+                withinModal && styles.drawerOption,
+                withinModal && option.value === value && { backgroundColor: colors.bg.soft },
+                pressed && { backgroundColor: colors.bg.soft },
+              ]}
               onPress={() => {
                 onChange(option.value);
                 onClose();
               }}
               accessibilityRole="radio"
+              accessibilityLabel={option.accessibilityLabel ?? option.label}
               accessibilityState={{ checked: option.value === value }}
             >
               {option.swatch ? <View style={[styles.swatch, { backgroundColor: option.swatch }]} /> : null}
-              <Text style={[styles.label, { color: colors.text.ink }]}>{option.label}</Text>
-              {option.value === value ? <Check size={20} color={colors.text.ink} /> : <View style={styles.checkSpace} />}
+              {option.description ? (
+                <View style={styles.optionCopy}>
+                  <Text numberOfLines={1} style={[styles.drawerLabel, { color: colors.text.ink }]}>
+                    {option.label}
+                  </Text>
+                  <Text numberOfLines={1} style={[styles.description, { color: colors.text.muted }]}>
+                    {option.description}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={[styles.label, { color: colors.text.ink }]}>{option.label}</Text>
+              )}
+              {option.value === value ? <Check size={20} color={withinModal ? colors.primary : colors.text.ink} /> : <View style={styles.checkSpace} />}
             </Pressable>
           ))}
         </Animated.View>
@@ -122,15 +149,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: spacing.xl,
   },
+  // A picker already inside the Drawer belongs beside its bottom CTA,
+  // not in a second centered modal narrowed by the drawer's own width.
+  drawerBackdrop: {
+    justifyContent: 'flex-end',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 88,
+  },
   backdropOverlay: {
     opacity: 0,
   },
+  drawerOverlay: { backgroundColor: 'rgba(20,20,19,0.22)' },
   menu: {
     width: '78%',
     maxWidth: 320,
     borderRadius: radius.lg,
     paddingVertical: spacing.sm,
     overflow: 'hidden',
+  },
+  drawerMenu: {
+    width: '100%',
+    maxWidth: '100%',
+    borderRadius: radius.md,
+    padding: spacing.sm,
+  },
+  menuTitle: {
+    fontSize: fontSize.caption,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
   },
   option: {
     minHeight: 48,
@@ -139,7 +186,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     gap: spacing.sm,
   },
+  drawerOption: {
+    minHeight: 56,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+  },
   swatch: { width: 12, height: 12, borderRadius: radius.full },
+  optionCopy: { flex: 1, minWidth: 0 },
   label: { flex: 1, fontSize: fontSize.bodyMd },
+  drawerLabel: { fontSize: fontSize.bodyMd },
+  description: { fontSize: fontSize.caption, marginTop: 2 },
   checkSpace: { width: 20 },
 });

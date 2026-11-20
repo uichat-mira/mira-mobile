@@ -524,12 +524,17 @@ export function CustomDrawer({ onClose, activeSource = 'all' }: CustomDrawerProp
       </View>
       <SettingsChoiceModal
         withinModal
+        title="选择聊天方式"
         visible={sourcePickerVisible}
         value={activeSource === 'local-provider' ? 'local' : 'remote'}
         options={[
-          { value: 'remote', label: remoteCreateSource === 'cloud-host'
-            ? '远程连接（Mira Cloud）' : '远程连接（Tailscale）' },
-          { value: 'local', label: '本地连接' },
+          {
+            value: 'remote', label: '远程连接',
+            description: remoteCreateSource === 'cloud-host' ? 'Mira Cloud' : 'Tailscale',
+            accessibilityLabel: remoteCreateSource === 'cloud-host'
+              ? '远程连接（Mira Cloud）' : '远程连接（Tailscale）',
+          },
+          { value: 'local', label: '本地连接', description: '手机直连模型服务' },
         ]}
         onChange={handleChooseSource}
         onClose={() => setSourcePickerVisible(false)}

@@ -45,7 +45,7 @@ jest.mock('../settings/SettingsChoiceModal', () => ({
     visible, options, onChange,
   }: {
     visible: boolean;
-    options: Array<{ value: string; label: string }>;
+    options: Array<{ value: string; label: string; accessibilityLabel?: string }>;
     onChange: (value: string) => void;
   }) => {
     if (!visible) return null;
@@ -56,7 +56,7 @@ jest.mock('../settings/SettingsChoiceModal', () => ({
           <Pressable
             key={option.value}
             accessibilityRole="radio"
-            accessibilityLabel={option.label}
+            accessibilityLabel={option.accessibilityLabel ?? option.label}
             onPress={() => onChange(option.value)}
           >
             <Text>{option.label}</Text>
