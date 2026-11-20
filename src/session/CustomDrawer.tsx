@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -28,7 +28,10 @@ import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
 import { useTheme } from '../theme/ThemeContext';
 import { miraHostClient } from '../api/miraHostClient';
-import { runtimeRegistry } from '../runtime/runtimeRegistry';
+import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
+import { SettingsChoiceModal } from '../settings/SettingsChoiceModal';
+import { resolveRemoteCreateSource } from './resolveRemoteCreateSource';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { useThreadPinStore } from '../store/threadPinStore';
@@ -36,7 +39,6 @@ import { splitSessionsByLocalPin } from '../store/threadPinning';
 import {
   useThreadReadStore,
 } from '../store/threadReadStore';
-import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../settings/generalSettings';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
@@ -77,9 +79,10 @@ const RECENT_THREAD_LIMIT = 20;
 
 interface CustomDrawerProps {
   onClose: () => void;
+  activeSource?: SessionSourceFilter;
 }
 
-export function CustomDrawer({ onClose }: CustomDrawerProps) {
+export function CustomDrawer({ onClose, activeSource = 'all' }: CustomDrawerProps) {
   const navigation = useNavigation<NavProp>();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -90,6 +93,13 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const hydrateReads = useThreadReadStore((state) => state.hydrate);
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
   const [creatingChat, setCreatingChat] = useState(false);
+  const creatingChatRef = useRef(false);
+  const [sourcePickerVisible, setSourcePickerVisible] = useState(false);
+  const cloudStatus = useCloudAccountStore(state => state.status);
+  const cloudAccountId = useCloudAccountStore(state => state.account?.id ?? null);
+  const remoteCreateSource = resolveRemoteCreateSource(
+    activeSource, cloudStatus === 'signed_in',
+  );
 
   const hydrateLocalState = useCallback(
     () =>
@@ -164,8 +174,9 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
       source: session.source,
       providerName: session.providerName,
       providerModel: session.providerModel,
+      ...(session.source === 'cloud-host' ? { cloudAccountId: cloudAccountId ?? undefined } : {}),
     });
-  }, [navigation, onClose]);
+  }, [cloudAccountId, navigation, onClose]);
 
   const handleOpenWorkspaces = () => {
     onClose();
@@ -199,11 +210,10 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   );
 
   const createRemoteChat = useCallback(async () => {
+    if (creatingChatRef.current) return;
+    creatingChatRef.current = true;
     setCreatingChat(true);
     try {
-      // Desktop's current canonical conversation is an Agent thread. Creating a
-      // legacy non-Agent thread here produced conversations the Desktop UI no
-      // longer defaults to, so a new Remote chat asks for Agent explicitly.
       const session = await miraHostClient.createSession(undefined, {
         agentEnabled: true,
       });
@@ -214,39 +224,59 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
         source: session.source,
       });
     } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : '无法新建远程会话，请稍后重试。';
-      Alert.alert('无法新建远程会话', message);
+      Alert.alert('无法新建远程会话', error instanceof Error && error.message
+        ? error.message : '请稍后重试。');
     } finally {
+      creatingChatRef.current = false;
       setCreatingChat(false);
     }
   }, [navigation, onClose]);
 
-  const handleCreateChat = useCallback(async () => {
-    if (creatingChat) return;
-    const settings = await loadGeneralSettings().catch(() => DEFAULT_GENERAL_SETTINGS);
-    if (settings.defaultSessionSource === 'remote-host') {
-      void createRemoteChat();
-      return;
+  const createCloudChat = useCallback(async () => {
+    if (creatingChatRef.current) return;
+    creatingChatRef.current = true;
+    setCreatingChat(true);
+    try {
+      if (cloudStatus !== 'signed_in' || !cloudAccountId) {
+        throw new Error('请先登录 Mira Cloud。');
+      }
+      const session = await runtimeRegistry.cloud.createSession();
+      // A new Cloud thread is owned by the original account and Host; never
+      // navigate into a different account if sign-out/switch raced the POST.
+      const current = useCloudAccountStore.getState();
+      if (current.status !== 'signed_in' || current.account?.id !== cloudAccountId) {
+        throw new Error('云账号已变化，请重新选择会话。');
+      }
+      onClose();
+      navigation.navigate('Chat', {
+        sessionId: session.id,
+        title: session.title,
+        source: 'cloud-host',
+        cloudAccountId,
+      });
+    } catch (error) {
+      Alert.alert('无法新建远程会话', error instanceof Error && error.message
+        ? error.message : '请稍后重试。');
+    } finally {
+      creatingChatRef.current = false;
+      setCreatingChat(false);
     }
-    if (settings.defaultSessionSource === 'local-provider') {
+  }, [cloudAccountId, cloudStatus, navigation, onClose]);
+
+  const handleCreateChat = useCallback(() => {
+    if (!creatingChatRef.current) setSourcePickerVisible(true);
+  }, []);
+
+  const handleChooseSource = useCallback((source: 'remote' | 'local') => {
+    setSourcePickerVisible(false);
+    if (source === 'local') {
       handleOpenLocalProvider();
-      return;
+    } else if (remoteCreateSource === 'cloud-host') {
+      void createCloudChat();
+    } else {
+      void createRemoteChat();
     }
-    Alert.alert('新建会话', '选择会话来源', [
-      {
-        text: '远程连接',
-        onPress: () => void createRemoteChat(),
-      },
-      {
-        text: '本地连接',
-        onPress: handleOpenLocalProvider,
-      },
-      { text: '取消', style: 'cancel' },
-    ]);
-  }, [creatingChat, createRemoteChat, handleOpenLocalProvider]);
+  }, [createCloudChat, createRemoteChat, handleOpenLocalProvider, remoteCreateSource]);
 
   const renderDrawerSession = useCallback(
     ({ item }: { item: Session }) => {
@@ -464,7 +494,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
           accessibilityLabel={creatingChat ? '正在新建聊天' : '聊天'}
           accessibilityState={{ disabled: creatingChat }}
           disabled={creatingChat}
-          onPress={() => void handleCreateChat()}
+          onPress={handleCreateChat}
           style={({ pressed }) => [
             styles.chatButton,
             {
@@ -492,6 +522,18 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
           <Text style={[styles.avatarLabel, { color: colors.primary }]}>M</Text>
         </View>
       </View>
+      <SettingsChoiceModal
+        withinModal
+        visible={sourcePickerVisible}
+        value={activeSource === 'local-provider' ? 'local' : 'remote'}
+        options={[
+          { value: 'remote', label: remoteCreateSource === 'cloud-host'
+            ? '远程连接（Mira Cloud）' : '远程连接（Tailscale）' },
+          { value: 'local', label: '本地连接' },
+        ]}
+        onChange={handleChooseSource}
+        onClose={() => setSourcePickerVisible(false)}
+      />
     </View>
   );
 }

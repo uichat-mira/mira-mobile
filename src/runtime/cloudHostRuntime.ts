@@ -3,6 +3,7 @@ import { RemoteHostError } from '../api/remoteHttp';
 import {
   messageToChatMessage,
   threadToSession,
+  type CanonicalMessageSnapshot,
 } from '../api/miraHostClient';
 import {
   remoteManifestSupportsChat,
@@ -30,10 +31,25 @@ export class CloudHostRuntime implements ConversationRuntime {
   // The canonical Host thread may run Agent with an isolated private workspace.
   readonly supportsAgent = false;
   private currentAbort: (() => void) | null = null;
+  private readonly messageSnapshotListeners =
+    new Set<(snapshot: CanonicalMessageSnapshot) => void>();
 
   constructor(private readonly cloud: Pick<CloudRemoteBusinessClient,
     'listThreads' | 'getThread' | 'getMessages' | 'getManifest' |
-    'deleteThread' | 'sendMessage'> = cloudRemoteBusinessClient) {}
+    'createThread' | 'deleteThread' | 'sendMessage'> = cloudRemoteBusinessClient) {}
+
+  subscribeMessageSnapshots(
+    listener: (snapshot: CanonicalMessageSnapshot) => void,
+  ): () => void {
+    this.messageSnapshotListeners.add(listener);
+    return () => this.messageSnapshotListeners.delete(listener);
+  }
+
+  async createSession(title?: string): Promise<Session> {
+    // Reuse the Host-owned default Agent thread contract and Cloud grant checks.
+    const thread = await this.cloud.createThread(title, { agentEnabled: true });
+    return { ...threadToSession(thread), source: 'cloud-host' };
+  }
 
   async listSessions(): Promise<Session[]> {
     return (await this.cloud.listThreads()).map(thread => ({
@@ -49,7 +65,16 @@ export class CloudHostRuntime implements ConversationRuntime {
   }
 
   async getMessages(sessionId: string): Promise<ChatMessage[]> {
-    return (await this.cloud.getMessages(sessionId)).map(messageToChatMessage);
+    const messages = (await this.cloud.getMessages(sessionId)).map(messageToChatMessage);
+    // AgentRun discovery already polls canonical Host history. Reuse that
+    // same read to update the visible Cloud chat without another poll loop.
+    const snapshot: CanonicalMessageSnapshot = { sessionId, messages };
+    for (const listener of this.messageSnapshotListeners) {
+      try { listener(snapshot); } catch (error) {
+        console.warn('[cloudHostRuntime] snapshot listener failed', error);
+      }
+    }
+    return messages;
   }
 
   async canDeleteSession(): Promise<boolean> {

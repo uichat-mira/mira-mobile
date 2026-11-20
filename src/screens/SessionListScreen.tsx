@@ -391,7 +391,7 @@ export function SessionListScreen() {
                 { width: DRAWER_WIDTH, transform: [{ translateX: drawerAnim }] },
               ]}
             >
-              <CustomDrawer onClose={closeDrawer} />
+              <CustomDrawer onClose={closeDrawer} activeSource={sourceFilter} />
             </Animated.View>
           </View>
         </Modal>

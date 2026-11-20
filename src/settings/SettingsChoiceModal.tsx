@@ -16,9 +16,12 @@ interface SettingsChoiceModalProps<T extends string> {
   options: readonly SettingsChoice<T>[];
   onChange: (value: T) => void;
   onClose: () => void;
+  withinModal?: boolean;
 }
 
-export function SettingsChoiceModal<T extends string>({ visible, value, options, onChange, onClose }: SettingsChoiceModalProps<T>) {
+export function SettingsChoiceModal<T extends string>({
+  visible, value, options, onChange, onClose, withinModal = false,
+}: SettingsChoiceModalProps<T>) {
   const { colors } = useTheme();
   const [mounted, setMounted] = React.useState(visible);
   const progress = React.useRef(new Animated.Value(visible ? 1 : 0)).current;
@@ -71,9 +74,8 @@ export function SettingsChoiceModal<T extends string>({ visible, value, options,
     return null;
   }
 
-  return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={requestClose}>
-      <Pressable style={styles.backdrop} onPress={requestClose}>
+  const body = (
+    <Pressable style={styles.backdrop} onPress={requestClose}>
         <Animated.View
           pointerEvents="none"
           style={[
@@ -103,12 +105,17 @@ export function SettingsChoiceModal<T extends string>({ visible, value, options,
             </Pressable>
           ))}
         </Animated.View>
-      </Pressable>
-    </Modal>
+    </Pressable>
   );
+  // The Drawer already lives inside a native Modal. A second iOS modal can
+  // fail to present or block input; render the same choice content in place.
+  return withinModal
+    ? <View style={styles.withinModal}>{body}</View>
+    : <Modal visible={mounted} transparent animationType="none" onRequestClose={requestClose}>{body}</Modal>;
 }
 
 const styles = StyleSheet.create({
+  withinModal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 20 },
   backdrop: {
     flex: 1,
     justifyContent: 'center',

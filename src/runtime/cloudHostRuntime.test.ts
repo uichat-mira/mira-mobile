@@ -19,6 +19,7 @@ const api = () => ({
   getThread: jest.fn(async () => thread),
   getMessages: jest.fn(async () => [message]),
   getManifest: jest.fn(async () => manifest),
+  createThread: jest.fn(async () => ({ ...thread, agentEnabled: true })),
   deleteThread: jest.fn(async () => undefined),
   sendMessage: jest.fn(async () => ({
     abort: jest.fn(), events: (async function* () {
@@ -41,6 +42,28 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     await expect(runtime.getMessages('remote-1')).resolves.toMatchObject([
       { id: 'msg-1', role: 'user', content: 'Hello' },
     ]);
+  });
+
+  it('creates a Host-owned Agent thread using the Cloud business contract', async () => {
+    const client = api();
+    const runtime = new CloudHostRuntime(client as never);
+    await expect(runtime.createSession()).resolves.toMatchObject({
+      id: 'remote-1', source: 'cloud-host', agentEnabled: true,
+    });
+    expect(client.createThread).toHaveBeenCalledTimes(1);
+    expect(client.createThread).toHaveBeenCalledWith(undefined, { agentEnabled: true });
+  });
+
+  it('publishes Cloud canonical messages to the active Chat observer', async () => {
+    const client = api();
+    const runtime = new CloudHostRuntime(client as never);
+    const listener = jest.fn();
+    const unsubscribe = runtime.subscribeMessageSnapshots(listener);
+    const read = await runtime.getMessages('remote-1');
+    expect(listener).toHaveBeenCalledWith({ sessionId: 'remote-1', messages: read });
+    unsubscribe();
+    await runtime.getMessages('remote-1');
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it('cannot delete under read-only Cloud Host grant', async () => {

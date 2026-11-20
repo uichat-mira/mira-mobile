@@ -448,6 +448,33 @@ export function ChatScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!isCloudHost || !cloudAuthorityActive) return undefined;
+      // Cloud Agent discovery reads canonical Host messages independently of
+      // this screen. Without subscribing, only re-entering Chat refreshes the
+      // visible transcript after a Host-owned Agent completes.
+      return runtimeRegistry.cloud.subscribeMessageSnapshots((snapshot) => {
+        if (snapshot.sessionId !== sessionId ||
+            AppState.currentState !== 'active' || isLoading) return;
+        setMessages(current => {
+          if (current.length === snapshot.messages.length &&
+              current.every((message, index) =>
+                message.id === snapshot.messages[index]?.id &&
+                message.role === snapshot.messages[index]?.role &&
+                message.content === snapshot.messages[index]?.content &&
+                JSON.stringify(message.parts ?? null) ===
+                  JSON.stringify(snapshot.messages[index]?.parts ?? null) &&
+                JSON.stringify(message.metadata ?? null) ===
+                  JSON.stringify(snapshot.messages[index]?.metadata ?? null)
+              )) return current;
+          return snapshot.messages;
+        });
+        assistantHapticsRef.current?.observe(snapshot.messages);
+      });
+    }, [isCloudHost, cloudAuthorityActive, sessionId, isLoading]),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
       let active = true;
       setIsLoadingHistory(true);
       void Promise.all([loadMessages(), refreshSessionTitle()]).finally(() => {

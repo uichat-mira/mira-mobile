@@ -5,6 +5,12 @@ import renderer, { act } from 'react-test-renderer';
 import { CustomDrawer } from './CustomDrawer';
 
 const mockNavigate = jest.fn();
+const mockCreateCloudSession = jest.fn();
+const mockCreatePairedSession = jest.fn();
+let mockCloudState: {
+  status: 'signed_in' | 'signed_out';
+  account: { id: string } | null;
+} = { status: 'signed_out', account: null };
 
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: mockNavigate, goBack: jest.fn() }),
@@ -15,7 +21,7 @@ const mockCanDeleteSession = jest.fn(async () => true);
 
 jest.mock('../api/miraHostClient', () => ({
   miraHostClient: {
-    createSession: jest.fn(),
+    createSession: (...args: unknown[]) => mockCreatePairedSession(...args),
     canDeleteSession: () => mockCanDeleteSession(),
   },
 }));
@@ -23,6 +29,41 @@ jest.mock('../api/miraHostClient', () => ({
 jest.mock('../runtime/runtimeRegistry', () => ({
   runtimeRegistry: {
     listSessions: () => mockListSessions(),
+    cloud: { createSession: () => mockCreateCloudSession() },
+  },
+}));
+
+jest.mock('../cloud/cloudAccountStore', () => {
+  const useCloudAccountStore = (selector: (state: typeof mockCloudState) => unknown) =>
+    selector(mockCloudState);
+  useCloudAccountStore.getState = () => mockCloudState;
+  return { useCloudAccountStore };
+});
+
+jest.mock('../settings/SettingsChoiceModal', () => ({
+  SettingsChoiceModal: ({
+    visible, options, onChange,
+  }: {
+    visible: boolean;
+    options: Array<{ value: string; label: string }>;
+    onChange: (value: string) => void;
+  }) => {
+    if (!visible) return null;
+    const { Pressable, Text, View } = jest.requireActual('react-native');
+    return (
+      <View>
+        {options.map(option => (
+          <Pressable
+            key={option.value}
+            accessibilityRole="radio"
+            accessibilityLabel={option.label}
+            onPress={() => onChange(option.value)}
+          >
+            <Text>{option.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+    );
   },
 }));
 
@@ -97,10 +138,12 @@ const flush = async () => {
   });
 };
 
-const renderDrawer = async (): Promise<ReactTestRenderer> => {
+const renderDrawer = async (
+  source: 'all' | 'cloud-host' | 'remote-host' = 'all',
+): Promise<ReactTestRenderer> => {
   let tree!: ReactTestRenderer;
   await act(async () => {
-    tree = renderer.create(<CustomDrawer onClose={jest.fn()} />);
+    tree = renderer.create(<CustomDrawer onClose={jest.fn()} activeSource={source} />);
   });
   await flush();
   return tree;
@@ -118,6 +161,69 @@ describe('CustomDrawer session collection', () => {
     mockListSessions.mockReset();
     mockCanDeleteSession.mockReset();
     mockCanDeleteSession.mockResolvedValue(true);
+    mockCreateCloudSession.mockReset();
+    mockCreatePairedSession.mockReset();
+    mockCloudState = { status: 'signed_out', account: null };
+  });
+
+  it('creates a Cloud Agent thread from the shared drawer choice and binds account navigation', async () => {
+    mockCloudState = { status: 'signed_in', account: { id: 'account-a' } };
+    mockCreateCloudSession.mockResolvedValue({
+      id: 'cloud-new', title: '新对话', source: 'cloud-host',
+    });
+    const tree = await renderDrawer('cloud-host');
+    const button = tree.root.findAllByProps({ accessibilityLabel: '聊天' })[0]!;
+    await act(async () => button.props.onPress());
+    const option = tree.root.findByProps({ accessibilityLabel: '远程连接（Mira Cloud）' });
+    await act(async () => {
+      option.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockCreateCloudSession).toHaveBeenCalledTimes(1);
+    expect(mockCreatePairedSession).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('Chat', {
+      sessionId: 'cloud-new', title: '新对话', source: 'cloud-host',
+      cloudAccountId: 'account-a',
+    });
+    await act(async () => tree.unmount());
+  });
+
+  it('keeps paired Tailscale creation when it is explicitly selected', async () => {
+    mockCloudState = { status: 'signed_in', account: { id: 'account-a' } };
+    mockCreatePairedSession.mockResolvedValue({
+      id: 'paired-new', title: '新对话', source: 'remote-host',
+    });
+    const tree = await renderDrawer('remote-host');
+    await act(async () => tree.root.findAllByProps({ accessibilityLabel: '聊天' })[0]!.props.onPress());
+    const option = tree.root.findByProps({ accessibilityLabel: '远程连接（Tailscale）' });
+    await act(async () => {
+      option.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockCreateCloudSession).not.toHaveBeenCalled();
+    expect(mockCreatePairedSession).toHaveBeenCalledWith(undefined, { agentEnabled: true });
+    await act(async () => tree.unmount());
+  });
+
+  it('does not navigate into a stale Cloud account after a creation race', async () => {
+    mockCloudState = { status: 'signed_in', account: { id: 'account-a' } };
+    let finish!: (value: unknown) => void;
+    mockCreateCloudSession.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const tree = await renderDrawer('cloud-host');
+    await act(async () => tree.root.findAllByProps({ accessibilityLabel: '聊天' })[0]!.props.onPress());
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: '远程连接（Mira Cloud）' }).props.onPress();
+    });
+    mockCloudState = { status: 'signed_out', account: null };
+    await act(async () => {
+      finish({ id: 'cloud-new', title: '新对话' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockNavigate).not.toHaveBeenCalledWith('Chat', expect.anything());
+    await act(async () => tree.unmount());
   });
 
   it('groups pinned threads above recent threads', async () => {
