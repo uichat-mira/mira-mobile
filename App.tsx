@@ -13,7 +13,8 @@ import { WorkspaceListScreen } from './src/screens/WorkspaceListScreen';
 import { WorkspaceDetailScreen } from './src/screens/WorkspaceDetailScreen';
 import { HostConfigScreen } from './src/screens/HostConfigScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { LocalProviderConfigScreen } from './src/screens/LocalProviderConfigScreen';
+import { LocalProviderListScreen } from './src/screens/LocalProviderListScreen';
+import { LocalProviderEditScreen } from './src/screens/LocalProviderEditScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { PersonalizationScreen } from './src/screens/PersonalizationScreen';
 import { MemoryScreen } from './src/screens/MemoryScreen';
@@ -112,7 +113,8 @@ function AppInner() {
         <Stack.Screen name="WorkspaceDetail" component={WorkspaceDetailScreen} />
         <Stack.Screen name="HostConfig" component={HostConfigScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen name="LocalProviderConfig" component={LocalProviderConfigScreen} />
+        <Stack.Screen name="LocalProviderList" component={LocalProviderListScreen} />
+        <Stack.Screen name="LocalProviderEdit" component={LocalProviderEditScreen} />
         <Stack.Screen name="CloudAccount" component={CloudAccountScreen} />
         <Stack.Screen name="CloudAuthCallback" component={CloudAuthCallbackScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />

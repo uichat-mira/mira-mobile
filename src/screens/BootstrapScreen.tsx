@@ -93,8 +93,8 @@ export function BootstrapScreen() {
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="配置本地大模型"
-          onPress={() => navigation.navigate('LocalProviderConfig')}
+          accessibilityLabel="配置模型直连"
+          onPress={() => navigation.navigate('LocalProviderList')}
           style={({ pressed }) => [
             styles.action,
             {
@@ -107,8 +107,8 @@ export function BootstrapScreen() {
             <Cpu size={22} color={colors.primary} />
           </View>
           <View style={styles.actionText}>
-            <Text style={[styles.actionTitle, { color: colors.text.ink }]}>本地大模型</Text>
-            <Text style={[styles.actionDescription, { color: colors.text.soft }]}>配置本地模型 Provider，在设备侧直接对话。</Text>
+            <Text style={[styles.actionTitle, { color: colors.text.ink }]}>模型直连</Text>
+            <Text style={[styles.actionDescription, { color: colors.text.soft }]}>配置标准 API 模型，在设备侧直接对话。</Text>
           </View>
           <ChevronRight size={20} color={colors.text.soft} />
         </Pressable>

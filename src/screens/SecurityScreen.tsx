@@ -113,7 +113,7 @@ export function SecurityScreen() {
 
   const providersOverview = status
     ? status.providers.error
-      ? { ok: false, title: '无法读取 Local Provider 配置', description: '本次读取失败，请重试。' }
+      ? { ok: false, title: '无法读取模型直连配置', description: '本次读取失败，请重试。' }
       : !status.providers.supported
         ? { ok: false, title: '当前构建没有可用的安全存储', description: '无法读取 Provider API Key 状态。' }
         : status.providers.keyReadErrors > 0
@@ -123,13 +123,13 @@ export function SecurityScreen() {
               description: `${status.providers.keyReadErrors} 个 Provider 的 Key 本次读取失败，请重试。`,
             }
           : providersCount === 0
-            ? { ok: false, title: '尚未配置 Local Provider', description: '前往「设置 → 连接 → 本地连接」新增 Provider。' }
+            ? { ok: false, title: '尚未配置模型直连', description: '前往「设置 → 连接 → 模型直连」新增模型。' }
             : providersWithKey === providersCount
-              ? { ok: true, title: 'Local Provider API Key 已全部保存', description: 'API Key 仅存放在设备安全存储中。' }
+              ? { ok: true, title: '模型直连 API Key 已全部保存', description: 'API Key 仅存放在设备安全存储中。' }
               : {
                   ok: false,
                   title: `${providersWithKey}/${providersCount} 个 Provider 已保存 API Key`,
-                  description: '有 Provider 缺少 API Key，前往「本地连接」补全。',
+                  description: '有模型缺少 API Key，前往「模型直连」补全。',
                 }
     : null;
 
@@ -232,7 +232,7 @@ export function SecurityScreen() {
               />
               <Row
                 icon={KeyRound}
-                title="Local Provider API Key"
+                title="模型直连 API Key"
                 subtitle={
                   status.providers.error
                     ? '读取失败，请用上方「重试」重新读取'
@@ -240,9 +240,9 @@ export function SecurityScreen() {
                       ? '当前构建没有可用的安全存储'
                       : providersCount === 0
                         ? '尚未配置 Provider'
-                        : `${providersWithKey}/${providersCount} 个 Provider 已保存`
+                        : `${providersWithKey}/${providersCount} 个模型已保存`
                 }
-                actionId="LocalProviderConfig"
+                actionId="LocalProviderList"
                 isLast={false}
               />
               <Row
