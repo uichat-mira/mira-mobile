@@ -6,6 +6,7 @@ import {
   getChatSendErrorMessage,
   readCanonicalSessionTitle,
   readLocalSessionTitle,
+  reconcileFailedMessageErrors,
 } from './chatSessionState';
 
 describe('chatSessionState', () => {
@@ -193,5 +194,54 @@ describe('chatSessionState', () => {
     );
     expect(message).not.toContain('UNRECOGNIZED_HOST_FAILURE');
     expect(message).toBe('本地对话暂时无法连接所需服务，请稍后重试');
+  });
+
+  const canonicalMessage = (
+    id: string, role: 'user' | 'assistant' | 'system', content: string,
+  ) => ({ id, role, content, timestamp: new Date('2026-11-20T00:00:00Z') });
+
+  it('clears a transient Relay failure when its canonical Assistant reply arrives', () => {
+    const failed = new Map([['user-1', 'Mira Desktop Relay host disconnected']]);
+    const reconciled = reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-1', 'user', '帮我看罗浮的天气'),
+      canonicalMessage('assistant-1', 'assistant', '罗浮未来一周的天气'),
+    ]);
+
+    expect(reconciled.size).toBe(0);
+    expect(failed.has('user-1')).toBe(true); // Immutable React state
+  });
+
+  it('keeps the retry error when only the question or an empty Assistant placeholder is canonical', () => {
+    const failed = new Map([['user-1', 'disconnected']]);
+    expect(reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-1', 'user', 'hello'),
+    ])).toBe(failed);
+    expect(reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-1', 'user', 'hello'),
+      canonicalMessage('assistant-1', 'assistant', ''),
+    ])).toBe(failed);
+  });
+
+  it('never clears an unresolved turn from an older or later turn reply', () => {
+    const failed = new Map([['user-2', 'disconnected']]);
+    expect(reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-1', 'user', 'earlier'),
+      canonicalMessage('assistant-1', 'assistant', 'earlier reply'),
+      canonicalMessage('user-2', 'user', 'current'),
+    ])).toBe(failed);
+    expect(reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-2', 'user', 'current'),
+      canonicalMessage('user-3', 'user', 'later'),
+      canonicalMessage('assistant-3', 'assistant', 'later reply'),
+    ])).toBe(failed);
+  });
+
+  it('clears only the answered turn in a multi-turn failure map', () => {
+    const failed = new Map([['user-1', 'offline'], ['user-2', 'offline']]);
+    expect(Array.from(reconcileFailedMessageErrors(failed, [
+      canonicalMessage('user-1', 'user', 'question one'),
+      canonicalMessage('assistant-1', 'assistant', 'answer one'),
+      canonicalMessage('user-2', 'user', 'question two'),
+    ]).entries())).toEqual([['user-2', 'offline']]);
   });
 });

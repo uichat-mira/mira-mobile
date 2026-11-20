@@ -3,7 +3,7 @@ import { RemoteHostError } from '../api/remoteHttp';
 import { ToolGatewayError } from '../tools/toolGatewayClient';
 import { ToolPolicyError } from '../tools/toolPolicy';
 import type { RuntimeKind } from '../runtime/conversationRuntime';
-import type { Session } from '../types';
+import type { ChatMessage, Session } from '../types';
 
 type SessionReader = Pick<MiraHostApi, 'getSession'>;
 
@@ -45,6 +45,38 @@ export const readLocalSessionTitle = async (
   } catch {
     return null;
   }
+};
+
+/**
+ * A transient send failure stops being actionable once Host history contains
+ * an Assistant reply for that exact user turn. Do not let an older/later turn's
+ * Assistant message clear another turn's still-unresolved failure.
+ */
+export const reconcileFailedMessageErrors = (
+  failed: Map<string, string>,
+  canonicalMessages: readonly ChatMessage[],
+): Map<string, string> => {
+  if (failed.size === 0) return failed;
+
+  let currentUserId: string | null = null;
+  const resolved = new Set<string>();
+  for (const message of canonicalMessages) {
+    if (message.role === 'user') {
+      currentUserId = message.id;
+    } else if (
+      message.role === 'assistant' &&
+      message.content.trim().length > 0 &&
+      currentUserId !== null
+    ) {
+      if (failed.has(currentUserId)) resolved.add(currentUserId);
+      currentUserId = null;
+    }
+  }
+
+  if (resolved.size === 0) return failed;
+  const next = new Map(failed);
+  for (const id of resolved) next.delete(id);
+  return next;
 };
 
 export const getChatHistoryErrorMessage = (error: unknown): string => {

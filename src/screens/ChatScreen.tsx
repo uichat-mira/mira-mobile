@@ -69,6 +69,7 @@ import {
   getChatHistoryErrorMessage,
   readCanonicalSessionTitle,
   readLocalSessionTitle,
+  reconcileFailedMessageErrors,
 } from '../chat/chatSessionState';
 
 function ThinkingIndicator({ color }: { color: string }) {
@@ -336,6 +337,7 @@ export function ChatScreen() {
     return miraHostClient.subscribeMessageSnapshots((snapshot) => {
       if (snapshot.sessionId !== sessionId) return;
       assistantHapticsRef.current?.observe(snapshot.messages);
+      setFailedMessages(prev => reconcileFailedMessageErrors(prev, snapshot.messages));
     });
   }, [isCloudHost, isLocalProvider, sessionId]);
 
@@ -425,6 +427,9 @@ export function ChatScreen() {
       }
       const canonicalMessages = await runtime.getMessages(sessionId);
       setMessages(canonicalMessages);
+      if (!isLocalProvider) {
+        setFailedMessages(prev => reconcileFailedMessageErrors(prev, canonicalMessages));
+      }
       assistantHapticsRef.current?.observe(canonicalMessages);
       try {
         await markThreadRead(
@@ -444,7 +449,7 @@ export function ChatScreen() {
       setHistoryError(getChatHistoryErrorMessage(error));
       return null;
     }
-  }, [clearThreadRead, cloudAuthorityActive, markThreadRead, runtime, sessionId]);
+  }, [clearThreadRead, cloudAuthorityActive, isLocalProvider, markThreadRead, runtime, sessionId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -469,6 +474,7 @@ export function ChatScreen() {
           return snapshot.messages;
         });
         assistantHapticsRef.current?.observe(snapshot.messages);
+        setFailedMessages(prev => reconcileFailedMessageErrors(prev, snapshot.messages));
       });
     }, [isCloudHost, cloudAuthorityActive, sessionId, isLoading]),
   );
@@ -797,6 +803,9 @@ export function ChatScreen() {
           break;
         case 'canonical-reload':
           setMessages(event.messages);
+          if (!isLocalProvider) {
+            setFailedMessages(prev => reconcileFailedMessageErrors(prev, event.messages));
+          }
           assistantHapticsRef.current?.observe(event.messages);
           break;
         case 'failure':
@@ -816,6 +825,7 @@ export function ChatScreen() {
     },
     [
       agentEnabled,
+      isLocalProvider,
       scrollToBottom,
       supportsLocalAgent,
       upsertAgentActivity,
