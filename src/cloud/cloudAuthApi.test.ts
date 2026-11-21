@@ -410,7 +410,7 @@ const device = {
 };
 
 describe('Mira Cloud device API contract', () => {
-  it('lists account devices with the stored bearer and validates every summary field', async () => {
+  it('lists only devices verified by active Cloud Sessions with the stored bearer', async () => {
     const fetchMock = jest.fn(async () =>
       jsonResponse(200, { devices: [device, { ...device, id: 'other-device' }] }),
     );
@@ -427,7 +427,7 @@ describe('Mira Cloud device API contract', () => {
       string,
       RequestInit,
     ];
-    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/devices');
+    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/devices/active-sessions');
     expect(init.method).toBe('GET');
     expect(init.headers).toMatchObject({
       authorization: 'Bearer ' + issued.sessionToken,

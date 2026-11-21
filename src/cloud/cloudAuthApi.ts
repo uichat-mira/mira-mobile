@@ -5,7 +5,7 @@ import {
   CLOUD_AUTH_PLATFORM,
   CLOUD_AUTH_REDIRECT_URI,
   cloudAuthDeviceUrl,
-  cloudAuthDevicesUrl,
+  cloudAuthActiveSessionDevicesUrl,
   cloudAuthHostsUrl,
   cloudAuthLogoutUrl,
   cloudAuthServiceCredentialsUrl,
@@ -851,7 +851,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
   }
 
   async listDevices(sessionToken: string): Promise<MiraDevice[]> {
-    return this.send(cloudAuthDevicesUrl(this.baseUrl), {
+    return this.send(cloudAuthActiveSessionDevicesUrl(this.baseUrl), {
       method: 'GET',
       headers: {
         accept: 'application/json',
