@@ -245,7 +245,9 @@ export const parseMiraDevice = (value: unknown): MiraDevice => {
     createdAt: parseDeviceTimestamp(value.createdAt),
     lastSeenAt: parseDeviceTimestamp(value.lastSeenAt),
     revokedAt:
-      value.revokedAt === null ? null : parseDeviceTimestamp(value.revokedAt),
+      value.revokedAt === null
+        ? null
+        : parseDeviceTimestamp(value.revokedAt),
   };
 };
 
@@ -321,8 +323,7 @@ export const parseCloudDesktopHost = (value: unknown): CloudDesktopHost => {
     (value.availability !== 'available' && value.availability !== 'offline') ||
     typeof value.relayRoom !== 'string' ||
     !CLOUD_RELAY_ROOM_PATTERN.test(value.relayRoom) ||
-    value.relayRoom === '.' ||
-    value.relayRoom === '..'
+    value.relayRoom === '.' || value.relayRoom === '..'
   ) {
     throw new CloudAuthRequestError(
       'invalid_response',
@@ -333,7 +334,10 @@ export const parseCloudDesktopHost = (value: unknown): CloudDesktopHost => {
     id: value.id,
     deviceId: value.deviceId,
     displayName: parseOptionalCloudLabel(value.displayName, 'Host name'),
-    clientVersion: parseOptionalCloudLabel(value.clientVersion, 'Host version'),
+    clientVersion: parseOptionalCloudLabel(
+      value.clientVersion,
+      'Host version',
+    ),
     availability: value.availability,
     relayRoom: value.relayRoom,
     registeredAt: parseCloudTimestamp(value.registeredAt, 'Host registration'),
@@ -391,11 +395,17 @@ const decodeBase64UrlAscii = (segment: string): string => {
       char === '=' ? 0 : BASE64URL_ALPHABET.indexOf(char),
     );
     if (values.some(item => item < 0)) {
-      return invalidRelayTicket('Mira Cloud returned a malformed Relay ticket');
+      return invalidRelayTicket(
+        'Mira Cloud returned a malformed Relay ticket',
+      );
     }
     const packed =
       (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
-    const bytes = [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+    const bytes = [
+      (packed >> 16) & 0xff,
+      (packed >> 8) & 0xff,
+      packed & 0xff,
+    ];
     const length = chars[2] === '=' ? 1 : chars[3] === '=' ? 2 : 3;
     for (let offset = 0; offset < length; offset += 1) {
       const byte = bytes[offset];
@@ -593,42 +603,22 @@ const defaultFetch: typeof fetch = (input, init) => {
 };
 
 const SAFE_ANDROID_REASONS = new Set([
-  'CERTIFICATE_REJECTED',
-  'DNS_FAILURE',
-  'CONNECTION_RESET',
-  'NETWORK_UNREACHABLE',
-  'CONNECTION_REFUSED',
-  'TIMEOUT',
-  'TLS_HANDSHAKE',
-  'CONNECT_FAILED',
-  'EARLY_EOF',
-  'UNCLASSIFIED',
+  'CERTIFICATE_REJECTED', 'DNS_FAILURE', 'CONNECTION_RESET',
+  'NETWORK_UNREACHABLE', 'CONNECTION_REFUSED', 'TIMEOUT',
+  'TLS_HANDSHAKE', 'CONNECT_FAILED', 'EARLY_EOF', 'UNCLASSIFIED',
 ]);
 
 // No native raw errors, URLs, OAuth code, verifier or credentials reach the UI.
 const formatAndroidTransportDetail = (raw: unknown): string => {
   if (!isRecord(raw)) return 'Android OkHttp: PROBE_FAILED';
-  if (
-    raw.outcome === 'HTTP' &&
-    typeof raw.httpStatus === 'number' &&
-    Number.isInteger(raw.httpStatus) &&
-    raw.httpStatus >= 100 &&
-    raw.httpStatus <= 599
-  ) {
+  if (raw.outcome === 'HTTP' && typeof raw.httpStatus === 'number' &&
+      Number.isInteger(raw.httpStatus) && raw.httpStatus >= 100 && raw.httpStatus <= 599) {
     return 'Android OkHttp: HTTP ' + raw.httpStatus;
   }
-  if (
-    raw.outcome === 'NETWORK' &&
-    typeof raw.exceptionChain === 'string' &&
-    /^(?:[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error))(?:>[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error)){0,2}$/.test(
-      raw.exceptionChain,
-    ) &&
-    typeof raw.reason === 'string' &&
-    SAFE_ANDROID_REASONS.has(raw.reason)
-  ) {
-    return (
-      'Android OkHttp: NETWORK ' + raw.exceptionChain + ' (' + raw.reason + ')'
-    );
+  if (raw.outcome === 'NETWORK' && typeof raw.exceptionChain === 'string' &&
+      /^(?:[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error))(?:>[A-Za-z][A-Za-z0-9]{0,48}(?:Exception|Error)){0,2}$/.test(raw.exceptionChain) &&
+      typeof raw.reason === 'string' && SAFE_ANDROID_REASONS.has(raw.reason)) {
+    return 'Android OkHttp: NETWORK ' + raw.exceptionChain + ' (' + raw.reason + ')';
   }
   return 'Android OkHttp: PROBE_FAILED';
 };
@@ -665,9 +655,7 @@ const withNativeDiagnosticDeadline = async (
   try {
     // A stalled RN native bridge must not leave the OAuth callback spinning.
     return await Promise.race([
-      Promise.resolve()
-        .then(probe)
-        .catch(() => 'Android OkHttp: PROBE_FAILED'),
+      Promise.resolve().then(probe).catch(() => 'Android OkHttp: PROBE_FAILED'),
       deadline,
     ]);
   } finally {
@@ -701,11 +689,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
       timer = setTimeout(() => {
         controller.abort();
         reject(
-          new CloudAuthRequestError(
-            'network',
-            'Mira Cloud request timed out',
-            'MIRA_REQUEST_TIMEOUT',
-          ),
+          new CloudAuthRequestError('network', 'Mira Cloud request timed out', 'MIRA_REQUEST_TIMEOUT'),
         );
       }, CLOUD_AUTH_REQUEST_TIMEOUT_MS);
     });
@@ -720,11 +704,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
           signal: controller.signal,
         });
       } catch {
-        throw new CloudAuthRequestError(
-          'network',
-          'Mira Cloud is unreachable',
-          'MIRA_FETCH_FAILED',
-        );
+        throw new CloudAuthRequestError('network', 'Mira Cloud is unreachable', 'MIRA_FETCH_FAILED');
       }
       return read(response);
     })();
@@ -740,9 +720,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
   // It uses the same React Native fetch stack as the failed POST, so a phone
   // browser's successful /health check is not mistaken for native reachability.
   // Never retry the one-use authorization code or surface raw native errors.
-  private async probeNativeHealth(): Promise<
-    'ok' | 'http' | 'network' | 'timeout'
-  > {
+  private async probeNativeHealth(): Promise<'ok' | 'http' | 'network' | 'timeout'> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const probe = this.fetchImpl(`${this.baseUrl}/health`, {
@@ -769,38 +747,34 @@ export class CloudAuthApi implements CloudAuthApiLike {
   async exchangeAuthorizationCode(
     request: OAuthCodeExchangeRequest,
   ): Promise<IssuedCloudSession> {
-    return this.send(
-      cloudAuthTokenUrl(this.baseUrl),
-      {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          grant_type: 'authorization_code',
-          client_id: CLOUD_AUTH_CLIENT_ID,
-          code: request.code,
-          redirect_uri: CLOUD_AUTH_REDIRECT_URI,
-          code_verifier: request.codeVerifier,
-          installation_id: request.installationId,
-          platform: CLOUD_AUTH_PLATFORM,
-        }),
+    return this.send(cloudAuthTokenUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, true);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid session response',
-          );
-        }
-        return parseIssuedCloudSession(body);
-      },
-    ).catch(async (error: unknown) => {
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: CLOUD_AUTH_CLIENT_ID,
+        code: request.code,
+        redirect_uri: CLOUD_AUTH_REDIRECT_URI,
+        code_verifier: request.codeVerifier,
+        installation_id: request.installationId,
+        platform: CLOUD_AUTH_PLATFORM,
+      }),
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid session response',
+        );
+      }
+      return parseIssuedCloudSession(body);
+    }).catch(async (error: unknown) => {
       if (
         releaseChannel !== 'dev' ||
         !(error instanceof CloudAuthRequestError) ||
@@ -809,9 +783,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
         throw error;
       }
       const probe = await this.probeNativeHealth();
-      const detail = await withNativeDiagnosticDeadline(
-        this.nativeTransportDiagnostic,
-      );
+      const detail = await withNativeDiagnosticDeadline(this.nativeTransportDiagnostic);
       const stage = error.code === 'MIRA_REQUEST_TIMEOUT' ? 'TIMEOUT' : 'FETCH';
       throw new CloudAuthRequestError(
         'network',
@@ -823,187 +795,159 @@ export class CloudAuthApi implements CloudAuthApiLike {
   }
 
   async getSession(sessionToken: string): Promise<CloudSessionSummary> {
-    return this.send(
-      cloudAuthSessionUrl(this.baseUrl),
-      {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthSessionUrl(this.baseUrl), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, false);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid session response',
-          );
-        }
-        return parseCloudSessionSummary(body);
-      },
-    );
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid session response',
+        );
+      }
+      return parseCloudSessionSummary(body);
+    });
   }
 
   async renewSession(sessionToken: string): Promise<IssuedCloudSession> {
-    return this.send(
-      cloudAuthSessionRenewUrl(this.baseUrl),
-      {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthSessionRenewUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, false);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid renewed session',
-          );
-        }
-        return parseIssuedCloudSession(body);
-      },
-    );
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid renewed session',
+        );
+      }
+      return parseIssuedCloudSession(body);
+    });
   }
 
   async logout(sessionToken: string): Promise<void> {
-    return this.send(
-      cloudAuthLogoutUrl(this.baseUrl),
-      {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthLogoutUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, false);
-      },
-    );
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+    });
   }
 
   async listDevices(sessionToken: string): Promise<MiraDevice[]> {
-    return this.send(
-      cloudAuthDevicesUrl(this.baseUrl),
-      {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthDevicesUrl(this.baseUrl), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, false);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid device list',
-          );
-        }
-        return parseMiraDeviceList(body);
-      },
-    );
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, false);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid device list',
+        );
+      }
+      return parseMiraDeviceList(body);
+    });
   }
 
   async revokeDevice(
     sessionToken: string,
     deviceId: string,
   ): Promise<MiraDevice> {
-    return this.send(
-      cloudAuthDeviceUrl(this.baseUrl, deviceId),
-      {
-        method: 'DELETE',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthDeviceUrl(this.baseUrl, deviceId), {
+      method: 'DELETE',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) {
-          throw await failureForResponse(response, false, true);
-        }
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid device revocation response',
-          );
-        }
-        return parseRevokedMiraDevice(body, deviceId);
-      },
-    );
+    }, async response => {
+      if (!response.ok) {
+        throw await failureForResponse(response, false, true);
+      }
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid device revocation response',
+        );
+      }
+      return parseRevokedMiraDevice(body, deviceId);
+    });
   }
 
   async listHosts(sessionToken: string): Promise<CloudDesktopHost[]> {
-    return this.send(
-      cloudAuthHostsUrl(this.baseUrl),
-      {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
+    return this.send(cloudAuthHostsUrl(this.baseUrl), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, true);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid Host directory',
-          );
-        }
-        return parseCloudDesktopHostList(body);
-      },
-    );
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid Host directory',
+        );
+      }
+      return parseCloudDesktopHostList(body);
+    });
   }
 
   async issueRelayClientTicket(
     sessionToken: string,
     room: string,
   ): Promise<IssuedRelayTransportTicket> {
-    return this.send(
-      cloudAuthServiceCredentialsUrl(this.baseUrl),
-      {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-          authorization: `Bearer ${sessionToken}`,
-        },
-        body: JSON.stringify({
-          audience: CLOUD_RELAY_TRANSPORT_AUDIENCE,
-          relay: { room, role: 'client' },
-        }),
+    return this.send(cloudAuthServiceCredentialsUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        authorization: `Bearer ${sessionToken}`,
       },
-      async response => {
-        if (!response.ok) throw await failureForResponse(response, true);
-        let body: unknown;
-        try {
-          body = await response.json();
-        } catch {
-          throw new CloudAuthRequestError(
-            'invalid_response',
-            'Mira Cloud returned an invalid Relay ticket response',
-          );
-        }
-        return parseIssuedRelayTransportTicket(body, room);
-      },
-    );
+      body: JSON.stringify({
+        audience: CLOUD_RELAY_TRANSPORT_AUDIENCE,
+        relay: { room, role: 'client' },
+      }),
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new CloudAuthRequestError(
+          'invalid_response',
+          'Mira Cloud returned an invalid Relay ticket response',
+        );
+      }
+      return parseIssuedRelayTransportTicket(body, room);
+    });
   }
 }
