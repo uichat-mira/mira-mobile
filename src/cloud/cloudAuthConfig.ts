@@ -48,6 +48,10 @@ export const cloudAuthLogoutUrl = (baseUrl: string): string =>
 export const cloudAuthDevicesUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, DEVICES_PATH);
 
+// Only this server-authoritative view may feed the active Cloud devices UI.
+export const cloudAuthActiveSessionDevicesUrl = (baseUrl: string): string =>
+  cloudAuthUrl(baseUrl, `${DEVICES_PATH}/active-sessions`);
+
 export const cloudAuthDeviceUrl = (
   baseUrl: string,
   deviceId: string,
