@@ -97,7 +97,9 @@ describe('Mira Cloud OAuth/API contract', () => {
   });
 
   it('distinguishes a failed native health probe from a failed token POST without replaying the code', async () => {
-    const fetchMock = jest.fn().mockRejectedValue(new Error('native network error'));
+    const fetchMock = jest
+      .fn()
+      .mockRejectedValue(new Error('native network error'));
     const api = new CloudAuthApi(
       'https://cloud-auth.tomzlab.cn',
       fetchMock as unknown as typeof fetch,
@@ -120,21 +122,30 @@ describe('Mira Cloud OAuth/API contract', () => {
   });
 
   it('attaches a bounded Android OkHttp exception chain without replaying OAuth code', async () => {
-    const fetchMock = jest.fn().mockRejectedValue(new Error('sensitive code_verifier=abc'));
-    const diagnostic = jest.fn().mockResolvedValue(
-      'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
-    );
+    const fetchMock = jest
+      .fn()
+      .mockRejectedValue(new Error('sensitive code_verifier=abc'));
+    const diagnostic = jest
+      .fn()
+      .mockResolvedValue(
+        'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
+      );
     const api = new CloudAuthApi(
       'https://cloud-auth.tomzlab.cn',
       fetchMock as unknown as typeof fetch,
       diagnostic,
     );
-    await expect(api.exchangeAuthorizationCode({
-      code: 'one-use-code', codeVerifier: 'secret-verifier', installationId,
-    })).rejects.toMatchObject({
+    await expect(
+      api.exchangeAuthorizationCode({
+        code: 'one-use-code',
+        codeVerifier: 'secret-verifier',
+        installationId,
+      }),
+    ).rejects.toMatchObject({
       kind: 'network',
       code: 'MOB081_FETCH_HEALTH_NETWORK',
-      detail: 'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
+      detail:
+        'Android OkHttp: NETWORK SSLHandshakeException>SocketException (CONNECTION_RESET)',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(diagnostic).toHaveBeenCalledTimes(1);
@@ -143,7 +154,9 @@ describe('Mira Cloud OAuth/API contract', () => {
   it('times out a stalled native diagnostic instead of hanging the OAuth callback', async () => {
     jest.useFakeTimers();
     try {
-      const fetchMock = jest.fn().mockRejectedValue(new Error('native fetch failure'));
+      const fetchMock = jest
+        .fn()
+        .mockRejectedValue(new Error('native fetch failure'));
       const diagnostic = jest.fn(() => new Promise<string>(() => {}));
       const api = new CloudAuthApi(
         'https://cloud-auth.tomzlab.cn',
@@ -151,7 +164,9 @@ describe('Mira Cloud OAuth/API contract', () => {
         diagnostic,
       );
       const pending = api.exchangeAuthorizationCode({
-        code: 'one-use-code', codeVerifier: 'private-verifier', installationId,
+        code: 'one-use-code',
+        codeVerifier: 'private-verifier',
+        installationId,
       });
       const assertion = expect(pending).rejects.toMatchObject({
         kind: 'network',
@@ -232,8 +247,8 @@ describe('Mira Cloud OAuth/API contract', () => {
   it('times out a Cloud request stalled before response headers', async () => {
     jest.useFakeTimers();
     try {
-      const fetchMock = jest.fn((_url: string, _init: RequestInit) =>
-        new Promise<Response>(() => {}),
+      const fetchMock = jest.fn(
+        (_url: string, _init: RequestInit) => new Promise<Response>(() => {}),
       );
       const api = new CloudAuthApi(
         'https://test.cloud-auth.tomzlab.cn',
@@ -257,8 +272,9 @@ describe('Mira Cloud OAuth/API contract', () => {
     jest.useFakeTimers();
     try {
       const body = jest.fn(() => new Promise<unknown>(() => {}));
-      const fetchMock = jest.fn(async () =>
-        ({ ok: true, status: 200, json: body }) as unknown as Response,
+      const fetchMock = jest.fn(
+        async () =>
+          ({ ok: true, status: 200, json: body } as unknown as Response),
       );
       const api = new CloudAuthApi(
         'https://test.cloud-auth.tomzlab.cn',
@@ -355,12 +371,16 @@ describe('Mira Cloud OAuth/API contract', () => {
       'https://test.cloud-auth.tomzlab.cn',
       fetchMock as unknown as typeof fetch,
     );
-    await expect(api.renewSession(issued.sessionToken)).resolves.toEqual(rotated);
+    await expect(api.renewSession(issued.sessionToken)).resolves.toEqual(
+      rotated,
+    );
     const [url, init] = fetchMock.mock.calls[0] as unknown as [
       string,
       RequestInit,
     ];
-    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/auth/session/renew');
+    expect(url).toBe(
+      'https://test.cloud-auth.tomzlab.cn/v1/auth/session/renew',
+    );
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({
       authorization: 'Bearer ' + issued.sessionToken,
@@ -387,7 +407,10 @@ describe('Mira Cloud OAuth/API contract', () => {
 
   it('never treats an incomplete renewed credential as a valid Session', async () => {
     const fetchMock = jest.fn(async () =>
-      jsonResponse(200, { account: issued.account, expiresAt: issued.expiresAt }),
+      jsonResponse(200, {
+        account: issued.account,
+        expiresAt: issued.expiresAt,
+      }),
     );
     const api = new CloudAuthApi(
       'https://test.cloud-auth.tomzlab.cn',
@@ -412,7 +435,9 @@ const device = {
 describe('Mira Cloud device API contract', () => {
   it('lists account devices with the stored bearer and validates every summary field', async () => {
     const fetchMock = jest.fn(async () =>
-      jsonResponse(200, { devices: [device, { ...device, id: 'other-device' }] }),
+      jsonResponse(200, {
+        devices: [device, { ...device, id: 'other-device' }],
+      }),
     );
     const api = new CloudAuthApi(
       'https://test.cloud-auth.tomzlab.cn',
@@ -434,12 +459,39 @@ describe('Mira Cloud device API contract', () => {
     });
   });
 
+  it('accepts Web devices alongside Mobile/Desktop per the Cloud Auth device platform contract', async () => {
+    const webDevice = {
+      ...device,
+      id: 'web-device',
+      platform: 'web',
+      clientName: 'Mira Cloud Web',
+      clientVersion: null,
+    };
+    const api = new CloudAuthApi(
+      'https://test.cloud-auth.tomzlab.cn',
+      (async () =>
+        jsonResponse(200, {
+          devices: [device, webDevice],
+        })) as unknown as typeof fetch,
+    );
+    await expect(api.listDevices(issued.sessionToken)).resolves.toEqual([
+      device,
+      webDevice,
+    ]);
+  });
+
   it.each([
     ['missing devices', {}],
     ['non-array devices', { devices: {} }],
-    ['missing revoked state', { devices: [{ ...device, revokedAt: undefined }] }],
+    [
+      'missing revoked state',
+      { devices: [{ ...device, revokedAt: undefined }] },
+    ],
     ['invalid platform', { devices: [{ ...device, platform: 'server' }] }],
-    ['invalid timestamp', { devices: [{ ...device, lastSeenAt: 'not-a-time' }] }],
+    [
+      'invalid timestamp',
+      { devices: [{ ...device, lastSeenAt: 'not-a-time' }] },
+    ],
     ['blank client name', { devices: [{ ...device, clientName: '   ' }] }],
   ])('rejects an invalid device list: %s', async (_name, body) => {
     const api = new CloudAuthApi(
@@ -491,7 +543,10 @@ describe('Mira Cloud device API contract', () => {
 
   it.each([
     ['an unrevoked device', { ...device }],
-    ['a different device', { ...device, id: 'other-device', revokedAt: '2026-10-25T10:00:00.000Z' }],
+    [
+      'a different device',
+      { ...device, id: 'other-device', revokedAt: '2026-10-25T10:00:00.000Z' },
+    ],
     ['a malformed timestamp', { ...device, revokedAt: 'not-a-time' }],
   ])('never reports success for %s', async (_name, body) => {
     const api = new CloudAuthApi(

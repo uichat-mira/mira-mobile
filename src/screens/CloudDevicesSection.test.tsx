@@ -234,3 +234,24 @@ test('failed device fetch may show cached records but cannot revoke them', async
       .disabled,
   ).toBe(true);
 });
+
+test('browser Cloud devices render as browser entries, never as a fake Desktop or current phone', async () => {
+  setState({
+    ...base,
+    devices: [
+      {
+        ...active,
+        id: 'web-1',
+        platform: 'web',
+        clientName: null,
+        clientVersion: null,
+      },
+    ],
+  });
+  const tree = await render();
+  expect(textOf(tree)).toContain('浏览器');
+  expect(textOf(tree).join(' ')).toContain('设备标识 web-1');
+  expect(textOf(tree).join(' ')).not.toContain('当前设备');
+  expect(textOf(tree).join(' ')).not.toContain('桌面设备');
+  expect(labels(tree)).toContain('撤销设备 浏览器');
+});

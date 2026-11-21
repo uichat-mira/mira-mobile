@@ -7,7 +7,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Monitor, RefreshCw, Smartphone } from 'lucide-react-native';
+import { Globe2, Monitor, RefreshCw, Smartphone } from 'lucide-react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
@@ -18,12 +18,31 @@ import type { MiraDevice } from '../cloud/cloudAuthApi';
 export const activeCloudDevices = (devices: MiraDevice[]): MiraDevice[] =>
   devices.filter(device => device.revokedAt === null);
 
-const deviceTitle = (device: MiraDevice) =>
-  device.clientName?.trim() ||
-  (device.platform === 'mobile' ? '移动设备' : '桌面设备');
+const devicePlatform = (device: MiraDevice) => {
+  switch (device.platform) {
+    case 'mobile':
+      return '移动设备';
+    case 'web':
+      return '浏览器';
+    default:
+      return '桌面设备';
+  }
+};
 
-const devicePlatform = (device: MiraDevice) =>
-  device.platform === 'mobile' ? '移动设备' : '桌面设备';
+const deviceTitle = (device: MiraDevice) =>
+  device.clientName?.trim() || devicePlatform(device);
+
+// Unnamed devices need a stable distinguishing label. Only use a real
+// server-owned device ID; never infer hardware/OS or current-device identity.
+const deviceDetail = (device: MiraDevice) => {
+  const details: string[] = [];
+  if (device.clientName?.trim()) details.push(devicePlatform(device));
+  if (device.clientVersion)
+    details.push(`v${device.clientVersion.replace(/^v/, '')}`);
+  if (!device.clientName?.trim())
+    details.push(`设备标识 ${device.id.slice(0, 8)}`);
+  return details.join(' · ');
+};
 
 const activityLabel = (value: string) => {
   const date = new Date(value);
@@ -163,6 +182,8 @@ export function CloudDevicesSection() {
               >
                 {device.platform === 'mobile' ? (
                   <Smartphone size={21} color={colors.primary} />
+                ) : device.platform === 'web' ? (
+                  <Globe2 size={21} color={colors.primary} />
                 ) : (
                   <Monitor size={21} color={colors.primary} />
                 )}
@@ -187,10 +208,7 @@ export function CloudDevicesSection() {
                     style={[styles.deviceMeta, { color: colors.text.muted }]}
                     numberOfLines={1}
                   >
-                    {devicePlatform(device)}
-                    {device.clientVersion
-                      ? ` · v${device.clientVersion.replace(/^v/, '')}`
-                      : ''}
+                    {deviceDetail(device)}
                   </Text>
                   <Text
                     style={[styles.deviceMeta, { color: colors.text.soft }]}
