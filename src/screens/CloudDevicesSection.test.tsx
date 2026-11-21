@@ -1,7 +1,10 @@
 import React from 'react';
 import { Alert, Text } from 'react-native';
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer';
-import { activeCloudDevices, CloudDevicesSection } from './CloudDevicesSection';
+import {
+  nonRevokedCloudDevices,
+  CloudDevicesSection,
+} from './CloudDevicesSection';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
 jest.mock('../settings/SettingsPageHeader', () => ({
@@ -105,7 +108,7 @@ afterEach(() => {
 
 test('filters revoked records without removing server-owned state or inventing current device', async () => {
   const tree = await render();
-  expect(activeCloudDevices([active, revoked])).toEqual([active]);
+  expect(nonRevokedCloudDevices([active, revoked])).toEqual([active]);
   expect(useCloudAccountStore.getState().devices).toEqual([active, revoked]);
   const all = textOf(tree).join(' ');
   expect(all).toContain('Mira Mobile');
@@ -140,15 +143,13 @@ test('revoke requires confirmation, preserves ownership and does not claim succe
   expect(textOf(tree).join(' ')).not.toContain('已确认撤销');
 });
 
-test('outage preserves cached devices but disables revocation', async () => {
+test('outage hides cached device rows but preserves store state', async () => {
   setState({ ...base, status: 'cloud_unavailable' });
   const tree = await render();
-  expect(textOf(tree).join(' ')).toContain('设备信息可能不是最新的');
-  expect(textOf(tree).join(' ')).toContain('Mira Mobile');
-  expect(
-    tree.root.findByProps({ accessibilityLabel: '撤销设备 Mira Mobile' }).props
-      .disabled,
-  ).toBe(true);
+  expect(textOf(tree).join(' ')).toContain('无法确认哪些设备仍有有效会话');
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
+  expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
+  expect(useCloudAccountStore.getState().devices).toEqual([active, revoked]);
 });
 
 test('retries a failed device list through refreshed Cloud authority', async () => {
@@ -179,7 +180,7 @@ test('retries a failed device list through refreshed Cloud authority', async () 
 test('shows empty state when only revoked history remains', async () => {
   setState({ ...base, devices: [revoked] });
   const tree = await render();
-  expect(textOf(tree)).toContain('暂无已授权设备');
+  expect(textOf(tree)).toContain('暂无有效会话设备');
   expect(textOf(tree).join(' ')).not.toContain('已撤销的 Mac');
   expect(labels(tree)).not.toContain('撤销设备 已撤销的 Mac');
 });
@@ -220,19 +221,17 @@ test('offline with no cached devices does not show an endless device loading spi
   expect(labels(tree)).toContain('刷新设备列表');
 });
 
-test('failed device fetch may show cached records but cannot revoke them', async () => {
+test('failed device fetch hides stale cached rows while preserving store state', async () => {
   setState({
     ...base,
     devicesStatus: 'unavailable',
     devicesMessage: '无法读取设备列表',
   });
   const tree = await render();
-  expect(textOf(tree).join(' ')).toContain('Mira Mobile');
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
   expect(textOf(tree)).toContain('无法读取设备列表');
-  expect(
-    tree.root.findByProps({ accessibilityLabel: '撤销设备 Mira Mobile' }).props
-      .disabled,
-  ).toBe(true);
+  expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
+  expect(useCloudAccountStore.getState().devices).toEqual([active, revoked]);
 });
 
 test('browser Cloud devices render as browser entries, never as a fake Desktop or current phone', async () => {
@@ -254,4 +253,26 @@ test('browser Cloud devices render as browser entries, never as a fake Desktop o
   expect(textOf(tree).join(' ')).not.toContain('当前设备');
   expect(textOf(tree).join(' ')).not.toContain('桌面设备');
   expect(labels(tree)).toContain('撤销设备 浏览器');
+});
+
+test('a refresh in progress cannot keep an old device row visible', async () => {
+  setState({ ...base, devicesStatus: 'loading' });
+  const tree = await render();
+  expect(textOf(tree).join(' ')).toContain('正在读取设备');
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
+  expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
+});
+
+test('a Cloud interruption hides even previously loaded device rows', async () => {
+  setState({ ...base, status: 'cloud_unavailable', devicesStatus: 'loaded' });
+  const tree = await render();
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
+  expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
+});
+
+test('session refresh in progress does not display a previously fetched device list', async () => {
+  setState({ ...base, busy: true, devicesStatus: 'loaded' });
+  const tree = await render();
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
+  expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
 });

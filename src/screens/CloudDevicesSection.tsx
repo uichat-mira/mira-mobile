@@ -13,9 +13,10 @@ import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import type { MiraDevice } from '../cloud/cloudAuthApi';
 
-// Cloud Auth returns its own device UUID, which cannot be correlated with
-// the Mobile installation ID. Do not guess a "current device" badge.
-export const activeCloudDevices = (devices: MiraDevice[]): MiraDevice[] =>
+// Cloud Auth owns device identity and effective Session authority. Filtering
+// tombstones here is defensive only: it does not prove an active Session.
+// The server must return only devices with a valid Session (OPS-029).
+export const nonRevokedCloudDevices = (devices: MiraDevice[]): MiraDevice[] =>
   devices.filter(device => device.revokedAt === null);
 
 const devicePlatform = (device: MiraDevice) => {
@@ -66,16 +67,16 @@ export function CloudDevicesSection() {
   );
   const refresh = useCloudAccountStore(state => state.refresh);
   const revokeDevice = useCloudAccountStore(state => state.revokeDevice);
-  const visibleDevices = activeCloudDevices(devices);
+  const visibleDevices = nonRevokedCloudDevices(devices);
   const canRevoke =
     account !== null && status === 'signed_in' && devicesStatus === 'loaded';
   const hasSession =
     account !== null &&
     (status === 'signed_in' || status === 'cloud_unavailable');
-  const showCachedList =
-    hasSession &&
-    (devicesStatus === 'loaded' ||
-      (devicesStatus === 'unavailable' && visibleDevices.length > 0));
+  // Never present cached devices as currently authorized when Cloud is
+  // unreachable, the query failed, or verification is still in progress.
+  const showVerifiedList =
+    status === 'signed_in' && devicesStatus === 'loaded' && !busy;
   const refreshing =
     busy || devicesStatus === 'loading' || revokingDeviceId !== null;
 
@@ -127,13 +128,13 @@ export function CloudDevicesSection() {
 
       {status === 'cloud_unavailable' ? (
         <Text style={[styles.note, { color: colors.text.muted }]}>
-          云服务暂不可用。设备信息可能不是最新的，恢复连接后再管理设备。
+          云服务暂不可用，无法确认哪些设备仍有有效会话。请恢复连接后刷新。
         </Text>
       ) : null}
 
       {status === 'signed_in' &&
       (devicesStatus === 'loading' || devicesStatus === 'idle') &&
-      !showCachedList ? (
+      !showVerifiedList ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.primary} />
           <Text style={[styles.note, { color: colors.text.soft }]}>
@@ -148,7 +149,7 @@ export function CloudDevicesSection() {
         </Text>
       ) : null}
 
-      {devicesStatus === 'loaded' && visibleDevices.length === 0 ? (
+      {showVerifiedList && visibleDevices.length === 0 ? (
         <View
           style={[
             styles.empty,
@@ -160,12 +161,12 @@ export function CloudDevicesSection() {
         >
           <Monitor size={22} color={colors.text.soft} />
           <Text style={[styles.note, { color: colors.text.muted }]}>
-            暂无已授权设备
+            暂无有效会话设备
           </Text>
         </View>
       ) : null}
 
-      {showCachedList && visibleDevices.length > 0 ? (
+      {showVerifiedList && visibleDevices.length > 0 ? (
         <View
           style={[
             styles.list,
