@@ -65,6 +65,10 @@ const createHarness = () => {
     listDevices: jest.fn(),
     revokeDevice: jest.fn(),
   };
+  (api.getSession as jest.Mock).mockResolvedValue({
+    account: issued.account,
+    expiresAt: issued.expiresAt,
+  });
   const service = new MiraCloudAuthService({
     sessionStore,
     installationIdentity,
@@ -633,6 +637,44 @@ describe('Mira Cloud device service', () => {
       devices: [device],
     });
     expect(harness.api.listDevices).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('refreshes this installation metadata only after verifying its server-owned device id', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+      deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => device);
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    const result = await harness.service.listDevices();
+    expect(result).toEqual({ status: 'listed', devices: [device], currentDeviceId: device.id });
+    expect(harness.api.registerDevice).toHaveBeenCalledWith(
+      issued.sessionToken,
+      expect.stringMatching(/^[0-9a-f]{8}-/u),
+      expect.objectContaining({ clientName: 'Mira Mobile', clientVersion: expect.any(String) }),
+    );
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('refuses to label a different registration as the current device', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => ({ ...device, id: revokedDevice.id }));
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'unavailable',
+      reason: 'invalid_response',
+    });
+    expect(harness.api.listDevices).not.toHaveBeenCalled();
+    expect(harness.sessionStore.peek()).not.toBeNull();
   });
 
   it('clears local Cloud authority when the device list is rejected', async () => {

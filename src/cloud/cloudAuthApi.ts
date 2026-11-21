@@ -5,6 +5,7 @@ import {
   CLOUD_AUTH_PLATFORM,
   CLOUD_AUTH_REDIRECT_URI,
   cloudAuthDeviceUrl,
+  cloudAuthDevicesUrl,
   cloudAuthActiveSessionDevicesUrl,
   cloudAuthHostsUrl,
   cloudAuthLogoutUrl,
@@ -24,6 +25,8 @@ export interface CloudAccountIdentity {
 export interface CloudSessionSummary {
   account: CloudAccountIdentity;
   expiresAt: string;
+  /** Server-owned id of this Session's device; null for browser Sessions. */
+  deviceId?: string | null;
 }
 
 export interface IssuedCloudSession extends CloudSessionSummary {
@@ -37,6 +40,9 @@ export interface MiraDevice {
   platform: MiraDevicePlatform;
   clientName: string | null;
   clientVersion: string | null;
+  deviceName?: string | null;
+  osName?: string | null;
+  osVersion?: string | null;
   createdAt: string;
   lastSeenAt: string;
   revokedAt: string | null;
@@ -113,6 +119,14 @@ export class CloudAuthRequestError extends Error {
   }
 }
 
+export interface NativeDeviceMetadata {
+  deviceName?: string;
+  osName: string;
+  osVersion?: string;
+  clientName: string;
+  clientVersion: string;
+}
+
 export interface CloudAuthApiLike {
   exchangeAuthorizationCode(
     request: OAuthCodeExchangeRequest,
@@ -121,6 +135,12 @@ export interface CloudAuthApiLike {
   renewSession(sessionToken: string): Promise<IssuedCloudSession>;
   logout(sessionToken: string): Promise<void>;
   listDevices(sessionToken: string): Promise<MiraDevice[]>;
+  /** Optional only for legacy injected client mocks; production API implements it. */
+  registerDevice?(
+    sessionToken: string,
+    installationId: string,
+    metadata: NativeDeviceMetadata,
+  ): Promise<MiraDevice>;
   revokeDevice(sessionToken: string, deviceId: string): Promise<MiraDevice>;
 }
 
@@ -158,6 +178,15 @@ const parseExpiresAt = (value: unknown): string => {
   return new Date(value).toISOString();
 };
 
+const parseCloudDeviceId = (value: unknown): string | null | undefined => {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)) {
+    throw new CloudAuthRequestError('invalid_response', 'Mira Cloud returned an invalid current device identity');
+  }
+  return value;
+};
+
 export const parseIssuedCloudSession = (value: unknown): IssuedCloudSession => {
   if (!isRecord(value)) {
     throw new CloudAuthRequestError(
@@ -178,6 +207,7 @@ export const parseIssuedCloudSession = (value: unknown): IssuedCloudSession => {
     sessionToken: value.sessionToken,
     account: parseAccount(value.account),
     expiresAt: parseExpiresAt(value.expiresAt),
+    ...(value.deviceId === undefined ? {} : { deviceId: parseCloudDeviceId(value.deviceId) }),
   };
 };
 
@@ -193,6 +223,7 @@ export const parseCloudSessionSummary = (
   return {
     account: parseAccount(value.account),
     expiresAt: parseExpiresAt(value.expiresAt),
+    ...(value.deviceId === undefined ? {} : { deviceId: parseCloudDeviceId(value.deviceId) }),
   };
 };
 
@@ -242,6 +273,9 @@ export const parseMiraDevice = (value: unknown): MiraDevice => {
     platform: value.platform,
     clientName: parseOptionalDeviceLabel(value.clientName),
     clientVersion: parseOptionalDeviceLabel(value.clientVersion),
+    ...(value.deviceName === undefined ? {} : { deviceName: parseOptionalDeviceLabel(value.deviceName) }),
+    ...(value.osName === undefined ? {} : { osName: parseOptionalDeviceLabel(value.osName) }),
+    ...(value.osVersion === undefined ? {} : { osVersion: parseOptionalDeviceLabel(value.osVersion) }),
     createdAt: parseDeviceTimestamp(value.createdAt),
     lastSeenAt: parseDeviceTimestamp(value.lastSeenAt),
     revokedAt:
@@ -847,6 +881,25 @@ export class CloudAuthApi implements CloudAuthApiLike {
       },
     }, async response => {
       if (!response.ok) throw await failureForResponse(response, false);
+    });
+  }
+
+  async registerDevice(
+    sessionToken: string,
+    installationId: string,
+    metadata: NativeDeviceMetadata,
+  ): Promise<MiraDevice> {
+    return this.send(cloudAuthDevicesUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({ installationId, platform: CLOUD_AUTH_PLATFORM, ...metadata }),
+    }, async response => {
+      if (!response.ok) throw await failureForResponse(response, true);
+      return parseMiraDevice(await response.json());
     });
   }
 

@@ -119,6 +119,9 @@ test('signed in shows account and active devices on a single page without subpag
         platform: 'mobile',
         clientName: 'Mira Mobile',
         clientVersion: '0.3.31',
+        deviceName: 'iPhone',
+        osName: 'iOS',
+        osVersion: '26.0',
         createdAt: '2026-11-01T00:00:00Z',
         lastSeenAt: '2026-11-20T00:00:00Z',
         revokedAt: null,
@@ -137,7 +140,7 @@ test('signed in shows account and active devices on a single page without subpag
   expect(labels(tree)).toEqual(
     expect.arrayContaining([
       '刷新设备列表',
-      '撤销设备 Mira Mobile',
+      '撤销设备 iPhone',
       '退出 Mira Cloud',
     ]),
   );

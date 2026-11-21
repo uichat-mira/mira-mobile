@@ -29,6 +29,14 @@ describe('Mira Cloud OAuth/API contract', () => {
     ).toThrow(CloudAuthRequestError);
   });
 
+  it('parses only an authoritative UUID device identity and preserves missing legacy fields', () => {
+    const bound = { ...issued, deviceId: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11' };
+    expect(parseIssuedCloudSession(bound)).toEqual(bound);
+    expect(parseIssuedCloudSession({ ...issued, deviceId: null }).deviceId).toBeNull();
+    expect(parseIssuedCloudSession(issued)).not.toHaveProperty('deviceId');
+    expect(() => parseIssuedCloudSession({ ...issued, deviceId: 'guessed' })).toThrow(CloudAuthRequestError);
+  });
+
   it('exchanges the code with the exact registered client, redirect and PKCE fields', async () => {
     const fetchMock = jest.fn(async () => jsonResponse(200, issued));
     const api = new CloudAuthApi(
@@ -560,5 +568,32 @@ describe('Mira Cloud device API contract', () => {
     await expect(
       unavailableApi.listDevices(issued.sessionToken),
     ).rejects.toMatchObject({ kind: 'unavailable' });
+  });
+});
+
+describe('OPS-029 device metadata registration wire contract', () => {
+  it('sends non-sensitive metadata with the existing installation id and bearer authority', async () => {
+    const device = {
+      id: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11',
+      platform: 'mobile',
+      clientName: 'Mira Mobile',
+      clientVersion: '0.3.31',
+      deviceName: 'Redmi K70',
+      osName: 'Android',
+      osVersion: '14',
+      createdAt: '2026-10-20T08:00:00.000Z',
+      lastSeenAt: '2026-10-25T09:00:00.000Z',
+      revokedAt: null,
+    };
+    const fetchMock = jest.fn(async () => jsonResponse(200, device));
+    const api = new CloudAuthApi('https://test.cloud-auth.tomzlab.cn', fetchMock as unknown as typeof fetch);
+    const metadata = { clientName: 'Mira Mobile', clientVersion: '0.3.31', deviceName: 'Redmi K70', osName: 'Android', osVersion: '14' };
+    await expect(api.registerDevice(issued.sessionToken, installationId, metadata)).resolves.toEqual(device);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://test.cloud-auth.tomzlab.cn/v1/devices');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual(expect.objectContaining({ authorization: 'Bearer ' + issued.sessionToken }));
+    expect(JSON.parse(String(init.body))).toEqual({ installationId, platform: 'mobile', ...metadata });
+    expect(JSON.stringify(init.body)).not.toContain('sessionToken');
   });
 });
