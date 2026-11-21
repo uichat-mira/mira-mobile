@@ -235,3 +235,21 @@ test('focus refreshes Cloud then loads devices on the same account page', async 
   expect(refresh).toHaveBeenCalledTimes(1);
   expect(loadDevices).toHaveBeenCalledTimes(1);
 });
+
+test('unexpected Cloud refresh failure is visible and never leaves a verified device list', async () => {
+  const refresh = jest.fn(async () => {
+    throw new Error('unexpected transport failure');
+  });
+  mockFocusEnabled = true;
+  setState({
+    ...base,
+    status: 'signed_in',
+    account: { id: 'a', username: 'alice' },
+    devicesStatus: 'loaded',
+    refresh,
+  });
+  const tree = await render();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(textOf(tree).join(' ')).toContain('无法更新云端设备列表');
+  expect(useCloudAccountStore.getState().devicesStatus).toBe('unavailable');
+});

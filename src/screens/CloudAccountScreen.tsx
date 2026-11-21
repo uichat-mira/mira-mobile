@@ -70,7 +70,15 @@ export function CloudAccountScreen() {
           await useCloudAccountStore.getState().loadDevices();
         }
       };
-      sync();
+      sync().catch(() => {
+        // An unexpected failure must never leave stale devices presented as valid.
+        if (useCloudAccountStore.getState().status === 'signed_in') {
+          useCloudAccountStore.setState({
+            devicesStatus: 'unavailable',
+            devicesMessage: '无法更新云端设备列表，请刷新重试。',
+          });
+        }
+      });
     }, [initialized, refresh]),
   );
 
