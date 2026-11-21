@@ -30,8 +30,18 @@ const devicePlatform = (device: MiraDevice) => {
   }
 };
 
+// Keep older meaningful client labels until they report a native model.
+// Generic application labels are not a device name.
+const specificClientName = (device: MiraDevice): string | null => {
+  const name = device.clientName?.trim();
+  if (!name || ['Mira Mobile', 'Mira Desktop', 'Mira Cloud Web'].includes(name)) {
+    return null;
+  }
+  return name;
+};
+
 const deviceTitle = (device: MiraDevice) =>
-  device.deviceName?.trim() || devicePlatform(device);
+  device.deviceName?.trim() || specificClientName(device) || devicePlatform(device);
 
 // Unnamed devices need a stable distinguishing label. Only use a real
 // server-owned device ID; never infer hardware/OS or current-device identity.
@@ -40,7 +50,7 @@ const deviceDetail = (device: MiraDevice) => {
   if (device.osName) {
     details.push([device.osName, device.osVersion].filter(Boolean).join(' '));
   }
-  if (device.clientName) {
+  if (device.clientName && device.clientName !== deviceTitle(device)) {
     details.push([device.clientName, device.clientVersion && `v${device.clientVersion.replace(/^v/, '')}`].filter(Boolean).join(' '));
   } else if (device.clientVersion) {
     details.push(`v${device.clientVersion.replace(/^v/, '')}`);

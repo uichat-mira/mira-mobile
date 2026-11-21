@@ -135,6 +135,13 @@ test('shows the server-authoritative current device without guessing from names'
   expect(textOf(tree).join(' ')).not.toContain('本机');
 });
 
+test('preserves meaningful legacy client labels without mistaking generic app labels for a model', async () => {
+  setState({ ...base, devices: [{ ...active, deviceName: null, clientName: 'Mac Studio', osName: null, osVersion: null }] });
+  const tree = await render();
+  expect(textOf(tree)).toContain('Mac Studio');
+  expect(labels(tree)).toContain('撤销设备 Mac Studio');
+});
+
 test('revoke requires confirmation, preserves ownership and does not claim success prematurely', async () => {
   const revokeDevice = jest.fn(async () => undefined);
   setState({ ...base, revokeDevice });
