@@ -107,34 +107,44 @@ test('signed out keeps Cloud optional and allows browser login', async () => {
   expect(labels(tree)).not.toContain('我的设备');
 });
 
-test('signed in shows account identity and navigates to dedicated pages', async () => {
+test('signed in shows account and active devices on a single page without subpage entries', async () => {
   setState({
     ...base,
     status: 'signed_in',
     account: { id: 'account-1', username: 'alice' },
+    devicesStatus: 'loaded',
+    devices: [
+      {
+        id: 'device-1',
+        platform: 'mobile',
+        clientName: 'Mira Mobile',
+        clientVersion: '0.3.31',
+        createdAt: '2026-11-01T00:00:00Z',
+        lastSeenAt: '2026-11-20T00:00:00Z',
+        revokedAt: null,
+      },
+    ],
     expiresAt: '2026-11-25T11:00:00.000Z',
   });
   const tree = await render();
-  expect(textOf(tree)).toContain('alice');
-  expect(textOf(tree)).toContain('已连接');
-  expect(textOf(tree)).toContain('会话正常');
+  const all = textOf(tree).join(' ');
+  expect(all).toContain('alice');
+  expect(all).toContain('已连接');
+  expect(all).toContain('我的设备');
+  expect(all).toContain('Mira Mobile');
+  expect(all).not.toContain('登录与安全');
+  expect(all).not.toContain('会话有效期至');
   expect(labels(tree)).toEqual(
     expect.arrayContaining([
-      '我的设备',
-      '登录与安全',
-      '检查登录状态',
-      '退出登录',
+      '刷新设备列表',
+      '撤销设备 Mira Mobile',
+      '退出 Mira Cloud',
     ]),
   );
-  act(() =>
-    tree.root.findByProps({ accessibilityLabel: '我的设备' }).props.onPress(),
-  );
-  expect(mockNavigate).toHaveBeenCalledWith('CloudDevices');
-  act(() =>
-    tree.root.findByProps({ accessibilityLabel: '登录与安全' }).props.onPress(),
-  );
-  expect(mockNavigate).toHaveBeenCalledWith('CloudSecurity');
-  expect(textOf(tree).join(' ')).not.toContain('会话有效期至');
+  expect(labels(tree)).not.toContain('登录与安全');
+  expect(labels(tree)).not.toContain('检查登录状态');
+  expect(labels(tree)).not.toContain('我的设备');
+  expect(mockNavigate).not.toHaveBeenCalled();
 });
 
 test('Cloud outage keeps account visible but never shows a green connected badge', async () => {
@@ -148,8 +158,8 @@ test('Cloud outage keeps account visible but never shows a green connected badge
   expect(textOf(tree)).toContain('alice');
   expect(textOf(tree)).toContain('连接中断');
   expect(textOf(tree)).not.toContain('已连接');
-  expect(labels(tree)).toContain('重试连接');
-  expect(labels(tree)).toContain('退出登录');
+  expect(labels(tree)).toContain('刷新设备列表');
+  expect(labels(tree)).toContain('退出 Mira Cloud');
 });
 
 test('retry Cloud connection does not load devices when Cloud remains unavailable', async () => {
@@ -164,7 +174,9 @@ test('retry Cloud connection does not load devices when Cloud remains unavailabl
   });
   const tree = await render();
   await act(async () => {
-    tree.root.findByProps({ accessibilityLabel: '重试连接' }).props.onPress();
+    tree.root
+      .findByProps({ accessibilityLabel: '刷新设备列表' })
+      .props.onPress();
     await Promise.resolve();
   });
   expect(refresh).toHaveBeenCalledTimes(1);
@@ -178,7 +190,7 @@ test('rejected session demands explicit browser reauthentication', async () => {
     message: 'Mira Cloud 登录已失效，请重新登录。',
   });
   const tree = await render();
-  expect(textOf(tree)).toContain('登录已失效');
+  expect(textOf(tree).join(' ')).toContain('登录已失效');
   expect(labels(tree)).toContain('重新登录 Mira Cloud');
   expect(labels(tree)).not.toContain('我的设备');
 });
@@ -194,7 +206,9 @@ test('sign out requires confirmation and only invokes existing Cloud store actio
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   const tree = await render();
   act(() =>
-    tree.root.findByProps({ accessibilityLabel: '退出登录' }).props.onPress(),
+    tree.root
+      .findByProps({ accessibilityLabel: '退出 Mira Cloud' })
+      .props.onPress(),
   );
   expect(signOut).not.toHaveBeenCalled();
   expect(alert.mock.calls[0]?.[1]).toContain('本地模型');
@@ -206,7 +220,7 @@ test('sign out requires confirmation and only invokes existing Cloud store actio
   expect(signOut).toHaveBeenCalledTimes(1);
 });
 
-test('focus refreshes the Cloud session without opening device management implicitly', async () => {
+test('focus refreshes Cloud then loads devices on the same account page', async () => {
   const refresh = jest.fn(async () => undefined);
   const loadDevices = jest.fn(async () => undefined);
   mockFocusEnabled = true;
@@ -219,5 +233,5 @@ test('focus refreshes the Cloud session without opening device management implic
   });
   await render();
   expect(refresh).toHaveBeenCalledTimes(1);
-  expect(loadDevices).not.toHaveBeenCalled();
+  expect(loadDevices).toHaveBeenCalledTimes(1);
 });

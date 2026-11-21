@@ -1,23 +1,9 @@
 import React from 'react';
 import { Alert, Text } from 'react-native';
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer';
-import { activeCloudDevices, CloudDevicesScreen } from './CloudDevicesScreen';
+import { activeCloudDevices, CloudDevicesSection } from './CloudDevicesSection';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 
-const mockNavigate = jest.fn();
-let mockFocusEnabled = false;
-jest.mock('@react-navigation/native', () => {
-  const ReactModule = jest.requireActual<typeof import('react')>('react');
-  return {
-    useNavigation: () => ({ navigate: mockNavigate, goBack: jest.fn() }),
-    useFocusEffect: (callback: () => void | (() => void)) => {
-      ReactModule.useEffect(() => {
-        if (!mockFocusEnabled) return undefined;
-        return callback();
-      }, [callback]);
-    },
-  };
-});
 jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
@@ -100,15 +86,13 @@ let current: ReactTestRenderer | null = null;
 const render = async () => {
   let tree!: ReactTestRenderer;
   await act(async () => {
-    tree = renderer.create(<CloudDevicesScreen />);
+    tree = renderer.create(<CloudDevicesSection />);
     current = tree;
   });
   return tree;
 };
 
 beforeEach(() => {
-  mockNavigate.mockReset();
-  mockFocusEnabled = false;
   setState(base);
 });
 afterEach(() => {
@@ -183,7 +167,7 @@ test('retries a failed device list through refreshed Cloud authority', async () 
   expect(textOf(tree)).toContain('无法读取设备列表');
   await act(async () => {
     tree.root
-      .findByProps({ accessibilityLabel: '重试读取设备列表' })
+      .findByProps({ accessibilityLabel: '刷新设备列表' })
       .props.onPress();
     await Promise.resolve();
     await Promise.resolve();
@@ -200,21 +184,53 @@ test('shows empty state when only revoked history remains', async () => {
   expect(labels(tree)).not.toContain('撤销设备 已撤销的 Mac');
 });
 
-test('rejected Cloud account blocks device list and routes back to login', async () => {
+test('rejected Cloud account cannot see stale device controls', async () => {
   setState({ ...base, status: 'session_rejected', account: null, devices: [] });
   const tree = await render();
-  expect(textOf(tree).join(' ')).toContain('登录已失效');
   expect(labels(tree)).not.toContain('撤销设备 Mira Mobile');
-  act(() =>
-    tree.root.findByProps({ accessibilityLabel: '返回云账户' }).props.onPress(),
-  );
-  expect(mockNavigate).toHaveBeenCalledWith('CloudAccount');
+  expect(textOf(tree).join(' ')).not.toContain('Mira Mobile');
 });
 
-test('focus fetches devices only for a valid Cloud session', async () => {
+test('refreshing a loaded list uses Cloud session before loading devices', async () => {
   const loadDevices = jest.fn(async () => undefined);
-  mockFocusEnabled = true;
-  setState({ ...base, loadDevices });
-  await render();
+  const refresh = jest.fn(async () => undefined);
+  setState({ ...base, refresh, loadDevices });
+  const tree = await render();
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: '刷新设备列表' })
+      .props.onPress();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(refresh).toHaveBeenCalledTimes(1);
   expect(loadDevices).toHaveBeenCalledTimes(1);
+});
+
+test('offline with no cached devices does not show an endless device loading spinner', async () => {
+  setState({
+    ...base,
+    status: 'cloud_unavailable',
+    devices: [],
+    devicesStatus: 'idle',
+  });
+  const tree = await render();
+  expect(textOf(tree).join(' ')).toContain('云服务暂不可用');
+  expect(textOf(tree).join(' ')).not.toContain('正在读取设备');
+  expect(labels(tree)).toContain('刷新设备列表');
+});
+
+test('failed device fetch may show cached records but cannot revoke them', async () => {
+  setState({
+    ...base,
+    devicesStatus: 'unavailable',
+    devicesMessage: '无法读取设备列表',
+  });
+  const tree = await render();
+  expect(textOf(tree).join(' ')).toContain('Mira Mobile');
+  expect(textOf(tree)).toContain('无法读取设备列表');
+  expect(
+    tree.root.findByProps({ accessibilityLabel: '撤销设备 Mira Mobile' }).props
+      .disabled,
+  ).toBe(true);
 });

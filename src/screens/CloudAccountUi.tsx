@@ -1,6 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronRight } from 'lucide-react-native';
+import { Pressable, StyleSheet, Text } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 
@@ -50,53 +49,6 @@ export function CloudActionButton({
   );
 }
 
-export function CloudMenuRow({
-  icon: Icon,
-  title,
-  subtitle,
-  onPress,
-  last = false,
-}: {
-  icon: CloudIcon;
-  title: string;
-  subtitle: string;
-  onPress: () => void;
-  last?: boolean;
-}) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      onPress={onPress}
-      style={({ pressed }) => [styles.menuRow, pressed && styles.pressed]}
-    >
-      <View style={[styles.menuIcon, { backgroundColor: colors.bg.soft }]}>
-        <Icon size={20} color={colors.primary} />
-      </View>
-      <View
-        style={[
-          styles.menuBody,
-          !last && {
-            borderBottomWidth: StyleSheet.hairlineWidth,
-            borderColor: colors.border.default,
-          },
-        ]}
-      >
-        <View style={styles.menuText}>
-          <Text style={[styles.menuTitle, { color: colors.text.ink }]}>
-            {title}
-          </Text>
-          <Text style={[styles.menuSubtitle, { color: colors.text.soft }]}>
-            {subtitle}
-          </Text>
-        </View>
-        <ChevronRight size={20} color={colors.text.soft} />
-      </View>
-    </Pressable>
-  );
-}
-
 export const cloudLayout = StyleSheet.create({
   screen: { flex: 1 },
   scrollContent: {
@@ -128,31 +80,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   actionText: { fontSize: fontSize.button, fontWeight: '600' },
-  menuRow: {
-    paddingLeft: spacing.md,
-    minHeight: 76,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  menuIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: radius.md,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuBody: {
-    flex: 1,
-    minHeight: 76,
-    paddingRight: spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  menuText: { flex: 1, gap: spacing.xs },
-  menuTitle: { fontSize: fontSize.bodyMd, fontWeight: '600' },
-  menuSubtitle: { fontSize: fontSize.caption },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.45 },
 });

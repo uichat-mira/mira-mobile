@@ -8,16 +8,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   AlertCircle,
   Cloud,
   LogIn,
   LogOut,
-  MonitorSmartphone,
   RefreshCw,
-  ShieldCheck,
 } from 'lucide-react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
@@ -26,15 +23,11 @@ import {
   useCloudAccountStore,
   type CloudAccountStatus,
 } from '../cloud/cloudAccountStore';
-import type { RootStackParamList } from '../types/navigation';
-import { CloudActionButton, CloudMenuRow, cloudLayout } from './CloudAccountUi';
+import { CloudActionButton, cloudLayout } from './CloudAccountUi';
+import { CloudDevicesSection } from './CloudDevicesSection';
 
-type Nav = NativeStackNavigationProp<RootStackParamList>;
-
-const accountStatusText = (status: CloudAccountStatus): string => {
+const accountStatusText = (status: CloudAccountStatus) => {
   switch (status) {
-    case 'signed_in':
-      return '会话正常';
     case 'cloud_unavailable':
       return '暂时无法连接';
     case 'session_rejected':
@@ -50,7 +43,6 @@ const accountStatusText = (status: CloudAccountStatus): string => {
 
 export function CloudAccountScreen() {
   const { colors } = useTheme();
-  const navigation = useNavigation<Nav>();
   const status = useCloudAccountStore(state => state.status);
   const account = useCloudAccountStore(state => state.account);
   const message = useCloudAccountStore(state => state.message);
@@ -72,7 +64,13 @@ export function CloudAccountScreen() {
         useCloudAccountStore.getState().status === 'authorizing'
       )
         return;
-      refresh();
+      const sync = async () => {
+        await refresh();
+        if (useCloudAccountStore.getState().status === 'signed_in') {
+          await useCloudAccountStore.getState().loadDevices();
+        }
+      };
+      sync();
     }, [initialized, refresh]),
   );
 
@@ -82,11 +80,7 @@ export function CloudAccountScreen() {
       '将清除这台设备的云账户登录状态。本地模型、独立远程连接和推送身份不会被删除。',
       [
         { text: '取消', style: 'cancel' },
-        {
-          text: '退出登录',
-          style: 'destructive',
-          onPress: () => signOut(),
-        },
+        { text: '退出登录', style: 'destructive', onPress: () => signOut() },
       ],
     );
 
@@ -96,7 +90,7 @@ export function CloudAccountScreen() {
       edges={['top', 'bottom']}
     >
       <SettingsPageHeader title="Mira Cloud" />
-      <ScrollView contentContainerStyle={cloudLayout.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
         <View
           style={[
             styles.accountCard,
@@ -107,7 +101,7 @@ export function CloudAccountScreen() {
           ]}
         >
           <View style={[styles.avatar, { backgroundColor: colors.bg.soft }]}>
-            <Cloud size={27} color={colors.primary} />
+            <Cloud size={26} color={colors.primary} />
           </View>
           <View style={styles.accountText}>
             <View style={styles.accountTitleRow}>
@@ -142,15 +136,18 @@ export function CloudAccountScreen() {
                 </View>
               ) : null}
             </View>
-            <Text style={[styles.accountCaption, { color: colors.text.muted }]}>
-              {accountStatusText(status)}
-            </Text>
+            {hasAccount ? (
+              <Text style={[styles.helper, { color: colors.text.muted }]}>
+                Mira Cloud 为可选能力，不影响本地模型与独立直连。
+              </Text>
+            ) : (
+              <Text style={[styles.helper, { color: colors.text.muted }]}>
+                {accountStatusText(status)} · Mira Cloud
+                不影响本地模型与独立直连。
+              </Text>
+            )}
           </View>
         </View>
-
-        <Text style={[cloudLayout.description, { color: colors.text.soft }]}>
-          Mira Cloud 为可选能力，不影响本地模型与独立直连。
-        </Text>
 
         {message ? (
           <View
@@ -168,33 +165,9 @@ export function CloudAccountScreen() {
           </View>
         ) : null}
 
-        {hasAccount ? (
-          <View
-            style={[
-              styles.menuGroup,
-              {
-                backgroundColor: colors.bg.card,
-                borderColor: colors.border.default,
-              },
-            ]}
-          >
-            <CloudMenuRow
-              icon={MonitorSmartphone}
-              title="我的设备"
-              subtitle="管理已授权设备"
-              onPress={() => navigation.navigate('CloudDevices')}
-            />
-            <CloudMenuRow
-              icon={ShieldCheck}
-              title="登录与安全"
-              subtitle="检查登录状态、退出登录"
-              last
-              onPress={() => navigation.navigate('CloudSecurity')}
-            />
-          </View>
-        ) : null}
+        {hasAccount ? <CloudDevicesSection /> : null}
 
-        {status === 'session_rejected' ? (
+        {status === 'session_rejected' && !message ? (
           <View style={styles.inlineInfo}>
             <AlertCircle size={18} color={colors.status.error} />
             <Text
@@ -227,27 +200,13 @@ export function CloudAccountScreen() {
 
       <View style={cloudLayout.actions}>
         {hasAccount ? (
-          <>
-            <CloudActionButton
-              icon={RefreshCw}
-              label={
-                busy
-                  ? '正在检查…'
-                  : status === 'cloud_unavailable'
-                  ? '重试连接'
-                  : '检查登录状态'
-              }
-              onPress={() => refresh()}
-              disabled={busy}
-            />
-            <CloudActionButton
-              icon={LogOut}
-              label="退出登录"
-              tone="secondary"
-              onPress={requestSignOut}
-              disabled={busy}
-            />
-          </>
+          <CloudActionButton
+            icon={LogOut}
+            label="退出 Mira Cloud"
+            tone="secondary"
+            onPress={requestSignOut}
+            disabled={busy}
+          />
         ) : status === 'loading' ? null : status === 'authorizing' ? (
           <CloudActionButton
             icon={LogOut}
@@ -285,18 +244,23 @@ export function CloudAccountScreen() {
 }
 
 const styles = StyleSheet.create({
+  scrollContent: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl,
+    gap: spacing.xl,
+  },
   accountCard: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.lg,
-    padding: spacing.lg,
+    padding: spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    minHeight: 114,
+    minHeight: 110,
   },
   avatar: {
-    width: 56,
-    height: 56,
+    width: 54,
+    height: 54,
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -309,7 +273,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   accountName: { fontSize: fontSize.titleLg, fontWeight: '700', flexShrink: 1 },
-  accountCaption: { fontSize: fontSize.button },
+  helper: { fontSize: fontSize.caption, lineHeight: 19 },
   statusChip: {
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
@@ -320,12 +284,7 @@ const styles = StyleSheet.create({
   },
   statusChipText: { fontSize: fontSize.caption, fontWeight: '600' },
   statusDot: { width: 7, height: 7, borderRadius: radius.full },
-  menuGroup: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.md,
-    overflow: 'hidden',
-  },
-  spinner: { padding: spacing.xl },
+  spinner: { padding: spacing.lg },
   flexText: { flex: 1 },
   inlineInfo: {
     flexDirection: 'row',
