@@ -1,15 +1,12 @@
-import { releaseChannel } from 'mira-release-channel';
 import { isValidOAuthState, isValidPkceChallenge } from './pkce';
 
 export const CLOUD_AUTH_CLIENT_ID = 'mira-mobile';
 export const CLOUD_AUTH_REDIRECT_URI = 'mira-mobile://oauth/callback';
 export const CLOUD_AUTH_PLATFORM = 'mobile';
 
-// MOB-081 acceptance: the test Cloud Auth service is unavailable, so dev
-// temporarily uses production Cloud Auth. Keep predev/test isolated; do not
-// change the production Mobile release or Cloud Auth server. Reassess after T4.
-const CLOUD_AUTH_PROD_BASE_URL = 'https://cloud-auth.tomzlab.cn';
-const CLOUD_AUTH_TEST_BASE_URL = 'https://test.cloud-auth.tomzlab.cn';
+// MOB-084: release channels distinguish update artifacts, not Cloud identity.
+// One official Cloud Auth issuer must match the shared Cloud-only Relay.
+const CLOUD_AUTH_BASE_URL = 'https://cloud-auth.tomzlab.cn';
 
 const AUTHORIZE_PATH = '/v1/oauth/authorize';
 const TOKEN_PATH = '/v1/oauth/token';
@@ -20,14 +17,7 @@ const DEVICES_PATH = '/v1/devices';
 const HOSTS_PATH = '/v1/hosts';
 const SERVICE_CREDENTIALS_PATH = '/v1/service-credentials';
 
-export type CloudAuthReleaseChannel = 'predev' | 'dev' | 'test' | 'prod';
-
-export const resolveCloudAuthBaseUrl = (
-  channel: CloudAuthReleaseChannel = releaseChannel,
-): string =>
-  channel === 'prod' || channel === 'dev'
-    ? CLOUD_AUTH_PROD_BASE_URL
-    : CLOUD_AUTH_TEST_BASE_URL;
+export const resolveCloudAuthBaseUrl = (): string => CLOUD_AUTH_BASE_URL;
 
 export const normalizeCloudAuthBaseUrl = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/u, '');
@@ -57,6 +47,10 @@ export const cloudAuthLogoutUrl = (baseUrl: string): string =>
 
 export const cloudAuthDevicesUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, DEVICES_PATH);
+
+// Only this server-authoritative view may feed the active Cloud devices UI.
+export const cloudAuthActiveSessionDevicesUrl = (baseUrl: string): string =>
+  cloudAuthUrl(baseUrl, `${DEVICES_PATH}/active-sessions`);
 
 export const cloudAuthDeviceUrl = (
   baseUrl: string,

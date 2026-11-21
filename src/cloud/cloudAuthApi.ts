@@ -5,7 +5,7 @@ import {
   CLOUD_AUTH_PLATFORM,
   CLOUD_AUTH_REDIRECT_URI,
   cloudAuthDeviceUrl,
-  cloudAuthDevicesUrl,
+  cloudAuthActiveSessionDevicesUrl,
   cloudAuthHostsUrl,
   cloudAuthLogoutUrl,
   cloudAuthServiceCredentialsUrl,
@@ -30,7 +30,7 @@ export interface IssuedCloudSession extends CloudSessionSummary {
   sessionToken: string;
 }
 
-export type MiraDevicePlatform = 'desktop' | 'mobile';
+export type MiraDevicePlatform = 'desktop' | 'mobile' | 'web';
 
 export interface MiraDevice {
   id: string;
@@ -227,7 +227,9 @@ export const parseMiraDevice = (value: unknown): MiraDevice => {
   if (
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
-    (value.platform !== 'desktop' && value.platform !== 'mobile') ||
+    (value.platform !== 'desktop' &&
+      value.platform !== 'mobile' &&
+      value.platform !== 'web') ||
     value.revokedAt === undefined
   ) {
     throw new CloudAuthRequestError(
@@ -849,7 +851,7 @@ export class CloudAuthApi implements CloudAuthApiLike {
   }
 
   async listDevices(sessionToken: string): Promise<MiraDevice[]> {
-    return this.send(cloudAuthDevicesUrl(this.baseUrl), {
+    return this.send(cloudAuthActiveSessionDevicesUrl(this.baseUrl), {
       method: 'GET',
       headers: {
         accept: 'application/json',

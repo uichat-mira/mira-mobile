@@ -210,6 +210,7 @@ jobs:
           unzip -tq "$apk"
           unzip -Z1 "$apk" > "$entries"
           grep -Fxq 'assets/index.android.bundle' "$entries"
+          unzip -p "$apk" assets/index.android.bundle | node scripts/verify-cloud-release-bundle.cjs
           grep -Fxq 'lib/arm64-v8a/libreact_codegen_rnsvg.so' "$entries"
           bad_abis=$(awk -F/ '$1 == "lib" && $2 != "arm64-v8a" { print $2 }' "$entries" | sort -u)
           if [ -n "$bad_abis" ]; then
