@@ -30,18 +30,34 @@ const devicePlatform = (device: MiraDevice) => {
   }
 };
 
+// Keep older meaningful client labels until they report a native model.
+// Generic application labels are not a device name.
+const specificClientName = (device: MiraDevice): string | null => {
+  const name = device.clientName?.trim();
+  if (!name || ['Mira Mobile', 'Mira Desktop', 'Mira Cloud Web'].includes(name)) {
+    return null;
+  }
+  return name;
+};
+
 const deviceTitle = (device: MiraDevice) =>
-  device.clientName?.trim() || devicePlatform(device);
+  device.deviceName?.trim() || specificClientName(device) || devicePlatform(device);
 
 // Unnamed devices need a stable distinguishing label. Only use a real
 // server-owned device ID; never infer hardware/OS or current-device identity.
 const deviceDetail = (device: MiraDevice) => {
   const details: string[] = [];
-  if (device.clientName?.trim()) details.push(devicePlatform(device));
-  if (device.clientVersion)
+  if (device.osName) {
+    details.push([device.osName, device.osVersion].filter(Boolean).join(' '));
+  }
+  if (device.clientName && device.clientName !== deviceTitle(device)) {
+    details.push([device.clientName, device.clientVersion && `v${device.clientVersion.replace(/^v/, '')}`].filter(Boolean).join(' '));
+  } else if (device.clientVersion) {
     details.push(`v${device.clientVersion.replace(/^v/, '')}`);
-  if (!device.clientName?.trim())
-    details.push(`设备标识 ${device.id.slice(0, 8)}`);
+  }
+  if (!device.deviceName?.trim()) {
+    details.push(`标识 ${device.id.slice(0, 8)}`);
+  }
   return details.join(' · ');
 };
 
@@ -60,6 +76,7 @@ export function CloudDevicesSection() {
   const account = useCloudAccountStore(state => state.account);
   const busy = useCloudAccountStore(state => state.busy);
   const devices = useCloudAccountStore(state => state.devices);
+  const currentDeviceId = useCloudAccountStore(state => state.currentDeviceId);
   const devicesStatus = useCloudAccountStore(state => state.devicesStatus);
   const devicesMessage = useCloudAccountStore(state => state.devicesMessage);
   const revokingDeviceId = useCloudAccountStore(
@@ -199,12 +216,19 @@ export function CloudDevicesSection() {
                 ]}
               >
                 <View style={styles.deviceInfo}>
-                  <Text
-                    style={[styles.deviceName, { color: colors.text.ink }]}
-                    numberOfLines={2}
-                  >
-                    {deviceTitle(device)}
-                  </Text>
+                  <View style={styles.nameLine}>
+                    <Text
+                      style={[styles.deviceName, { color: colors.text.ink }]}
+                      numberOfLines={1}
+                    >
+                      {deviceTitle(device)}
+                    </Text>
+                    {device.id === currentDeviceId ? (
+                      <Text style={[styles.currentDevice, { color: colors.primary }]}>
+                        本机
+                      </Text>
+                    ) : null}
+                  </View>
                   <Text
                     style={[styles.deviceMeta, { color: colors.text.muted }]}
                     numberOfLines={1}
@@ -292,7 +316,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   deviceInfo: { flex: 1, minWidth: 0, gap: spacing.xs },
-  deviceName: { fontSize: fontSize.bodyMd, fontWeight: '600' },
+  nameLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  currentDevice: { fontSize: fontSize.caption, fontWeight: '600' },
+  deviceName: { fontSize: fontSize.bodyMd, fontWeight: '600', flexShrink: 1 },
   deviceMeta: { fontSize: fontSize.caption, lineHeight: 18 },
   revoke: {
     minHeight: sizing.touchTarget,

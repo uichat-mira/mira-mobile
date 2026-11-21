@@ -30,6 +30,7 @@ interface CloudAccountStore {
   busy: boolean;
   initialized: boolean;
   devices: MiraDevice[];
+  currentDeviceId: string | null;
   devicesStatus: CloudDevicesStatus;
   devicesMessage: string | null;
   revokingDeviceId: string | null;
@@ -76,6 +77,7 @@ const deviceListFailureMessage = '无法读取 Mira Cloud 设备列表，请稍�
 
 const deviceReset = () => ({
   devices: [] as MiraDevice[],
+  currentDeviceId: null as string | null,
   devicesStatus: 'idle' as CloudDevicesStatus,
   devicesMessage: null as string | null,
   revokingDeviceId: null as string | null,
@@ -402,6 +404,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         case 'listed':
           set({
             devices: result.devices,
+            currentDeviceId: result.currentDeviceId ?? null,
             devicesStatus: 'loaded',
             devicesMessage: null,
           });

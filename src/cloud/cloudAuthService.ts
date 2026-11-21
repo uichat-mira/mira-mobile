@@ -34,6 +34,7 @@ import {
   isValidOAuthState,
 } from './pkce';
 import { requireNativeSecureRandom } from './secureStorage';
+import { getCloudDeviceMetadata } from './cloudDeviceMetadata';
 
 export interface OAuthCallbackParams {
   code?: string;
@@ -91,7 +92,7 @@ export interface CloudLogoutResult {
 }
 
 export type CloudDeviceListResult =
-  | { status: 'listed'; devices: MiraDevice[] }
+  | { status: 'listed'; devices: MiraDevice[]; currentDeviceId?: string | null }
   | { status: 'signed_out' }
   | { status: 'rejected'; message: string }
   | {
@@ -677,8 +678,41 @@ export class MiraCloudAuthService {
     if (!stored) return { status: 'signed_out' };
 
     try {
+      // The Session owns current-device identity; names and list ordering do not.
+      const session = await this.api.getSession(stored.sessionToken);
+      if (session.account.id !== stored.account.id) {
+        throw new CloudAuthRequestError('rejected', 'Mira Cloud session account changed');
+      }
+      let currentDeviceId = session.deviceId;
+      if (session.deviceId && this.api.registerDevice) {
+        // Metadata is optional enrichment, never a gate for the active-device
+        // list. Only a real 401 invalidates Cloud Session authority.
+        try {
+          const installationId = await this.installationIdentity.getOrCreate();
+          const registered = await this.api.registerDevice(
+            stored.sessionToken,
+            installationId,
+            getCloudDeviceMetadata(),
+          );
+          if (registered.id !== session.deviceId) {
+            throw new CloudAuthRequestError('invalid_response', 'Mira Cloud device identity mismatch');
+          }
+        } catch (error) {
+          if (error instanceof CloudAuthRequestError && error.kind === 'rejected') {
+            throw error;
+          }
+          // Failed registration does not prove which installation owns the
+          // Session. Hide the "this device" marker, but retain the verified
+          // Session and independently query server-authoritative devices.
+          currentDeviceId = null;
+        }
+      }
       const devices = await this.api.listDevices(stored.sessionToken);
-      return { status: 'listed', devices };
+      return {
+        status: 'listed',
+        devices,
+        ...(currentDeviceId === undefined ? {} : { currentDeviceId }),
+      };
     } catch (error) {
       if (error instanceof CloudAuthRequestError && error.kind === 'rejected') {
         await clearSessionQuietly(this.store);
