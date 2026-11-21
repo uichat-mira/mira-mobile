@@ -670,11 +670,43 @@ describe('Mira Cloud device service', () => {
     (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
 
     await expect(harness.service.listDevices()).resolves.toMatchObject({
-      status: 'unavailable',
-      reason: 'invalid_response',
+      status: 'listed',
+      devices: [device],
+      currentDeviceId: null,
     });
-    expect(harness.api.listDevices).not.toHaveBeenCalled();
+    expect(harness.api.listDevices).toHaveBeenCalled();
     expect(harness.sessionStore.peek()).not.toBeNull();
+  });
+
+  it('preserves the active list and stored Session if optional metadata upload is unavailable', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => {
+      throw new CloudAuthRequestError('network', 'optional metadata upload failed');
+    });
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toEqual({
+      status: 'listed', devices: [device], currentDeviceId: null,
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('clears a genuinely rejected Session during the metadata request', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => {
+      throw new CloudAuthRequestError('rejected', 'Session revoked', 'AUTH_REAUTH_REQUIRED');
+    });
+    await expect(harness.service.listDevices()).resolves.toMatchObject({ status: 'rejected' });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.api.listDevices).not.toHaveBeenCalled();
   });
 
   it('clears local Cloud authority when the device list is rejected', async () => {

@@ -898,7 +898,9 @@ export class CloudAuthApi implements CloudAuthApiLike {
       },
       body: JSON.stringify({ installationId, platform: CLOUD_AUTH_PLATFORM, ...metadata }),
     }, async response => {
-      if (!response.ok) throw await failureForResponse(response, true);
+      // A conflicting metadata write (e.g. 409 for a stale installation id)
+      // is not proof that the Cloud Session itself was revoked.
+      if (!response.ok) throw await failureForResponse(response, false);
       return parseMiraDevice(await response.json());
     });
   }

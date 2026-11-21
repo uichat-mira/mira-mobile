@@ -572,6 +572,19 @@ describe('Mira Cloud device API contract', () => {
 });
 
 describe('OPS-029 device metadata registration wire contract', () => {
+  it('does not classify a metadata write conflict as revoked Session authority', async () => {
+    const fetchMock = jest.fn(async () => jsonResponse(409, {
+      error: { code: 'DEVICE_SESSION_MISMATCH', message: 'wrong installation' },
+    }));
+    const api = new CloudAuthApi('https://test.cloud-auth.tomzlab.cn', fetchMock as unknown as typeof fetch);
+    await expect(api.registerDevice(issued.sessionToken, installationId, {
+      clientName: 'Mira Mobile', clientVersion: '0.3.31', osName: 'Android',
+    })).rejects.toMatchObject({
+      kind: 'invalid_response',
+      code: 'DEVICE_SESSION_MISMATCH',
+    });
+  });
+
   it('sends non-sensitive metadata with the existing installation id and bearer authority', async () => {
     const device = {
       id: '9f4f1c9a-8bd9-4f36-b6b8-9b7f0e5f8a11',
