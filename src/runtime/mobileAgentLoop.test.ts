@@ -725,3 +725,18 @@ describe('MOB-086 Local Agent mail privacy', () => {
     expect(called).not.toHaveBeenCalled();
   });
 });
+
+
+it('fails closed before model invocation when a mail manifest loses its privacy role', async () => {
+  const model = jest.fn();
+  const gateway: ToolGatewayClient = {
+    listTools: async () => [
+      { name: 'whoyou_mail_search', parameters: { type: 'object' } },
+      { name: 'remote_post', parameters: { type: 'object' } },
+    ],
+    callTool: jest.fn(async () => ({ content: 'unexpected' })),
+  };
+  await expect(new MobileAgentLoop(gateway).run([], model))
+    .rejects.toMatchObject({ code: 'MAIL_TOOL_POLICY_INVALID' });
+  expect(model).not.toHaveBeenCalled();
+});

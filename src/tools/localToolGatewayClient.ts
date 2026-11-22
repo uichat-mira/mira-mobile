@@ -26,6 +26,41 @@ export interface LocalToolDefinition {
   ) => Promise<ToolCallResult>;
 }
 
+// Consent text is trusted UI. Never interpolate raw model-controlled strings
+// as extra lines or display a truncated value different from the executed one.
+const disclosureArguments = (
+  tool: string,
+  args: Record<string, unknown>,
+): { args: Record<string, unknown>; detail: string } => {
+  if (tool === 'whoyou_mail_search') {
+    if (Object.keys(args).some(key => key !== 'query') ||
+        (args.query !== undefined && typeof args.query !== 'string')) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索参数无效');
+    }
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (query.length > 200) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索词过长');
+    }
+    const safe = JSON.stringify(query || '最近已同步邮件')
+      .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return { args: query ? { query } : {}, detail: `\n搜索词：${safe}` };
+  }
+  if (tool === 'whoyou_mail_message_get') {
+    if (Object.keys(args).some(key => key !== 'messageId') ||
+        typeof args.messageId !== 'string') {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '邮件标识无效');
+    }
+    const messageId = args.messageId.trim();
+    if (!messageId || messageId.length > 80) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '邮件标识无效');
+    }
+    const safe = JSON.stringify(messageId)
+      .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return { args: { messageId }, detail: `\n邮件标识：${safe}` };
+  }
+  return { args, detail: '' };
+};
+
 const parseArguments = (value: string): Record<string, unknown> => {
   let parsed: unknown;
   try {
@@ -90,23 +125,19 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
 
     const args = parseArguments(request.arguments);
     if (tool.disclosure) {
+      const display = disclosureArguments(request.name, args);
       const approval: ToolApprovalRequest = {
         invocationId: `local-disclosure-${++this.nextApprovalId}`,
         callId: request.callId,
         name: request.name,
         arguments: request.arguments,
-        message: tool.disclosure.message +
-          (request.name === 'whoyou_mail_search'
-            ? `\n搜索词：${typeof args.query === 'string' ? args.query.slice(0, 120) : '最近已同步邮件'}`
-            : request.name === 'whoyou_mail_message_get'
-              ? `\n邮件标识：${typeof args.messageId === 'string' ? args.messageId.slice(0, 80) : '无效'}`
-              : ''),
+        message: tool.disclosure.message + display.detail,
         scope: tool.disclosure.scope,
       };
       // Only one outstanding Local Agent invocation exists per run. A later
       // request revokes the old permission; stale decisions are never reused.
       this.pendingApproval = {
-        approval, tool, args, expiresAt: Date.now() + 5 * 60 * 1000,
+        approval, tool, args: display.args, expiresAt: Date.now() + 5 * 60 * 1000,
       };
       throw new ToolApprovalRequiredError(approval);
     }

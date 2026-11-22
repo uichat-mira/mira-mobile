@@ -383,3 +383,47 @@ describe('Who You real read tools (MOB-086)', () => {
       .rejects.toMatchObject({ kind: 'invalid_response' });
   });
 });
+
+
+it('cancels a search before credential issuance when metadata discovery stalls', async () => {
+  const controller = new AbortController();
+  let observed: AbortSignal | null = null;
+  const fetchImpl = jest.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+    observed = init?.signal ?? null;
+    return new Promise<Response>(() => undefined);
+  });
+  const requester = jest.fn(async () => credential);
+  const api = client(fetchImpl, requester);
+  const pending = api.searchMail({
+    sessionToken: SESSION, accountId: 'account-1', query: 'fixture',
+    signal: controller.signal,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({ code: 'WHOYOU_REQUEST_CANCELLED' });
+  expect((observed as AbortSignal | null)?.aborted).toBe(true);
+  expect(requester).not.toHaveBeenCalled();
+});
+
+it('rejects impossible mail and mailbox timestamps as invalid responses', async () => {
+  const invalidSearch = client(workingFetch({
+    searchContent: {
+      messages: [{
+        id: 'msg', threadId: 'thread', direction: 'inbound',
+        from: [], subject: '', receivedAt: 1e20,
+        snippet: '', attachmentCount: 0,
+      }],
+      nextCursor: null,
+    },
+  }));
+  await expect(invalidSearch.searchMail({ sessionToken: SESSION, accountId: 'account-1' }))
+    .rejects.toMatchObject({ kind: 'invalid_response' });
+  const badIdentity = client(workingFetch({
+    identitiesContent: {
+      identities: [{ ...identities.identities[0], createdAt: 1e20 }],
+    },
+  }));
+  await expect(badIdentity.load({ sessionToken: SESSION, accountId: 'account-1' }))
+    .rejects.toMatchObject({ kind: 'invalid_response' });
+});

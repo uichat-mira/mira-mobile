@@ -83,6 +83,7 @@ export interface WhoYouMailMessage extends WhoYouMailSummary {
 export interface WhoYouReadSession {
   sessionToken: string;
   accountId: string;
+  signal?: AbortSignal;
 }
 
 export interface WhoYouMailReaderClient {
@@ -133,6 +134,10 @@ const isNonEmptyString = (value: unknown): value is string =>
 
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0;
+
+/** JavaScript Date accepts milliseconds only through +/- 8.64e15. */
+const isValidTimestamp = (value: unknown): value is number =>
+  isNonNegativeInteger(value) && value <= 8_640_000_000_000_000;
 
 const safeCode = (value: unknown): string | undefined =>
   typeof value === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(value)
@@ -266,6 +271,7 @@ export const discoverWhoYouResource = async (input: {
   cloudAuthBaseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<WhoYouResourceMetadata> => {
   let mcpUrl: string;
   let cloudAuthBaseUrl: string;
@@ -318,7 +324,7 @@ export const discoverWhoYouResource = async (input: {
       throw invalidResponse('狐邮资源发现响应无法解析');
     }
     return parseResourceMetadata(body, mcpUrl, cloudAuthBaseUrl);
-  }, input.timeoutMs);
+  }, input.timeoutMs, input.signal);
 };
 
 const parseToolStructuredContent = (result: unknown): Record<string, unknown> => {
@@ -373,7 +379,7 @@ const parseIdentity = (
 const parseSync = (value: unknown): WhoYouSyncStatus | null => {
   if (value === null || value === undefined) return null;
   if (!isRecord(value) ||
-      (value.lastSyncedAt !== null && !isNonNegativeInteger(value.lastSyncedAt)) ||
+      (value.lastSyncedAt !== null && !isValidTimestamp(value.lastSyncedAt)) ||
       (value.lastError !== null && typeof value.lastError !== 'string') ||
       typeof value.inProgress !== 'boolean' ||
       typeof value.initialImportComplete !== 'boolean') {
@@ -404,7 +410,7 @@ const parseMailSummary = (value: unknown): WhoYouMailSummary => {
       (value.direction !== 'inbound' && value.direction !== 'outbound') ||
       typeof value.subject !== 'string' ||
       typeof value.snippet !== 'string' ||
-      !isNonNegativeInteger(value.receivedAt) ||
+      !isValidTimestamp(value.receivedAt) ||
       !isNonNegativeInteger(value.attachmentCount)) {
     throw invalidResponse('狐邮邮件列表包含无效记录');
   }
@@ -459,8 +465,7 @@ const parseMailbox = (value: unknown): WhoYouMailbox => {
     !isNonNegativeInteger(value.quotaBytes) ||
     !isNonNegativeInteger(value.bytesUsed) ||
     !isNonNegativeInteger(value.messageCount) ||
-    typeof value.createdAt !== 'number' ||
-    !Number.isFinite(value.createdAt)
+    !isValidTimestamp(value.createdAt)
   ) {
     throw invalidResponse('狐邮邮箱列表包含无效条目');
   }
@@ -541,8 +546,24 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
       options.credentialRequester ?? requestWhoYouReadCredential;
   }
 
-  private discover(): Promise<WhoYouResourceMetadata> {
+  private discover(signal?: AbortSignal): Promise<WhoYouResourceMetadata> {
+    if (signal?.aborted) {
+      return Promise.reject(new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED'));
+    }
     if (this.metadata) return Promise.resolve(this.metadata);
+    // Abortable requests do not share an uncancellable discovery in flight.
+    if (signal) {
+      return discoverWhoYouResource({
+        mcpUrl: this.mcpUrl,
+        cloudAuthBaseUrl: this.cloudAuthBaseUrl,
+        fetchImpl: this.fetchImpl,
+        timeoutMs: this.timeoutMs,
+        signal,
+      }).then(metadata => {
+        this.metadata = metadata;
+        return metadata;
+      });
+    }
     if (this.pendingDiscovery) return this.pendingDiscovery;
     const pending = discoverWhoYouResource({
       mcpUrl: this.mcpUrl,
@@ -566,6 +587,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
     body: Record<string, unknown>,
     expectedId: number,
     protocolVersion?: string,
+    callerSignal?: AbortSignal,
   ): Promise<unknown> {
     const fetchImpl = this.fetchImpl ?? globalThis.fetch;
     if (typeof fetchImpl !== 'function') {
@@ -603,10 +625,10 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
         );
       }
       return parseRpcResponse(response, expectedId);
-    }, this.timeoutMs);
+    }, this.timeoutMs, callerSignal);
   }
 
-  private async sendInitialized(token: string): Promise<void> {
+  private async sendInitialized(token: string, callerSignal?: AbortSignal): Promise<void> {
     const fetchImpl = this.fetchImpl ?? globalThis.fetch;
     if (typeof fetchImpl !== 'function') {
       throw new WhoYouError(
@@ -644,13 +666,14 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
         );
       }
       if (!response.ok) throw transportFailure(response.status);
-    }, this.timeoutMs);
+    }, this.timeoutMs, callerSignal);
   }
 
   private async callTool(
     token: string,
     name: string,
     args: Record<string, unknown> = {},
+    callerSignal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     const id = this.nextRequestId++;
     const result = await this.sendRpc(
@@ -663,12 +686,13 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
       },
       id,
       MCP_PROTOCOL_VERSION,
+      callerSignal,
     );
     return parseToolStructuredContent(result);
   }
 
   private async authorize(input: WhoYouReadSession): Promise<{ token: string; identity: WhoYouIdentity }> {
-    await this.discover();
+    await this.discover(input.signal);
 
     let credential: IssuedWhoYouReadCredential;
     try {
@@ -680,6 +704,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
           fetchImpl: this.fetchImpl,
           now: this.now,
           timeoutMs: this.timeoutMs,
+          ...(input.signal ? { signal: input.signal } : {}),
         },
       );
     } catch (error) {
@@ -705,6 +730,8 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
         },
       },
       initializeId,
+      undefined,
+      input.signal,
     );
     if (
       !isRecord(initialized) ||
@@ -713,10 +740,10 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
       throw invalidResponse('狐邮没有接受只读 MCP 协议版本');
     }
 
-    await this.sendInitialized(credential.token);
+    await this.sendInitialized(credential.token, input.signal);
 
     const identity = parseIdentity(
-      await this.callTool(credential.token, WHOAMI_TOOL),
+      await this.callTool(credential.token, WHOAMI_TOOL, {}, input.signal),
       input.accountId,
     );
     return { token: credential.token, identity };
@@ -725,7 +752,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
   async load(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
     const { token, identity } = await this.authorize(input);
     const mailboxes = parseMailboxes(
-      await this.callTool(token, MAILBOX_LIST_TOOL),
+      await this.callTool(token, MAILBOX_LIST_TOOL, {}, input.signal),
     );
     return { identity, mailboxes };
   }
@@ -740,7 +767,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
       limit: 10,
       ...(query ? { query } : {}),
       ...(input.cursor ? { cursor: input.cursor } : {}),
-    });
+    }, input.signal);
     return parseMailSearch(result);
   }
 
@@ -752,7 +779,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
     return parseMailMessage(await this.callTool(token, MAIL_MESSAGE_GET_TOOL, {
       messageId: input.messageId,
       include: 'text',
-    }));
+    }, input.signal));
   }
 }
 

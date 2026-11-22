@@ -48,6 +48,18 @@ const isDegradableToolChannelError = (error: unknown): boolean =>
   error instanceof ToolGatewayError &&
   error.code === 'TOOL_CHANNEL_UNAVAILABLE';
 
+// The exact privileged mail names are a security boundary, not optional
+// metadata supplied by a remote Host manifest.
+const SENSITIVE_MAIL_TOOLS = {
+  whoyou_mail_search: 'mail-search',
+  whoyou_mail_message_get: 'mail-body',
+} as const;
+
+const requiredMailRole = (name: string): 'mail-search' | 'mail-body' | null =>
+  name === 'whoyou_mail_search' ? SENSITIVE_MAIL_TOOLS.whoyou_mail_search
+    : name === 'whoyou_mail_message_get' ? SENSITIVE_MAIL_TOOLS.whoyou_mail_message_get
+      : null;
+
 const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
   function: {
@@ -76,6 +88,13 @@ export class MobileAgentLoop {
         discoveryNotices = discovery.notices;
       } else {
         manifests = await this.gateway.listTools();
+      }
+      if (manifests.some(m => {
+        const required = requiredMailRole(m.name);
+        return required !== null && m.sensitiveResult !== required;
+      })) {
+        throw new ToolGatewayError('MAIL_TOOL_POLICY_INVALID',
+          '狐邮邮件工具的隐私规则缺失，已拒绝执行。');
       }
       tools = manifests.map(toOpenAiTool);
     } catch (error) {
@@ -172,8 +191,7 @@ export class MobileAgentLoop {
             '邮件数据不能驱动其他工具操作。请另起一轮对话。');
         }
         if (pendingCalls.length > 1 && pendingCalls.some(call =>
-          activeManifests.some(manifest =>
-            manifest.name === call.name && Boolean(manifest.sensitiveResult)))) {
+          requiredMailRole(call.name) !== null)) {
           throw new ToolGatewayError('MAIL_TOOL_CHAIN_RESTRICTED',
             '邮件工具必须单独调用，不能与其他工具组合执行。');
         }

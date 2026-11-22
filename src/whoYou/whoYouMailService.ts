@@ -51,9 +51,18 @@ export class WhoYouMailService {
     }
   }
 
-  private async withSession<T>(action: (session: WhoYouReadSession) => Promise<T>): Promise<T> {
+  private async withSession<T>(
+    action: (session: WhoYouReadSession) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (signal?.aborted) throw new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED');
     const session = await this.requireSession();
-    const result = await action(session);
+    if (signal?.aborted) throw new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED');
+    const result = await action({
+      ...session,
+      ...(signal ? { signal } : {}),
+    });
+    if (signal?.aborted) throw new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED');
     this.assertCurrent(session.accountId);
     // A sign-out followed by a new sign-in to the same account invalidates
     // the old service credential, even though the account id is unchanged.
@@ -64,19 +73,19 @@ export class WhoYouMailService {
     return result;
   }
 
-  search(query = '', cursor?: string): Promise<WhoYouMailSearchPage> {
+  search(query = '', cursor?: string, signal?: AbortSignal): Promise<WhoYouMailSearchPage> {
     return this.withSession(session => this.deps.client.searchMail({
       ...session,
       ...(query.trim() ? { query: query.trim() } : {}),
       ...(cursor ? { cursor } : {}),
-    }));
+    }), signal);
   }
 
-  read(messageId: string): Promise<WhoYouMailMessage> {
+  read(messageId: string, signal?: AbortSignal): Promise<WhoYouMailMessage> {
     return this.withSession(session => this.deps.client.readMail({
       ...session,
       messageId,
-    }));
+    }), signal);
   }
 }
 

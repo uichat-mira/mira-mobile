@@ -1,4 +1,4 @@
-import { assertWhoYouResponseTarget } from './whoYouHttp';
+import { assertWhoYouResponseTarget, withWhoYouRequestDeadline } from './whoYouHttp';
 
 const responseWithUrl = (url: string): Response => {
   const response = new Response('{}', {
@@ -42,5 +42,33 @@ describe('Who You response target guard', () => {
         }),
       );
     }
+  });
+});
+
+describe('Who You request cancellation', () => {
+  it('aborts a pending private request promptly even when fetch ignores AbortSignal', async () => {
+    const controller = new AbortController();
+    let underlyingSignal: AbortSignal | null = null;
+    const operation = jest.fn(async (signal: AbortSignal): Promise<string> => {
+      underlyingSignal = signal;
+      return new Promise<string>(() => undefined);
+    });
+    const pending = withWhoYouRequestDeadline(operation, 10_000, controller.signal);
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({
+      code: 'WHOYOU_REQUEST_CANCELLED',
+    });
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect((underlyingSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
+  it('never starts fetching when the parent run is already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const operation = jest.fn(async () => 'unreachable');
+    await expect(withWhoYouRequestDeadline(operation, 10_000, controller.signal))
+      .rejects.toMatchObject({ code: 'WHOYOU_REQUEST_CANCELLED' });
+    expect(operation).not.toHaveBeenCalled();
   });
 });

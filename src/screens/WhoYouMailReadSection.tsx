@@ -48,6 +48,7 @@ export function WhoYouMailReadSection({
 }) {
   const { colors } = useTheme();
   const sequence = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<WhoYouMailSummary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -58,6 +59,8 @@ export function WhoYouMailReadSection({
 
   const clear = useCallback(() => {
     sequence.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
     setQuery('');
     setItems([]);
     setSelected(null);
@@ -73,13 +76,31 @@ export function WhoYouMailReadSection({
     });
     return () => {
       sequence.current += 1;
+      activeRequest.current?.abort();
+      activeRequest.current = null;
       subscription?.remove();
     };
   }, [clear]);
 
+  const changeQuery = useCallback((value: string) => {
+    sequence.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    setQuery(value);
+    setItems([]);
+    setCursor(null);
+    setSelected(null);
+    setError(null);
+    setLoading(null);
+    setSearched(false);
+  }, []);
+
   const search = useCallback(async (more = false) => {
     if (loading || (more && !cursor)) return;
     const request = ++sequence.current;
+    const controller = new AbortController();
+    activeRequest.current?.abort();
+    activeRequest.current = controller;
     setLoading(more ? 'more' : 'search');
     setError(null);
     if (!more) {
@@ -88,7 +109,7 @@ export function WhoYouMailReadSection({
       setSelected(null);
     }
     try {
-      const page = await service.search(query, more ? cursor ?? undefined : undefined);
+      const page = await service.search(query, more ? cursor ?? undefined : undefined, controller.signal);
       if (request !== sequence.current) return;
       setItems(previous => more ? [...previous, ...page.messages] : page.messages);
       setCursor(page.nextCursor);
@@ -97,23 +118,32 @@ export function WhoYouMailReadSection({
       if (request !== sequence.current) return;
       setError(readFailure(cause));
     } finally {
-      if (request === sequence.current) setLoading(null);
+      if (request === sequence.current) {
+        activeRequest.current = null;
+        setLoading(null);
+      }
     }
   }, [cursor, loading, query, service]);
 
   const openMessage = useCallback(async (messageId: string) => {
     if (loading) return;
     const request = ++sequence.current;
+    const controller = new AbortController();
+    activeRequest.current?.abort();
+    activeRequest.current = controller;
     setLoading('message');
     setSelected(null);
     setError(null);
     try {
-      const message = await service.read(messageId);
+      const message = await service.read(messageId, controller.signal);
       if (request === sequence.current) setSelected(message);
     } catch (cause) {
       if (request === sequence.current) setError(readFailure(cause));
     } finally {
-      if (request === sequence.current) setLoading(null);
+      if (request === sequence.current) {
+        activeRequest.current = null;
+        setLoading(null);
+      }
     }
   }, [loading, service]);
 
@@ -136,7 +166,7 @@ export function WhoYouMailReadSection({
           placeholder="关键词、标题或发件人"
           placeholderTextColor={colors.text.soft}
           value={query}
-          onChangeText={setQuery}
+          onChangeText={changeQuery}
           style={[styles.input, { color: colors.text.ink, backgroundColor: colors.bg.card, borderColor: colors.border.default }]}
           maxLength={200}
           autoCapitalize="none"

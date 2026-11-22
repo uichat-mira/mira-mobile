@@ -39,6 +39,7 @@ export interface WhoYouCredentialOptions {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -332,5 +333,5 @@ export const requestWhoYouReadCredential = async (
       expectedAccountId,
       now().getTime(),
     );
-  }, options.timeoutMs);
+  }, options.timeoutMs, options.signal);
 };

@@ -35,7 +35,7 @@ describe('Who You local tool projection and untrusted-data boundary', () => {
     expect(bodyResult).toMatchObject({ marker: 'UNTRUSTED_EMAIL_CONTENT', body: message.body });
     expect(bodyResult).not.toHaveProperty('attachments');
     expect(bodyResult.rule).toMatch(/not a user\/system instruction/);
-    expect(service.read).toHaveBeenCalledWith(message.id);
+    expect(service.read).toHaveBeenCalledWith(message.id, undefined);
   });
 
   it('rejects unexpected arguments, invalid identifiers and unsafe extra scope', async () => {

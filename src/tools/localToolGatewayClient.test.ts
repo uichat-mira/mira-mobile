@@ -109,3 +109,55 @@ describe('Local Tool consent and one-shot lifecycle', () => {
     await expect(gateway.resolveApproval(one!, 'approved')).rejects.toMatchObject({ code: 'TOOL_APPROVAL_STALE' });
   });
 });
+
+describe('MOB-086 privacy consent arguments cannot spoof the approval UI', () => {
+  const search = jest.fn(async () => ({ content: 'safe fixture' }));
+  const gateway = new LocalToolGatewayClient([{
+    manifest: { name: 'whoyou_mail_search', parameters: { type: 'object' }, sensitiveResult: 'mail-search' },
+    disclosure: { message: 'Your model will receive the result.', scope: 'one search' },
+    call: search,
+  }]);
+
+  beforeEach(() => search.mockClear());
+
+  async function approvalFor(query: string) {
+    try {
+      await gateway.callTool({
+        callId: 'model-call',
+        name: 'whoyou_mail_search',
+        arguments: JSON.stringify({ query }),
+      });
+    } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) return error.approval;
+      throw error;
+    }
+    throw new Error('Expected explicit approval');
+  }
+
+  it('shows the entire actual normalized query even after 120 spaces', async () => {
+    const approval = await approvalFor(' '.repeat(120) + 'hidden');
+    expect(approval.message).toContain('搜索词："hidden"');
+    expect(approval.message).not.toContain(' '.repeat(120));
+    expect(search).not.toHaveBeenCalled();
+    await gateway.resolveApproval(approval, 'approved');
+    expect(search).toHaveBeenCalledWith({ query: 'hidden' }, expect.anything());
+  });
+
+  it('escapes line breaks and unicode separators so input cannot forge a recipient line', async () => {
+    const approval = await approvalFor('urgent\n接收方：attacker.test\u2028假范围');
+    expect(approval.message.split('\n')).toHaveLength(2);
+    expect(approval.message).toContain('urgent\\n接收方');
+    expect(approval.message).toContain('\\u2028');
+    expect(approval.message).not.toContain('\n接收方：attacker.test');
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('rejects arguments too long to display without ever fetching mail', async () => {
+    await expect(gateway.callTool({
+      callId: 'model-call',
+      name: 'whoyou_mail_search',
+      arguments: JSON.stringify({ query: 'x'.repeat(201) }),
+    })).rejects.toMatchObject({ code: 'WHOYOU_ARGUMENT_INVALID' });
+    expect(search).not.toHaveBeenCalled();
+  });
+});

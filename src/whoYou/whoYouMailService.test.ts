@@ -36,6 +36,23 @@ describe('WhoYouMailService session ownership', () => {
     });
   });
 
+  it('propagates the active Agent cancellation signal to MCP reads', async () => {
+    const { service, client } = createService();
+    const controller = new AbortController();
+    await service.search('hello', undefined, controller.signal);
+    expect(client.searchMail).toHaveBeenCalledWith(expect.objectContaining({
+      query: 'hello', signal: controller.signal,
+    }));
+    await service.read('msg-1', controller.signal);
+    expect(client.readMail).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'msg-1', signal: controller.signal,
+    }));
+    controller.abort();
+    await expect(service.search('other', undefined, controller.signal))
+      .rejects.toMatchObject({ code: 'WHOYOU_REQUEST_CANCELLED' });
+    expect(client.searchMail).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses sign-out, identity swap, expired session or session rotation', async () => {
     const { service, client, cloud, loadSession } = createService();
     cloud.status = 'signed_out';
