@@ -52,6 +52,7 @@ export type RuntimeEvent =
         | 'toolset-degraded'
         | 'cloud-tools-unavailable'
         | 'cloud-tools-unauthorized'
+        | 'cloud-tools-session-invalid'
         | 'cloud-tools-host-ambiguous';
     }
   | { type: 'error'; message: string };
