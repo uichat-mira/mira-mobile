@@ -162,7 +162,11 @@ export class CloudToolHostClient {
 
   async listRemoteTools(): Promise<RemoteToolManifest[]> {
     const access = await this.currentAccess();
-    assertToolGrant(await this.manifest(access), 'list');
+    const manifest = await this.manifest(access);
+    // An Agent tool list is an executable capability list, not a read-only
+    // catalog. Never offer tools to the model without invocation authority.
+    assertToolGrant(manifest, 'list');
+    assertToolGrant(manifest, 'invoke');
     return this.requestJson(access, {
       path: '/remote/v1/tools',
       parse: parseRemoteToolList,
