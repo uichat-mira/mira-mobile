@@ -17,6 +17,21 @@ jest.mock('../theme/ThemeContext', () => ({
   }),
 }));
 
+let mockFocusCleanup: (() => void) | undefined;
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (callback: () => (() => void) | undefined) => {
+    const react = jest.requireActual<typeof import('react')>('react');
+    react.useEffect(() => {
+      const cleanup = callback();
+      mockFocusCleanup = cleanup;
+      return () => {
+        mockFocusCleanup = undefined;
+        cleanup?.();
+      };
+    }, [callback]);
+  },
+}));
+
 const mailbox: WhoYouMailbox = {
   mailboxId: 'mailbox-fixture', address: 'fixture@example.test',
   kind: 'third_party', provider: 'gmail', status: 'active',
@@ -73,6 +88,31 @@ describe('Who You direct mail reader', () => {
     } finally {
       await act(async () => tree?.unmount());
       subscription.mockRestore();
+    }
+  });
+
+  it('clears a viewed private message on navigation blur while app stays active', async () => {
+    const service = {
+      search: jest.fn(async () => ({ messages: [summary], nextCursor: null })),
+      read: jest.fn(async () => ({ ...summary, body: 'Sensitive fixture body', truncated: false })),
+    } as unknown as WhoYouMailService;
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<WhoYouMailReadSection mailboxes={[mailbox]} service={service} />);
+    });
+    try {
+      const searchButton = tree.root.find(node => node.props.accessibilityLabel === '搜索已同步邮件');
+      await act(async () => { searchButton.props.onPress(); });
+      const messageButton = tree.root.find(node =>
+        node.props.accessibilityLabel === '阅读邮件：Fixture message');
+      await act(async () => { messageButton.props.onPress(); });
+      expect(displayed(tree)).toContain('Sensitive fixture body');
+      expect(mockFocusCleanup).toBeDefined();
+      await act(async () => { mockFocusCleanup?.(); });
+      expect(displayed(tree)).not.toContain('Sensitive fixture body');
+      expect(displayed(tree)).not.toContain('Fixture message');
+    } finally {
+      await act(async () => tree.unmount());
     }
   });
 

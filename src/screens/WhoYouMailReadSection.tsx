@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   AppState,
@@ -69,6 +70,10 @@ export function WhoYouMailReadSection({
     setLoading(null);
     setSearched(false);
   }, []);
+
+  // Stack screens may remain mounted while a sibling route is active.
+  // Navigation blur must erase private mail just like background/unmount.
+  useFocusEffect(useCallback(() => () => clear(), [clear]));
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
