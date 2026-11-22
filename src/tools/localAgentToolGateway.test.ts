@@ -9,6 +9,7 @@ import type { CloudRelayAccess } from '../cloud/cloudRelayEntry';
 import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
 import { MobileAgentLoop } from '../runtime/mobileAgentLoop';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import {
   LocalAgentToolGateway,
@@ -211,6 +212,33 @@ describe('LocalAgentToolGateway', () => {
     expect(fixture.entry.discoverSingleHost).not.toHaveBeenCalled();
   });
 
+  it.each(['session_rejected', 'device_revoked'] as const)(
+    'does not fall back to paired tools after Cloud status %s',
+    async status => {
+      const original = useCloudAccountStore.getState();
+      useCloudAccountStore.setState({ status, account: null });
+      try {
+        const paired = pairedGateway();
+        const fixture = discoveryFixture();
+        const selected = new LocalAgentToolGateway({
+          local: localGateway(),
+          paired,
+          entry: fixture.entry,
+          json: fixture.json as unknown as typeof requestCloudRelayJson,
+          sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+        });
+        await expect(selected.discoverTools()).resolves.toMatchObject({
+          tools: [localTool],
+          notices: [{ code: 'cloud-tools-session-invalid' }],
+        });
+        expect(paired.listTools).not.toHaveBeenCalled();
+        expect(fixture.entry.discoverSingleHost).not.toHaveBeenCalled();
+      } finally {
+        useCloudAccountStore.setState(original);
+      }
+    },
+  );
+
   it('keeps local tools and never falls back to paired credentials when Cloud is signed in', async () => {
     const fixture = discoveryFixture();
     const paired = pairedGateway();
@@ -255,6 +283,56 @@ describe('LocalAgentToolGateway', () => {
     await expect(unauthorized.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
       notices: [{ code: 'cloud-tools-unauthorized' }],
+    });
+  });
+
+  it('keeps the read-only Host tool out of the Local Agent model toolset', async () => {
+    const fixture = discoveryFixture({ scopes: ['tools:read'] });
+    const selected = gateway(fixture);
+    const modelCall = jest.fn(async () => modelStream([
+      { type: 'finish', reason: 'stop' },
+    ]));
+    const events = await drain(await new MobileAgentLoop(selected).run(
+      [{ role: 'user', content: 'Use Desktop search' }],
+      modelCall,
+    ));
+    const modelTools = modelCall.mock.calls[0]?.[1] as OpenAiTool[];
+    expect(modelTools.map(tool => tool.function.name)).toEqual([localTool.name]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'notice', code: 'cloud-tools-unauthorized' }),
+    ]));
+    expect(fixture.sse).not.toHaveBeenCalled();
+  });
+
+  it('separates invalid Cloud sessions, offline Hosts and protocol errors', async () => {
+    const session = gateway(discoveryFixture({
+      discoveryError: new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED', 'expired'),
+    }));
+    await expect(session.discoverTools()).resolves.toMatchObject({
+      tools: [localTool],
+      notices: [{ code: 'cloud-tools-session-invalid' }],
+    });
+
+    const offline = gateway(discoveryFixture({
+      discoveryError: new RemoteHostError('CLOUD_RELAY_HOST_OFFLINE', 'offline'),
+    }));
+    await expect(offline.discoverTools()).resolves.toMatchObject({
+      tools: [localTool],
+      notices: [{ code: 'cloud-tools-unavailable' }],
+    });
+
+    const malformed = gateway(discoveryFixture({
+      discoveryError: new RemoteHostError('CLOUD_RELAY_INVALID_RESPONSE', 'malformed'),
+    }));
+    await expect(malformed.discoverTools()).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_INVALID_RESPONSE',
+    });
+
+    const brokenRelay = gateway(discoveryFixture({
+      discoveryError: new RemoteHostError('RELAY_PROTOCOL_ERROR', 'invalid frame'),
+    }));
+    await expect(brokenRelay.discoverTools()).rejects.toMatchObject({
+      code: 'RELAY_PROTOCOL_ERROR',
     });
   });
 
