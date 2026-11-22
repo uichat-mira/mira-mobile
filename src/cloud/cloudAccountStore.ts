@@ -14,7 +14,8 @@ export type CloudAccountStatus =
   | 'authorizing'
   | 'signed_in'
   | 'cloud_unavailable'
-  | 'session_rejected';
+  | 'session_rejected'
+  | 'device_revoked';
 
 export type CloudDevicesStatus =
   | 'idle'
@@ -38,7 +39,7 @@ interface CloudAccountStore {
   refresh: () => Promise<void>;
   loadDevices: () => Promise<void>;
   revokeDevice: (deviceId: string) => Promise<void>;
-  signIn: () => Promise<void>;
+  signIn: (reenroll?: boolean) => Promise<void>;
   cancelSignIn: () => Promise<void>;
   completeSignIn: (params: OAuthCallbackParams) => Promise<CloudAccountStatus>;
   signOut: () => Promise<void>;
@@ -104,6 +105,13 @@ const resultStatus = (
         expiresAt: state.expiresAt,
         message: unavailableMessage,
       };
+    case 'device_revoked':
+      return {
+        status: 'device_revoked',
+        account: null,
+        expiresAt: null,
+        message: '本机授权已撤销，请重新注册此设备。本地模型和独立连接不受影响。',
+      };
     case 'session_rejected':
       return {
         status: 'session_rejected',
@@ -126,6 +134,9 @@ const failureStatus = (
   current: CloudAccountIdentity | null,
 ): Pick<CloudAccountStore, 'status' | 'account' | 'expiresAt' | 'message'> => {
   if (error instanceof CloudAuthServiceError) {
+    if (error.kind === 'device_revoked' && !current) {
+      return resultStatus({ status: 'device_revoked' });
+    }
     if (error.kind === 'network' || error.kind === 'unavailable') {
       return {
         status: 'cloud_unavailable',
@@ -226,12 +237,13 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
     }
   },
 
-  signIn: async () => {
+  signIn: async (reenroll = false) => {
     if (get().busy) return;
     const version = beginIntent();
     set({ busy: true, message: null });
     try {
-      await cloudAuthService.beginSignIn();
+      if (reenroll) await cloudAuthService.beginSignIn(true);
+      else await cloudAuthService.beginSignIn();
       if (!ownsLifecycle(version)) return;
       set({
         status: 'authorizing',
@@ -279,7 +291,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
         ...(keepsAccountDevices(restored) ? {} : deviceReset()),
         busy: false,
         message:
-          restored.status === 'session_rejected'
+          restored.status === 'session_rejected' || restored.status === 'device_revoked'
             ? state.message
             : '已取消 Mira Cloud 登录。',
       });
@@ -513,6 +525,9 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
           message =
             'Mira Cloud 已确认撤销这台设备，但暂时无法确认本机登录状态；本机登录记录仍保留，请稍后重试检查。';
           break;
+        case 'device_revoked':
+          message = '本机授权已撤销，请重新注册此设备。';
+          break;
         case 'session_rejected':
           message =
             result.session.message ??
@@ -523,6 +538,7 @@ export const useCloudAccountStore = create<CloudAccountStore>((set, get) => ({
       }
 
       if (
+        result.session.status === 'device_revoked' ||
         result.session.status === 'session_rejected' ||
         result.session.status === 'signed_out'
       ) {

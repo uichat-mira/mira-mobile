@@ -133,6 +133,43 @@ describe('Mira Cloud OAuth service', () => {
     );
   });
 
+  it('requires explicit re-enrollment after a confirmed revoked installation and reuses the replacement on retry', async () => {
+    const h = createHarness();
+    await h.service.beginSignIn();
+    const old = h.installationStore.peek()!.installationId;
+    const pending = h.pendingStore.peek()!;
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('rejected', 'revoked', 'OAUTH_DEVICE_REVOKED'),
+    );
+    await expect(h.service.completeSignIn({ code, state: pending.state })).resolves.toEqual({ status: 'device_revoked' });
+    expect(h.installationStore.peek()).toMatchObject({ installationId: old, revoked: true });
+    await expect(h.service.restoreSession()).resolves.toEqual({ status: 'device_revoked' });
+    await expect(h.service.beginSignIn()).rejects.toMatchObject({ kind: 'device_revoked' });
+    expect(h.installationStore.peek()!.installationId).toBe(old);
+    await h.service.beginSignIn(true);
+    const replacement = h.installationStore.peek()!.installationId;
+    expect(replacement).not.toBe(old);
+    await h.service.cancelPendingSignIn();
+    await h.service.beginSignIn();
+    expect(h.installationStore.peek()!.installationId).toBe(replacement);
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValueOnce(issued);
+    await expect(h.service.completeSignIn({ code, state: h.pendingStore.peek()!.state })).resolves.toMatchObject({ status: 'signed_in' });
+    expect(h.api.exchangeAuthorizationCode).toHaveBeenLastCalledWith(expect.objectContaining({ installationId: replacement }));
+  });
+
+  it('never replaces an installation on an ordinary invalid grant', async () => {
+    const h = createHarness();
+    await h.service.beginSignIn();
+    const old = h.installationStore.peek()!.installationId;
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('rejected', 'invalid', 'OAUTH_INVALID_GRANT'),
+    );
+    await expect(h.service.completeSignIn({ code, state: h.pendingStore.peek()!.state })).rejects.toMatchObject({ kind: 'rejected' });
+    await expect(h.service.beginSignIn(true)).rejects.toMatchObject({ kind: 'invalid_state' });
+    await h.service.beginSignIn();
+    expect(h.installationStore.peek()!.installationId).toBe(old);
+  });
+
   it('exchanges the callback exactly once and persists the issued Cloud Session', async () => {
     const harness = createHarness();
     await harness.service.beginSignIn();
