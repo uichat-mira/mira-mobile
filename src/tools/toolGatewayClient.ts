@@ -37,6 +37,7 @@ export type ToolDiscoveryNoticeCode =
   | 'toolset-degraded'
   | 'cloud-tools-unavailable'
   | 'cloud-tools-unauthorized'
+  | 'cloud-tools-session-invalid'
   | 'cloud-tools-host-ambiguous';
 
 export interface ToolDiscoveryNotice {
