@@ -41,7 +41,7 @@ type ToolRoute = keyof typeof REMOTE_TOOL_ROUTES;
 
 type CloudToolEntry = Pick<
   CloudRelayEntry,
-  'discoverSingleHost' | 'assertCurrentAccess' | 'reset'
+  'discoverHost' | 'assertCurrentAccess'
 >;
 
 type CloudJsonTransport = typeof requestCloudRelayJson;
@@ -116,6 +116,7 @@ export class CloudToolHostClient {
 
   constructor(
     private readonly accountId: string,
+    private readonly hostId: string,
     private readonly entry: CloudToolEntry = cloudRelayEntry,
     private readonly json: CloudJsonTransport = requestCloudRelayJson,
     private readonly sse: CloudSseTransport = openCloudRelayPostSse,
@@ -128,10 +129,11 @@ export class CloudToolHostClient {
 
   private async currentAccess(): Promise<CloudRelayAccess> {
     this.assertOwner();
-    const access = await this.entry.discoverSingleHost();
+    const access = await this.entry.discoverHost(this.hostId);
     this.assertOwner();
     this.entry.assertCurrentAccess(access);
     if (access.accountId !== this.accountId) throw hostChanged();
+    if (access.target.hostId !== this.hostId) throw hostChanged();
     if (this.boundAccess && this.boundAccess !== access) throw hostChanged();
     this.boundAccess = access;
     return access;

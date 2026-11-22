@@ -76,7 +76,7 @@ const harness = (options: {
   const access = options.access ?? makeAccess();
   const current = options.current ?? { value: true };
   const entry = {
-    discoverSingleHost: jest.fn(async () => access),
+    discoverHost: jest.fn(async (_hostId: string) => access),
     assertCurrentAccess: jest.fn((seen: CloudRelayAccess) => {
       if (!current.value || seen !== access) {
         throw new RemoteHostError(
@@ -85,7 +85,6 @@ const harness = (options: {
         );
       }
     }),
-    reset: jest.fn(),
   };
   const json = options.json ?? jest.fn(async <T>(
     _target: CloudRelayTransportTarget,
@@ -126,6 +125,7 @@ const harness = (options: {
   }));
   const client = new CloudToolHostClient(
     access.accountId,
+    access.target.hostId,
     entry,
     json as unknown as typeof requestCloudRelayJson,
     sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
@@ -259,7 +259,7 @@ describe('CloudToolHostClient', () => {
   it('fails closed when the account or bound Host changes mid-run', async () => {
     const secondAccess = makeAccess('host-b');
     const f = harness();
-    (f.entry.discoverSingleHost as jest.Mock)
+    (f.entry.discoverHost as jest.Mock)
       .mockResolvedValueOnce(f.access)
       .mockResolvedValue(secondAccess);
     // The real entry points assertCurrentAccess at its newest access; this

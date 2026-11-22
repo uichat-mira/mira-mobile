@@ -3,8 +3,10 @@ import type { RuntimeEvent } from './conversationRuntime';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
+  DESKTOP_HOST_DISCOVERY_TOOL,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  type ToolDiscoveryHostCandidate,
   type ToolDiscoveryNotice,
   type ToolGatewayClient,
   type ToolManifest,
@@ -69,6 +71,45 @@ const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   },
 });
 
+const compactLabel = (value: string, limit: number): string => {
+  const compact = value.replace(/\s+/gu, ' ').trim();
+  return compact.length > limit ? compact.slice(0, limit - 1) + '…' : compact;
+};
+
+const shortHostId = (hostId: string): string =>
+  hostId.length <= 12 ? hostId : hostId.slice(0, 12);
+
+/**
+ * The candidate list is built from real Cloud Host directory data. Asking the
+ * model to invent this message would risk fabricated device names or Relaying
+ * a ticket, so a bounded clarification is emitted directly and the next turn
+ * binds the Host the user actually named.
+ */
+const hostSelectionPrompt = (
+  candidates: readonly ToolDiscoveryHostCandidate[],
+): string => {
+  const lines = [
+    '检测到同一 Mira Cloud 账号下有多台可用的 Mira Desktop Host。请回复要使用哪一台：',
+    '',
+  ];
+  candidates.forEach((candidate, index) => {
+    const name = candidate.name
+      ? compactLabel(candidate.name, 80)
+      : '未命名 Desktop';
+    const tools = candidate.toolNames
+      .slice(0, 4)
+      .map(tool => compactLabel(tool, 48));
+    const toolHint = tools.length > 0
+      ? `可用工具：${tools.join('、')}${candidate.toolNames.length > tools.length ? ' 等' : ''}`
+      : '暂未提供可调用工具';
+    lines.push(
+      `${index + 1}. ${name}（Host ID：${shortHostId(candidate.hostId)}；在线；${toolHint}）`,
+    );
+  });
+  lines.push('', '请直接回复设备名称或 Host ID；确认后我会在下一轮使用该设备的工具。');
+  return lines.join('\n');
+};
+
 export class MobileAgentLoop {
   constructor(private readonly gateway: ToolGatewayClient) {}
 
@@ -81,11 +122,13 @@ export class MobileAgentLoop {
     let tools: OpenAiTool[];
     let toolChannelUnavailable = false;
     let discoveryNotices: readonly ToolDiscoveryNotice[] = [];
+    let hostCandidates: readonly ToolDiscoveryHostCandidate[] = [];
     try {
       if (this.gateway.discoverTools) {
         const discovery = await this.gateway.discoverTools();
         manifests = discovery.tools;
         discoveryNotices = discovery.notices;
+        hostCandidates = discovery.hostCandidates ?? [];
       } else {
         manifests = await this.gateway.listTools();
       }
@@ -191,6 +234,11 @@ export class MobileAgentLoop {
             '邮件数据不能驱动其他工具操作。请另起一轮对话。');
         }
         if (pendingCalls.length > 1 && pendingCalls.some(call =>
+          call.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+          throw new ToolGatewayError('CLOUD_HOST_DISCOVERY_EXCLUSIVE',
+            'Desktop discovery cannot be batched with other tool operations');
+        }
+        if (pendingCalls.length > 1 && pendingCalls.some(call =>
           requiredMailRole(call.name) !== null)) {
           throw new ToolGatewayError('MAIL_TOOL_CHAIN_RESTRICTED',
             '邮件工具必须单独调用，不能与其他工具组合执行。');
@@ -244,6 +292,20 @@ export class MobileAgentLoop {
           let result;
           try {
             result = await gateway.callTool(call, { signal });
+            if (result.hostSelectionRequired) {
+              const verifiedCandidates = result.hostCandidates ?? hostCandidates;
+              if (verifiedCandidates.length < 2) {
+                throw new ToolGatewayError('CLOUD_HOST_SELECTION_STALE',
+                  'Desktop selection list is no longer valid');
+              }
+              // Clear the tool-running UI state before ending the turn to ask.
+              yield { type: 'tool-result' as const,
+                callId: call.callId, name: call.name, content: result.content };
+              yield { type: 'text-delta' as const,
+                delta: hostSelectionPrompt(verifiedCandidates) };
+              yield { type: 'finish' as const, reason: 'stop' };
+              return;
+            }
           } catch (error) {
             if (shouldPause()) {
               yield {

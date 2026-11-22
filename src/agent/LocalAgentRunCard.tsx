@@ -105,7 +105,7 @@ const noticeLabel: Record<LocalAgentNoticeCode, string> = {
   'cloud-tools-session-invalid':
     'Mira Cloud 登录已失效或本机设备授权已撤销；本轮只使用手机内置工具，请重新登录或注册设备。',
   'cloud-tools-host-ambiguous':
-    '同一 Mira Cloud 账号有多台 Desktop Host 在线，暂不自动选择目标；本轮只使用手机内置工具。',
+    '同一 Mira Cloud 账号有多台可用 Desktop Host；请从本轮消息中的设备列表选择一台后再发送。',
 };
 
 const preview = (value: string) => {
