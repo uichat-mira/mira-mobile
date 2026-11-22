@@ -20,9 +20,9 @@ rather than accidentally fetching a similarly named paired-Host attachment.
 
 The Cloud Host manifest is authoritative for thread mutation and chat writes.
 A read-only grant still permits browsing threads/history, but disables chat
-composition and deletion. Tool execution and approvals are **not** enabled by
-this pilot; the separate Cloud Tool Gateway route must be implemented and
-validated against Desktop Harness grant enforcement before it can be exposed.
+composition and deletion. The MOB-080 pilot itself does not expose tool
+execution; MOB-087 separately adds Local Agent Cloud tool consumption through
+Desktop's existing Host grant/Harness enforcement (see below).
 
 ## Environment policy
 
@@ -72,7 +72,41 @@ unlock new Mobile-local tools or override Desktop Harness approval policy.
 Agent message-send availability still depends on the separate Host append-turn
 integration and coordinated Mobile business-client work.
 
-Standalone Cloud Tool Gateway invocation/approval, attachments, alternate entry
-surfaces (Drawer/Search), full account-isolation/device-revocation pilot and
-test/prod release promotion remain MOB-080 follow-ups; this slice must not
-close the Issue.
+Attachments, alternate entry surfaces (Drawer/Search), full
+account-isolation/device-revocation pilot and test/prod release promotion remain
+MOB-080 follow-ups; this slice must not close the Issue. Cloud Tool Gateway
+invocation/approval for the Mobile Local Agent is tracked by MOB-087.
+
+## MOB-087 — Cloud Tool Gateway for the Mobile Local Agent
+
+When the user is explicitly signed into Mira Cloud, a Local Provider Agent run
+resolves its Host remote toolset through Cloud Relay instead of the Legacy
+paired path. The Cloud branch is a thin `CloudToolHostClient` implementation of
+the same four host methods used by `RemoteToolGatewayClient`:
+
+- `GET /remote/v1/tools`
+- `POST /remote/v1/tool-invocations/stream`
+- `POST /remote/v1/tool-invocations/:invocationId/approval`
+- `POST /remote/v1/tool-invocations/:invocationId/cancel`
+
+The existing protocol parsers, `RemoteToolGatewayClient`,
+`CompositeToolGatewayClient` and Mobile approval UI remain authoritative. The
+Host manifest's `tools:*` scopes and advertised tool routes gate every
+operation, and Relay tickets only admit transport; they are never sent as Host
+business credentials. No `mira_device_*` credential or Host Provider key is
+sent on this path.
+
+Discovery is fail-closed for tool execution. Exactly one available
+account-owned Host is required. Zero/offline Hosts yield a
+`cloud-tools-unavailable` mobile notice, more than one online Host yields
+`cloud-tools-host-ambiguous` without picking one (reserved for MOB-088), and a
+Host without the required tool scope/route yields
+`cloud-tools-unauthorized`. In all three cases Mobile keeps its compiled-in
+local tools and does not invoke remote tool state. An explicitly signed-out
+Cloud account keeps the previous Local + paired Host toolset; a Cloud failure
+never silently downgrades to the paired Tailscale credential.
+
+Each Local Agent run gets a fresh gateway bound to its Cloud account, Host and
+Relay access. Account logout/switch, Host replacement, authorization loss and
+uncertain Relay approval responses stop reuse of the old tool manifest, tool
+IDs and pending approval instead of replaying them on another transport.
