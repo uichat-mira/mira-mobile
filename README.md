@@ -71,6 +71,21 @@ Session 仍然撤销。中途取消或重试使用已持久化的新身份，不
 本地聊天、Local Provider、独立 Remote Host/Tailscale 及 Push 身份均不改变。
 服务端错误契约见 [Cloud Auth OAuth](https://github.com/uichat-mira/cloud-auth/blob/dev/docs/oauth-authorization-v0.md)。
 
+## 狐邮 Who You · 移动端只读接入
+
+在 Mira Cloud 登录后，Mobile 可以独立通过狐邮 MCP 查看当前账号的已绑定邮箱，
+并由用户主动搜索、阅读**已同步**邮件的纯文本正文，不依赖 Desktop 或 Relay。
+同步不完整时，搜索不到不代表 Gmail 中没有这封邮件；同步、重授权、解绑继续由狐邮网页管理。
+
+Local Provider 的 Agent 模式只注册狐邮搜索与正文读取两项只读工具。
+**每次**将搜索结果或正文发送给用户配置的外部模型前，都展示接收方、用途和范围并请求确认。
+邮件属于不可信输入，不能用于后续工具执行或权限提升；发信、附件及后台同步不在本能力范围。
+含邮件信息的回答可在手机**本地会话历史**查看，但会携带私密标记，
+不自动加入未来的模型请求上下文或自动记忆整理。
+
+行为与验收合同以 [MOB-086](https://github.com/uichat-mira/mira-mobile/issues/337) 为准。
+此段描述代码能力，不代表 Android 真机完整链路已经验收。
+
 ## 分支流程
 
 仓库遵循 Mira Organization 的环境模型：

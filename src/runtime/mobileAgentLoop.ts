@@ -29,6 +29,8 @@ export interface MobileAgentLoopOptions {
    *   instead of succeeding without the requested capability.
    */
   onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
+  /** Human-readable Local Provider destination; never includes credentials. */
+  approvalRecipient?: string;
   requestApproval?: (
     approval: ToolApprovalRequest,
   ) => Promise<ToolApprovalDecision>;
@@ -45,6 +47,18 @@ const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
 const isDegradableToolChannelError = (error: unknown): boolean =>
   error instanceof ToolGatewayError &&
   error.code === 'TOOL_CHANNEL_UNAVAILABLE';
+
+// The exact privileged mail names are a security boundary, not optional
+// metadata supplied by a remote Host manifest.
+const SENSITIVE_MAIL_TOOLS = {
+  whoyou_mail_search: 'mail-search',
+  whoyou_mail_message_get: 'mail-body',
+} as const;
+
+const requiredMailRole = (name: string): 'mail-search' | 'mail-body' | null =>
+  name === 'whoyou_mail_search' ? SENSITIVE_MAIL_TOOLS.whoyou_mail_search
+    : name === 'whoyou_mail_message_get' ? SENSITIVE_MAIL_TOOLS.whoyou_mail_message_get
+      : null;
 
 const toOpenAiTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
@@ -74,6 +88,13 @@ export class MobileAgentLoop {
         discoveryNotices = discovery.notices;
       } else {
         manifests = await this.gateway.listTools();
+      }
+      if (manifests.some(m => {
+        const required = requiredMailRole(m.name);
+        return required !== null && m.sensitiveResult !== required;
+      })) {
+        throw new ToolGatewayError('MAIL_TOOL_POLICY_INVALID',
+          '狐邮邮件工具的隐私规则缺失，已拒绝执行。');
       }
       tools = manifests.map(toOpenAiTool);
     } catch (error) {
@@ -119,6 +140,7 @@ export class MobileAgentLoop {
       }
       const messages = [...initialMessages];
       let rounds = 0;
+      let mailStage: 'none' | 'search' | 'body' = 'none';
       while (true) {
         if (shouldPause()) {
           yield { type: 'run-paused' as const, reason: 'app-suspended' as const };
@@ -133,9 +155,15 @@ export class MobileAgentLoop {
           return;
         }
 
+        const activeManifests = mailStage === 'none'
+          ? manifests
+          : mailStage === 'search'
+            ? manifests.filter(manifest => manifest.sensitiveResult === 'mail-body')
+            : [];
+        const activeTools = mailStage === 'none' ? tools : activeManifests.map(toOpenAiTool);
         let stream: AsyncIterable<RuntimeEvent>;
         try {
-          stream = await modelCall(messages, tools);
+          stream = await modelCall(messages, activeTools);
         } catch (error) {
           if (shouldPause()) {
             yield { type: 'run-paused' as const, reason: 'app-suspended' as const };
@@ -154,6 +182,19 @@ export class MobileAgentLoop {
         }
 
         if (pendingCalls.length === 0 || finishReason !== 'tool_calls') return;
+        // An email result is untrusted. Once read by the model, only a
+        // separate confirmed message-get may follow a search; after the
+        // message body, no further tool can be invoked in that turn.
+        if (mailStage === 'body' || (mailStage !== 'none' &&
+            pendingCalls.some(call => !activeManifests.some(manifest => manifest.name === call.name)))) {
+          throw new ToolGatewayError('MAIL_TOOL_CHAIN_RESTRICTED',
+            '邮件数据不能驱动其他工具操作。请另起一轮对话。');
+        }
+        if (pendingCalls.length > 1 && pendingCalls.some(call =>
+          requiredMailRole(call.name) !== null)) {
+          throw new ToolGatewayError('MAIL_TOOL_CHAIN_RESTRICTED',
+            '邮件工具必须单独调用，不能与其他工具组合执行。');
+        }
         if (toolChannelUnavailable) {
           // The model requested tools although none were offered: this turn
           // demonstrably required them. Fail honestly instead of returning an
@@ -193,7 +234,7 @@ export class MobileAgentLoop {
             };
             return;
           }
-          validateToolCall(manifests, call);
+          const approvedManifest = validateToolCall(activeManifests, call);
           yield {
             type: 'tool-running' as const,
             callId: call.callId,
@@ -224,12 +265,16 @@ export class MobileAgentLoop {
               gateway.resolveApproval
             ) {
               const approval = error.approval;
+              const disclosureMessage = approvedManifest.sensitiveResult
+                ? `${approval.message}
+接收方：${options.approvalRecipient ?? '当前 Local Provider'}。仅在本次明确批准后发送结果给模型；回复保留在手机聊天记录，后续不会自动再次传给模型。`
+                : approval.message;
               yield {
                 type: 'approval-required' as const,
                 invocationId: approval.invocationId,
                 callId: approval.callId,
                 name: approval.name,
-                message: approval.message,
+                message: disclosureMessage,
                 ...(approval.scope ? { scope: approval.scope } : {}),
               };
 
@@ -397,6 +442,13 @@ export class MobileAgentLoop {
             maxToolResultBytes,
           );
           const truncated = content !== result.content;
+          if (signal?.aborted || shouldPause()) {
+            yield { type: 'run-paused' as const, reason: signal?.aborted ? 'cancelled' as const : 'app-suspended' as const };
+            return;
+          }
+          if (approvedManifest.sensitiveResult) {
+            mailStage = approvedManifest.sensitiveResult === 'mail-search' ? 'search' : 'body';
+          }
           messages.push({ role: 'tool', content, tool_call_id: call.callId });
           yield {
             type: 'tool-result' as const,

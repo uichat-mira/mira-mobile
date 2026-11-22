@@ -15,8 +15,22 @@ export type WhoYouRequestInit = RequestInit & { redirect: 'error' };
 export const withWhoYouRequestDeadline = async <T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  callerSignal?: AbortSignal,
 ): Promise<T> => {
+  if (callerSignal?.aborted) {
+    throw new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED');
+  }
   const controller = new AbortController();
+  let abortFromCaller: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    if (!callerSignal) return;
+    abortFromCaller = () => {
+      controller.abort();
+      reject(new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED'));
+    };
+    callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+    if (callerSignal.aborted) abortFromCaller();
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -32,7 +46,12 @@ export const withWhoYouRequestDeadline = async <T>(
   });
 
   const request = Promise.resolve()
-    .then(() => operation(controller.signal))
+    .then(() => {
+      if (controller.signal.aborted) {
+        throw new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED');
+      }
+      return operation(controller.signal);
+    })
     .catch((error: unknown) => {
       if (error instanceof WhoYouError) throw error;
       throw new WhoYouError(
@@ -43,9 +62,10 @@ export const withWhoYouRequestDeadline = async <T>(
     });
 
   try {
-    return await Promise.race([request, deadline]);
+    return await Promise.race([request, deadline, cancelled]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    if (abortFromCaller) callerSignal?.removeEventListener('abort', abortFromCaller);
   }
 };
 

@@ -1,11 +1,16 @@
 import {
   ToolGatewayError,
+  ToolApprovalRequiredError,
+  type ToolApprovalRequest,
+  type ToolApprovalDecision,
+  type ToolApprovalResolution,
   type ToolCallRequest,
   type ToolCallResult,
   type ToolGatewayClient,
   type ToolManifest,
 } from './toolGatewayClient';
 import { weatherToolDefinition } from './localTools/weatherTool';
+import { whoYouMailSearchTool, whoYouMailMessageTool } from './localTools/whoYouMailTools';
 
 export interface LocalToolContext {
   signal?: AbortSignal;
@@ -13,11 +18,48 @@ export interface LocalToolContext {
 
 export interface LocalToolDefinition {
   manifest: ToolManifest;
+  /** Consent to send this tool's private result to the user's Local Provider. */
+  disclosure?: { message: string; scope: string };
   call: (
     args: Record<string, unknown>,
     context: LocalToolContext,
   ) => Promise<ToolCallResult>;
 }
+
+// Consent text is trusted UI. Never interpolate raw model-controlled strings
+// as extra lines or display a truncated value different from the executed one.
+const disclosureArguments = (
+  tool: string,
+  args: Record<string, unknown>,
+): { args: Record<string, unknown>; detail: string } => {
+  if (tool === 'whoyou_mail_search') {
+    if (Object.keys(args).some(key => key !== 'query') ||
+        (args.query !== undefined && typeof args.query !== 'string')) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索参数无效');
+    }
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (query.length > 200) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索词过长');
+    }
+    const safe = JSON.stringify(query || '最近已同步邮件')
+      .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return { args: query ? { query } : {}, detail: `\n搜索词：${safe}` };
+  }
+  if (tool === 'whoyou_mail_message_get') {
+    if (Object.keys(args).some(key => key !== 'messageId') ||
+        typeof args.messageId !== 'string') {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '邮件标识无效');
+    }
+    const messageId = args.messageId.trim();
+    if (!messageId || messageId.length > 80) {
+      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '邮件标识无效');
+    }
+    const safe = JSON.stringify(messageId)
+      .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return { args: { messageId }, detail: `\n邮件标识：${safe}` };
+  }
+  return { args, detail: '' };
+};
 
 const parseArguments = (value: string): Record<string, unknown> => {
   let parsed: unknown;
@@ -46,6 +88,13 @@ const parseArguments = (value: string): Record<string, unknown> => {
  */
 export class LocalToolGatewayClient implements ToolGatewayClient {
   private readonly toolsByName: ReadonlyMap<string, LocalToolDefinition>;
+  private nextApprovalId = 0;
+  private pendingApproval: {
+    approval: ToolApprovalRequest;
+    tool: LocalToolDefinition;
+    args: Record<string, unknown>;
+    expiresAt: number;
+  } | null = null;
 
   constructor(tools: readonly LocalToolDefinition[]) {
     const toolsByName = new Map<string, LocalToolDefinition>();
@@ -74,12 +123,60 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
       );
     }
 
-    return tool.call(parseArguments(request.arguments), {
+    const args = parseArguments(request.arguments);
+    if (tool.disclosure) {
+      const display = disclosureArguments(request.name, args);
+      const approval: ToolApprovalRequest = {
+        invocationId: `local-disclosure-${++this.nextApprovalId}`,
+        callId: request.callId,
+        name: request.name,
+        arguments: request.arguments,
+        message: tool.disclosure.message + display.detail,
+        scope: tool.disclosure.scope,
+      };
+      // Only one outstanding Local Agent invocation exists per run. A later
+      // request revokes the old permission; stale decisions are never reused.
+      this.pendingApproval = {
+        approval, tool, args: display.args, expiresAt: Date.now() + 5 * 60 * 1000,
+      };
+      throw new ToolApprovalRequiredError(approval);
+    }
+    return tool.call(args, {
       ...(options?.signal ? { signal: options.signal } : {}),
     });
+  }
+
+  async resolveApproval(
+    approval: ToolApprovalRequest,
+    decision: ToolApprovalDecision,
+    options?: { signal?: AbortSignal },
+  ): Promise<ToolApprovalResolution> {
+    const pending = this.pendingApproval;
+    this.pendingApproval = null;
+    if (!pending ||
+        pending.expiresAt <= Date.now() ||
+        pending.approval.invocationId !== approval.invocationId ||
+        pending.approval.callId !== approval.callId ||
+        pending.approval.name !== approval.name ||
+        pending.approval.arguments !== approval.arguments) {
+      throw new ToolGatewayError('TOOL_APPROVAL_STALE', '本次邮件授权已失效，请重新请求。');
+    }
+    if (decision === 'rejected') return { status: 'rejected' };
+    if (options?.signal?.aborted) {
+      throw new ToolGatewayError('TOOL_CANCELLED', '邮件读取已取消。');
+    }
+    const result = await pending.tool.call(pending.args, {
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    if (options?.signal?.aborted) {
+      throw new ToolGatewayError('TOOL_CANCELLED', '邮件读取已取消。');
+    }
+    return { status: 'completed', result };
   }
 }
 
 export const localToolGatewayClient = new LocalToolGatewayClient([
   weatherToolDefinition,
+  whoYouMailSearchTool,
+  whoYouMailMessageTool,
 ]);

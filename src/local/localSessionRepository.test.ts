@@ -49,6 +49,32 @@ describe('LocalSessionRepository', () => {
     ]);
   });
 
+  it('persists private mail-derived answer visibility without losing its no-reupload marker', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const session = await repository.create('provider-a', 'Private mail');
+    await repository.appendMessages(session.id, [
+      {
+        id: 'private-answer',
+        role: 'assistant',
+        content: 'PRIVATE MAIL DETAILS for local display only',
+        timestamp: new Date('2026-11-22T00:00:00Z'),
+        metadata: { localMailPrivate: true },
+      },
+      {
+        id: 'normal-answer',
+        role: 'assistant',
+        content: 'ordinary',
+        timestamp: new Date('2026-11-22T00:00:01Z'),
+      },
+    ]);
+    const messages = await repository.getMessages(session.id);
+    expect(messages[0]).toMatchObject({
+      content: 'PRIVATE MAIL DETAILS for local display only',
+      metadata: { localMailPrivate: true },
+    });
+    expect(messages[1].metadata).toBeUndefined();
+  });
+
   it('filters sessions by provider and rejects unknown sessions', async () => {
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
     await repository.create('provider-a', 'A');

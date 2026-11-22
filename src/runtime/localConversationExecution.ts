@@ -115,6 +115,7 @@ export async function executeLocalConversationTurn(
       agentRunHandle = await agentRun.beginRun({
         executor,
         initialMessages: request.messages,
+        approvalRecipient: `${config.name.slice(0, 80)} (${new URL(config.baseUrl).hostname}) · ${config.model.slice(0, 80)}`,
         shouldPause: () => providerExecution.executionSuspended,
       });
       stream = agentRunHandle.stream;
@@ -137,12 +138,18 @@ export async function executeLocalConversationTurn(
     let paused = false;
     let finished = false;
     let finishReason: string | null = null;
+    let usedPrivateMail = false;
     let completedTurn = false;
 
     try {
       for await (const event of stream) {
         if (event.type === 'text-delta') content += event.delta;
         if (event.type === 'error') sawError = true;
+        if (event.type === 'tool-result' &&
+            (event.name === 'whoyou_mail_search' ||
+             event.name === 'whoyou_mail_message_get')) {
+          usedPrivateMail = true;
+        }
         if (event.type === 'run-paused') paused = true;
         if (event.type === 'finish') {
           finished = true;
@@ -153,7 +160,17 @@ export async function executeLocalConversationTurn(
 
       if (content) {
         await repository.appendMessages(threadId, [
-          { id: assistantId, role: 'assistant', content, timestamp: new Date() },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content,
+            timestamp: new Date(),
+            // Retain the answer for on-device viewing, never silently
+            // re-disclose it to a Provider in a later conversation turn.
+            ...(usedPrivateMail
+              ? { metadata: { localMailPrivate: true } }
+              : {}),
+          },
         ]);
       }
 
@@ -171,7 +188,9 @@ export async function executeLocalConversationTurn(
       providerExecution.finishRun(providerRun);
     }
 
-    if (completedTurn) {
+    // The explicit per-call model disclosure is not a grant to also store
+    // mailbox-derived answers in persistent memory summaries.
+    if (completedTurn && !usedPrivateMail) {
       consolidateLocalTurn(
         {
           threadId,

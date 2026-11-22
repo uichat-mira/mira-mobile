@@ -26,6 +26,7 @@ interface PendingApproval {
 export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
   initialMessages: readonly OpenAiMessage[];
+  approvalRecipient?: string;
   shouldPause?: () => boolean;
 }
 
@@ -59,6 +60,7 @@ export class LocalAgentRunController {
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {
           shouldPause: input.shouldPause,
+          approvalRecipient: input.approvalRecipient,
           signal: abortController.signal,
           // A Local turn must stay answerable when the approved remote tool
           // channel is temporarily unreachable; Agent mode degrades to a plain
