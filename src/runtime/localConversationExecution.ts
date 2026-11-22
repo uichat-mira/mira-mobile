@@ -116,6 +116,7 @@ export async function executeLocalConversationTurn(
         executor,
         initialMessages: request.messages,
         approvalRecipient: `${config.name.slice(0, 80)} (${new URL(config.baseUrl).hostname}) · ${config.model.slice(0, 80)}`,
+        selectionText: turn.input,
         shouldPause: () => providerExecution.executionSuspended,
       });
       stream = agentRunHandle.stream;

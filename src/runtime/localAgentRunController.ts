@@ -27,6 +27,8 @@ export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
   initialMessages: readonly OpenAiMessage[];
   approvalRecipient?: string;
+  /** Current user turn used only to bind an explicitly named Cloud Host. */
+  selectionText?: string;
   shouldPause?: () => boolean;
 }
 
@@ -38,12 +40,13 @@ export interface LocalAgentRun {
 
 export type LocalAgentToolGatewaySource =
   | ToolGatewayClient
-  | (() => ToolGatewayClient);
+  | ((selectionText?: string) => ToolGatewayClient);
 
 const resolveToolGateway = (
   source: LocalAgentToolGatewaySource,
+  selectionText?: string,
 ): ToolGatewayClient =>
-  typeof source === 'function' ? source() : source;
+  typeof source === 'function' ? source(selectionText) : source;
 
 export class LocalAgentRunController {
   private activeAbortController: AbortController | null = null;
@@ -67,7 +70,7 @@ export class LocalAgentRunController {
       // A source factory supplies a fresh gateway for each run so Cloud account
       // / Host authority and tool aliases never leak into a later Agent run.
       const stream = await new MobileAgentLoop(
-        resolveToolGateway(this.toolGateway),
+        resolveToolGateway(this.toolGateway, input.selectionText),
       ).run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),

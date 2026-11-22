@@ -5,6 +5,7 @@ import {
 } from '../api/cloudRelay';
 import { RemoteHostError, type RemoteJsonRequest } from '../api/remoteHttp';
 import type { PostSseRequest, PostSseSession } from '../api/postSse';
+import type { CloudDesktopHost } from '../cloud/cloudAuthApi';
 import type { CloudRelayAccess } from '../cloud/cloudRelayEntry';
 import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
@@ -26,23 +27,52 @@ const localTool: ToolManifest = {
   parameters: { type: 'object' },
 };
 
+const sharedToolName = 'mcp_server_1_tool_search_a1b2c3d4e5';
 const cloudTool = {
-  id: 'mcp:server-1:tool:search',
-  name: 'mcp_server_1_tool_search_a1b2c3d4e5',
-  description: 'Search',
+  id: 'mcp:server-1:tool:search:host-a',
+  name: sharedToolName,
+  description: 'Search on host A',
   parameters: { type: 'object' },
   destructive: false,
   requiresApproval: false,
 };
+const cloudToolB = {
+  ...cloudTool,
+  id: 'mcp:server-1:tool:search:host-b',
+  description: 'Search on host B',
+};
+
+const makeHost = (
+  id: string,
+  name: string | null,
+  overrides: Partial<CloudDesktopHost> = {},
+): CloudDesktopHost => ({
+  id,
+  deviceId: `device-${id}`,
+  displayName: name,
+  clientVersion: '1.0.0',
+  availability: 'available',
+  relayRoom: `room-${id}`,
+  registeredAt: '2026-11-01T00:00:00.000Z',
+  lastAdvertisedAt: '2026-11-01T00:01:00.000Z',
+  leaseExpiresAt: '2026-11-01T00:03:00.000Z',
+  ...overrides,
+});
+
+const hostA = makeHost('host-a', 'MacBook Pro');
+const hostB = makeHost('host-b', 'Office PC', {
+  lastAdvertisedAt: '2026-11-01T00:02:00.000Z',
+});
 
 const makeAccess = (
   hostId = 'host-a',
   accountId = 'account-a',
+  room = `room-${hostId}`,
 ): CloudRelayAccess => ({
   accountId,
   target: {
     endpoint: 'https://isolated-cloud-relay.example.test',
-    room: 'room-a',
+    room,
     hostId,
   },
   tickets: {
@@ -86,67 +116,109 @@ const pairedGateway = (): ToolGatewayClient => ({
   callTool: jest.fn(async () => ({ content: 'paired-result' })),
 });
 
-const discoveryFixture = (options: {
-  access?: CloudRelayAccess;
+interface HostSetup {
+  host: CloudDesktopHost;
   scopes?: RemoteDeviceScope[];
-  discoveryError?: unknown;
+  tools?: typeof cloudTool[];
+  error?: RemoteHostError;
+}
+
+const discoveryFixture = (options: {
+  hosts?: HostSetup[];
+  listError?: unknown;
+  accountId?: string;
   sse?: jest.Mock;
 } = {}) => {
-  const access = options.access ?? makeAccess();
+  const accountId = options.accountId ?? 'account-a';
+  const setups = options.hosts ?? [{ host: hostA, tools: [cloudTool] }];
+  const accesses = new Map(setups.map(setup => [
+    setup.host.id,
+    makeAccess(setup.host.id, accountId, setup.host.relayRoom),
+  ]));
+  const findByRoom = (room: string): HostSetup => {
+    const setup = setups.find(item => item.host.relayRoom === room);
+    if (!setup) throw new Error('Unknown Cloud room ' + room);
+    return setup;
+  };
   const entry = {
-    discoverSingleHost: jest.fn(async () => {
-      if (options.discoveryError) throw options.discoveryError;
-      return access;
+    listHostCandidates: jest.fn(async () => {
+      if (options.listError) throw options.listError;
+      return {
+        accountId,
+        hosts: setups.map(setup => ({
+          hostId: setup.host.id,
+          deviceId: setup.host.deviceId,
+          name: setup.host.displayName,
+          availability: setup.host.availability,
+          clientVersion: setup.host.clientVersion,
+          lastAdvertisedAt: setup.host.lastAdvertisedAt,
+        })),
+      };
+    }),
+    discoverHost: jest.fn(async (hostId: string) => {
+      if (options.listError) throw options.listError;
+      const setup = setups.find(item => item.host.id === hostId);
+      if (!setup) {
+        throw new RemoteHostError('CLOUD_RELAY_HOST_NOT_FOUND', 'missing');
+      }
+      if (setup.host.availability !== 'available') {
+        throw new RemoteHostError('CLOUD_RELAY_HOST_OFFLINE', 'offline');
+      }
+      return accesses.get(hostId) as CloudRelayAccess;
     }),
     assertCurrentAccess: jest.fn((seen: CloudRelayAccess) => {
-      if (seen !== access) {
+      if (![...accesses.values()].includes(seen)) {
         throw new RemoteHostError(
           'CLOUD_RELAY_SESSION_REJECTED',
           'stale Cloud session',
         );
       }
     }),
-    reset: jest.fn(),
   };
   const jsonImpl = async function <T>(
-    _target: CloudRelayTransportTarget,
+    target: CloudRelayTransportTarget,
     _tickets: CloudRelayTicketProvider,
     request: RemoteJsonRequest<T>,
   ): Promise<T> {
+    const setup = findByRoom(target.room);
+    if (setup.error) throw setup.error;
+    const tools = setup.tools ?? [cloudTool];
     if (request.path === '/remote/v1/manifest') {
-      return request.parse(manifest(options.scopes));
+      return request.parse(manifest(setup.scopes));
     }
-    if (request.path === '/remote/v1/tools') return request.parse([cloudTool]);
+    if (request.path === '/remote/v1/tools') return request.parse(tools);
     if (request.path.endsWith('/approval')) {
       return request.parse({
         invocationId: 'inv-1',
-        toolId: cloudTool.id,
+        toolId: tools[0].id,
         status: 'completed',
-        content: 'approved-result',
+        content: 'approved-result-' + setup.host.id,
       });
     }
     throw new Error('Unexpected Cloud tool path ' + request.path);
   };
   const json = jest.fn(jsonImpl);
   const sseImpl = function <T>(
-    _target: CloudRelayTransportTarget,
+    target: CloudRelayTransportTarget,
     _tickets: CloudRelayTicketProvider,
     _request: PostSseRequest<T>,
   ) {
+    const setup = findByRoom(target.room);
+    const tool = (setup.tools ?? [cloudTool])[0];
     return {
     events: (async function* () {
       yield {
         type: 'tool:start',
         invocationId: 'inv-1',
-        toolId: cloudTool.id,
+        toolId: tool.id,
       } as unknown as T;
       yield {
         type: 'tool:complete',
         invocation: {
           invocationId: 'inv-1',
-          toolId: cloudTool.id,
+          toolId: tool.id,
           status: 'completed',
-          content: 'cloud-result',
+          content: 'cloud-result-' + setup.host.id,
         },
       } as unknown as T;
     })(),
@@ -154,7 +226,7 @@ const discoveryFixture = (options: {
     };
   };
   const sse = options.sse ?? jest.fn(sseImpl);
-  return { access, entry, json, sse };
+  return { accesses, setups, entry, json, sse };
 };
 
 const cloudContext = (
@@ -167,6 +239,7 @@ const gateway = (
     local?: ToolGatewayClient;
     paired?: ToolGatewayClient;
     context?: CloudToolAccountContext;
+    selectionText?: string;
   } = {},
 ) => new LocalAgentToolGateway({
   local: options.local ?? localGateway(),
@@ -178,6 +251,7 @@ const gateway = (
   }),
   json: fixture.json as unknown as typeof requestCloudRelayJson,
   sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+  ...(options.selectionText ? { selectionText: options.selectionText } : {}),
 });
 
 const asyncStream = <T>(events: T[]): AsyncIterable<T> =>
@@ -209,7 +283,7 @@ describe('LocalAgentToolGateway', () => {
       parameters: { type: 'object' },
     }]);
     expect(paired.listTools).toHaveBeenCalledTimes(1);
-    expect(fixture.entry.discoverSingleHost).not.toHaveBeenCalled();
+    expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });
 
   it.each(['session_rejected', 'device_revoked'] as const)(
@@ -232,7 +306,7 @@ describe('LocalAgentToolGateway', () => {
           notices: [{ code: 'cloud-tools-session-invalid' }],
         });
         expect(paired.listTools).not.toHaveBeenCalled();
-        expect(fixture.entry.discoverSingleHost).not.toHaveBeenCalled();
+        expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
       } finally {
         useCloudAccountStore.setState(original);
       }
@@ -257,28 +331,38 @@ describe('LocalAgentToolGateway', () => {
     expect(paired.listTools).not.toHaveBeenCalled();
   });
 
-  it('reports no online Host, multiple online Hosts, and missing grant separately', async () => {
-    const noHost = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError('CLOUD_RELAY_HOST_NOT_FOUND', 'none'),
-    }));
+  it('reports no Host, offline Hosts, ambiguity, and missing grant separately', async () => {
+    const noHost = gateway(discoveryFixture({ hosts: [] }));
     await expect(noHost.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
       notices: [{ code: 'cloud-tools-unavailable' }],
     });
 
+    const offline = gateway(discoveryFixture({
+      hosts: [{ host: { ...hostA, availability: 'offline' } }],
+    }));
+    await expect(offline.discoverTools()).resolves.toMatchObject({
+      tools: [localTool],
+      notices: [{ code: 'cloud-tools-unavailable' }],
+    });
+
     const ambiguous = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError(
-        'CLOUD_RELAY_HOST_AMBIGUOUS',
-        'two online hosts',
-      ),
+      hosts: [{ host: hostA }, { host: hostB }],
     }));
     await expect(ambiguous.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
       notices: [{ code: 'cloud-tools-host-ambiguous' }],
+      hostCandidates: [
+        { hostId: 'host-a', name: 'MacBook Pro', toolNames: [cloudTool.name] },
+        { hostId: 'host-b', name: 'Office PC', toolNames: [cloudTool.name] },
+      ],
     });
 
     const unauthorized = gateway(discoveryFixture({
-      scopes: ['tools:invoke', 'tools:approve', 'tools:control'],
+      hosts: [{
+        host: hostA,
+        scopes: ['tools:read', 'tools:approve', 'tools:control'],
+      }],
     }));
     await expect(unauthorized.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
@@ -287,7 +371,9 @@ describe('LocalAgentToolGateway', () => {
   });
 
   it('keeps the read-only Host tool out of the Local Agent model toolset', async () => {
-    const fixture = discoveryFixture({ scopes: ['tools:read'] });
+    const fixture = discoveryFixture({
+      hosts: [{ host: hostA, scopes: ['tools:read'] }],
+    });
     const selected = gateway(fixture);
     const offeredTools: OpenAiTool[][] = [];
     const modelCall = jest.fn(async (
@@ -310,84 +396,293 @@ describe('LocalAgentToolGateway', () => {
 
   it('separates invalid Cloud sessions, offline Hosts and protocol errors', async () => {
     const session = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED', 'expired'),
+      listError: new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED', 'expired'),
     }));
     await expect(session.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
       notices: [{ code: 'cloud-tools-session-invalid' }],
     });
 
-    const offline = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError('CLOUD_RELAY_HOST_OFFLINE', 'offline'),
+    const notFound = gateway(discoveryFixture({
+      listError: new RemoteHostError('CLOUD_RELAY_HOST_NOT_FOUND', 'none'),
     }));
-    await expect(offline.discoverTools()).resolves.toMatchObject({
+    await expect(notFound.discoverTools()).resolves.toMatchObject({
       tools: [localTool],
       notices: [{ code: 'cloud-tools-unavailable' }],
     });
 
     const malformed = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError('CLOUD_RELAY_INVALID_RESPONSE', 'malformed'),
+      listError: new RemoteHostError('CLOUD_RELAY_INVALID_RESPONSE', 'malformed'),
     }));
     await expect(malformed.discoverTools()).rejects.toMatchObject({
       code: 'CLOUD_RELAY_INVALID_RESPONSE',
     });
 
     const brokenRelay = gateway(discoveryFixture({
-      discoveryError: new RemoteHostError('RELAY_PROTOCOL_ERROR', 'invalid frame'),
+      listError: new RemoteHostError('RELAY_PROTOCOL_ERROR', 'invalid frame'),
     }));
     await expect(brokenRelay.discoverTools()).rejects.toMatchObject({
       code: 'RELAY_PROTOCOL_ERROR',
     });
   });
 
-  it('does not reuse a Host/tool id from a previous run after Host changes', async () => {
-    const firstAccess = makeAccess('host-a');
-    const secondAccess = makeAccess('host-b');
-    const entry = {
-      discoverSingleHost: jest.fn()
-        .mockResolvedValueOnce(firstAccess)
-        .mockResolvedValueOnce(firstAccess)
-        .mockResolvedValue(secondAccess),
-      assertCurrentAccess: jest.fn((seen: CloudRelayAccess) => {
-        if (seen !== firstAccess && seen !== secondAccess) {
-          throw new RemoteHostError('CLOUD_RELAY_SESSION_REJECTED', 'stale');
-        }
-      }),
-      reset: jest.fn(),
-    };
-    const fixture = discoveryFixture();
-    const firstRun = new LocalAgentToolGateway({
-      local: localGateway(),
-      paired: pairedGateway(),
-      entry,
-      cloudContext: cloudContext({ accountId: 'account-a', explicitlySignedOut: false }),
-      json: fixture.json as unknown as typeof requestCloudRelayJson,
-      sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+  it('binds same-named tools to the selected Host and fails closed after it disappears', async () => {
+    const mutableHostA = { ...hostA };
+    const fixture = discoveryFixture({
+      hosts: [
+        { host: mutableHostA, tools: [cloudTool] },
+        { host: hostB, tools: [cloudToolB] },
+      ],
     });
+    const firstRun = gateway(fixture, { selectionText: '用 MacBook Pro 搜索' });
     await expect(firstRun.discoverTools()).resolves.toMatchObject({
-      tools: [localTool, expect.objectContaining({ name: cloudTool.name })],
+      tools: [localTool, expect.objectContaining({ name: sharedToolName })],
+    });
+    await firstRun.callTool({
+      callId: 'call-a',
+      name: sharedToolName,
+      arguments: '{"query":"a"}',
+    });
+    expect(fixture.sse.mock.calls[0][2]).toMatchObject({
+      body: { toolId: cloudTool.id },
     });
 
-    const secondRun = new LocalAgentToolGateway({
+    const secondRun = gateway(fixture, { selectionText: 'Office PC 上搜索' });
+    await expect(secondRun.discoverTools()).resolves.toMatchObject({
+      tools: [localTool, expect.objectContaining({ name: sharedToolName })],
+    });
+    await secondRun.callTool({
+      callId: 'call-b',
+      name: sharedToolName,
+      arguments: '{"query":"b"}',
+    });
+    expect(fixture.sse.mock.calls[1][2]).toMatchObject({
+      body: { toolId: cloudToolB.id },
+    });
+
+    mutableHostA.availability = 'offline';
+    await expect(firstRun.callTool({
+      callId: 'call-stale',
+      name: sharedToolName,
+      arguments: '{}',
+    })).rejects.toMatchObject({ code: 'CLOUD_RELAY_HOST_OFFLINE' });
+  });
+});
+
+describe('Cloud Local Agent authority changes', () => {
+  it('stops a run when the selected Host loses its tool grant', async () => {
+    const setup: HostSetup = { host: hostA, tools: [cloudTool] };
+    const fixture = discoveryFixture({ hosts: [setup] });
+    const selected = gateway(fixture);
+    await expect(selected.discoverTools()).resolves.toMatchObject({
+      tools: [localTool, expect.objectContaining({ name: sharedToolName })],
+    });
+    await expect(selected.callTool({
+      callId: 'call-allowed',
+      name: sharedToolName,
+      arguments: '{}',
+    })).resolves.toEqual({ content: 'cloud-result-host-a' });
+
+    setup.scopes = ['tools:read'];
+    await expect(selected.callTool({
+      callId: 'call-degraded',
+      name: sharedToolName,
+      arguments: '{}',
+    })).rejects.toMatchObject({ code: 'CLOUD_TOOL_GRANT_REQUIRED' });
+  });
+
+  it('stops a run when the Cloud account switches', async () => {
+    const fixture = discoveryFixture();
+    let context: CloudToolAccountContext = {
+      accountId: 'account-a',
+      explicitlySignedOut: false,
+    };
+    const selected = new LocalAgentToolGateway({
       local: localGateway(),
       paired: pairedGateway(),
-      entry,
-      cloudContext: cloudContext({ accountId: 'account-a', explicitlySignedOut: false }),
+      entry: fixture.entry,
+      cloudContext: () => context,
       json: fixture.json as unknown as typeof requestCloudRelayJson,
       sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
     });
-    await expect(secondRun.discoverTools()).resolves.toMatchObject({
-      tools: [localTool, expect.objectContaining({ name: cloudTool.name })],
+    await expect(selected.discoverTools()).resolves.toMatchObject({
+      tools: [localTool, expect.objectContaining({ name: sharedToolName })],
     });
-    await expect(firstRun.callTool({
-      callId: 'call-stale',
-      name: cloudTool.name,
+
+    context = { accountId: 'account-b', explicitlySignedOut: false };
+    await expect(selected.callTool({
+      callId: 'call-switched',
+      name: sharedToolName,
       arguments: '{}',
     })).rejects.toMatchObject({ code: 'CLOUD_TOOL_HOST_CHANGED' });
   });
 });
 
 describe('Cloud Local Agent joint entry', () => {
+  it('asks with real candidates, then binds the user-selected Host on the next turn', async () => {
+    const fixture = discoveryFixture({
+      hosts: [
+        { host: hostA, tools: [cloudTool] },
+        { host: hostB, tools: [cloudToolB] },
+      ],
+    });
+
+    const clarificationModel = jest.fn(async () =>
+      modelStream([{ type: 'finish', reason: 'stop' }]));
+    const clarification = await drain(await new MobileAgentLoop(
+      gateway(fixture),
+    ).run(
+      [{ role: 'user', content: '帮我找一下资料' }],
+      clarificationModel,
+    ));
+    expect(clarificationModel).not.toHaveBeenCalled();
+    expect(fixture.sse).not.toHaveBeenCalled();
+    expect(clarification).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'notice', code: 'cloud-tools-host-ambiguous' }),
+      expect.objectContaining({
+        type: 'text-delta',
+        delta: expect.stringContaining('MacBook Pro'),
+      }),
+      expect.objectContaining({
+        type: 'text-delta',
+        delta: expect.stringContaining('Office PC'),
+      }),
+      expect.objectContaining({ type: 'text-delta', delta: expect.stringContaining('Host ID') }),
+      expect.objectContaining({ type: 'finish', reason: 'stop' }),
+    ]));
+
+    const selected = gateway(fixture, { selectionText: '用 Office PC 搜索' });
+    const modelCall = jest.fn()
+      .mockResolvedValueOnce(modelStream([
+        {
+          type: 'tool-call',
+          callId: 'call-selected',
+          name: sharedToolName,
+          arguments: '{"query":"selected"}',
+        },
+        { type: 'finish', reason: 'tool_calls' },
+      ]))
+      .mockResolvedValueOnce(modelStream([
+        { type: 'text-delta', delta: 'done' },
+        { type: 'finish', reason: 'stop' },
+      ]));
+    const events = await drain(await new MobileAgentLoop(selected).run(
+      [{ role: 'user', content: '用 Office PC 搜索' }],
+      modelCall,
+    ));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'tool-result',
+        name: sharedToolName,
+        content: 'cloud-result-host-b',
+      }),
+    ]));
+    expect(fixture.sse.mock.calls[0][2]).toMatchObject({
+      body: { toolId: cloudToolB.id, args: { query: 'selected' } },
+    });
+  });
+
+  it('routes a same-named tool approval to the selected Host only', async () => {
+    const sse = jest.fn();
+    const fixture = discoveryFixture({
+      hosts: [
+        { host: hostA, tools: [cloudTool] },
+        { host: hostB, tools: [cloudToolB] },
+      ],
+      sse,
+    });
+    sse.mockImplementation(<T>(
+      target: CloudRelayTransportTarget,
+      _tickets: CloudRelayTicketProvider,
+      _request: PostSseRequest<T>,
+    ): PostSseSession<T> => {
+      const setup = fixture.setups.find(item => item.host.relayRoom === target.room);
+      const tool = (setup?.tools ?? [cloudTool])[0];
+      return {
+        events: (async function* () {
+          yield {
+            type: 'tool:approval_required',
+            invocationId: 'inv-b',
+            message: 'Run Desktop tool?',
+            scope: 'terminal',
+          } as unknown as T;
+          yield {
+            type: 'tool:complete',
+            invocation: {
+              invocationId: 'inv-b',
+              toolId: tool.id,
+              status: 'awaiting_approval',
+              approval: { message: 'Run Desktop tool?', scope: 'terminal' },
+            },
+          } as unknown as T;
+        })(),
+        abort: jest.fn(),
+      };
+    });
+
+    const selected = gateway(fixture, { selectionText: 'Office PC' });
+    const modelCall = jest.fn()
+      .mockResolvedValueOnce(modelStream([
+        {
+          type: 'tool-call',
+          callId: 'call-b-approval',
+          name: sharedToolName,
+          arguments: '{"query":"b"}',
+        },
+        { type: 'finish', reason: 'tool_calls' },
+      ]))
+      .mockResolvedValueOnce(modelStream([
+        { type: 'text-delta', delta: 'approved' },
+        { type: 'finish', reason: 'stop' },
+      ]));
+    const events = await drain(await new MobileAgentLoop(selected).run(
+      [{ role: 'user', content: 'Office PC 搜索' }],
+      modelCall,
+      { requestApproval: jest.fn(async () => 'approved' as const) },
+    ));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'tool-result',
+        content: 'approved-result-host-b',
+      }),
+    ]));
+    const approval = fixture.json.mock.calls.find(
+      ([, , request]) => request.path.endsWith('/approval'),
+    );
+    expect(approval?.[0]).toMatchObject({ room: hostB.relayRoom });
+    expect(approval?.[2]).toMatchObject({
+      body: { toolId: cloudToolB.id, args: { query: 'b' } },
+    });
+  });
+
+  it('uses Host ID to disambiguate identical device names', async () => {
+    const sameNameA = makeHost('host-aaaa', 'Mira Desktop');
+    const sameNameB = makeHost('host-bbbb', 'Mira Desktop');
+    const fixture = discoveryFixture({
+      hosts: [
+        { host: sameNameA, tools: [cloudTool] },
+        { host: sameNameB, tools: [cloudToolB] },
+      ],
+    });
+
+    const ambiguous = await gateway(fixture).discoverTools();
+    expect(ambiguous.hostCandidates?.map(candidate => candidate.hostId))
+      .toEqual(['host-aaaa', 'host-bbbb']);
+
+    const selected = gateway(fixture, { selectionText: '使用 host-bbbb' });
+    await expect(selected.discoverTools()).resolves.toMatchObject({
+      tools: [localTool, expect.objectContaining({ name: sharedToolName })],
+    });
+    await selected.callTool({
+      callId: 'call-by-id',
+      name: sharedToolName,
+      arguments: '{}',
+    });
+    expect(fixture.sse.mock.calls[0][2]).toMatchObject({
+      body: { toolId: cloudToolB.id },
+    });
+  });
+
   it('runs MobileAgentLoop through the real Cloud adapter and existing RemoteToolGatewayClient', async () => {
     const fixture = discoveryFixture();
     const selected = gateway(fixture);
@@ -415,14 +710,14 @@ describe('Cloud Local Agent joint entry', () => {
       expect.objectContaining({
         type: 'tool-result',
         name: cloudTool.name,
-        content: 'cloud-result',
+        content: 'cloud-result-host-a',
       }),
     ]));
     const secondRoundMessages = modelCall.mock.calls[1][0] as OpenAiMessage[];
     expect(secondRoundMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: 'tool',
-        content: 'cloud-result',
+        content: 'cloud-result-host-a',
         tool_call_id: 'call-1',
       }),
     ]));
@@ -495,7 +790,7 @@ describe('Cloud Local Agent joint entry', () => {
       expect.objectContaining({
         type: 'tool-result',
         name: cloudTool.name,
-        content: 'approved-result',
+        content: 'approved-result-host-a',
       }),
     ]));
     const approvalCalls = fixture.json.mock.calls.filter(

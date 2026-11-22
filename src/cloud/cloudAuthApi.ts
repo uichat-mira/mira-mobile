@@ -92,6 +92,11 @@ export interface CloudRelayApiLike {
     sessionToken: string,
     room: string,
   ): Promise<IssuedRelayTransportTicket>;
+  /**
+   * Optional best-effort device-label join for Host candidates. Host discovery
+   * must still work when this read fails or is not implemented by a mock.
+   */
+  listDevices?(sessionToken: string): Promise<MiraDevice[]>;
 }
 
 export interface OAuthCodeExchangeRequest {

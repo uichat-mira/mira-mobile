@@ -96,15 +96,42 @@ operation, and Relay tickets only admit transport; they are never sent as Host
 business credentials. No `mira_device_*` credential or Host Provider key is
 sent on this path.
 
-Discovery is fail-closed for tool execution. Exactly one available
-account-owned Host is required. Zero/offline Hosts yield a
-`cloud-tools-unavailable` mobile notice, more than one online Host yields
-`cloud-tools-host-ambiguous` without picking one (reserved for MOB-088), and a
-Host without the required tool scope/route yields
-`cloud-tools-unauthorized`. In all three cases Mobile keeps its compiled-in
-local tools and does not invoke remote tool state. An explicitly signed-out
-Cloud account keeps the previous Local + paired Host toolset; a Cloud failure
-never silently downgrades to the paired Tailscale credential.
+## MOB-088 — Multi-Host selection for the Mobile Local Agent
+
+MOB-088 keeps the MOB-087 Cloud Tool Gateway and adds target selection. Cloud
+Remote Chat still uses its existing deterministic most-recent-Host binding; the
+Local Agent no longer inherits that guess.
+
+- The Local Agent reads the account Host directory from `GET /v1/hosts` and
+  uses the server-owned Host id, `displayName` (or the real `deviceName` device
+  label when available) and availability. Relay rooms, tickets and credentials
+  are never included in candidate data.
+- Presence is only a lease. When more than one Host is online, Mobile probes the
+  real `/remote/v1/manifest` and `/remote/v1/tools` through each candidate's
+  Relay binding. A Host without `tools:read` + `tools:invoke` is not offered as
+  an executable target.
+- One usable Host is adopted automatically. If the current user turn uniquely
+  names a real Host (device name or Host id), that Host is adopted even when it
+  is older than another online Host. If multiple usable Hosts remain, the Agent
+  emits a bounded chat clarification listing only the real candidates and waits
+  for the user's next turn; it never silently picks the most recently active
+  machine and never fabricates a device.
+- Once selected, the run is bound to `accountId + hostId + Cloud Session`.
+  Tool list, invocation, approval and cancel all go through the same Host's
+  MOB-087 gateway. Switching sessions or Hosts builds a fresh gateway, so two
+  Hosts with identical tool aliases cannot exchange tool ids or pending
+  approvals.
+- A selected Host that disappears, goes offline, loses a required scope, or is
+  replaced by an account/Host change fails closed. Mobile reports the reason and
+  does not fall back to another Host, replay a side-effecting call, or downgrade
+  a signed-in Cloud session to the paired Tailscale credential.
+
+Zero/offline Hosts yield `cloud-tools-unavailable`; a Host without the required
+tool scope/route yields `cloud-tools-unauthorized`; multiple usable Hosts yield
+`cloud-tools-host-ambiguous` plus the real candidate list. In each case Mobile
+keeps its compiled-in local tools and performs no remote tool mutation. An
+explicitly signed-out Cloud account keeps the previous Local + paired Host
+toolset.
 
 Each Local Agent run gets a fresh gateway bound to its Cloud account, Host and
 Relay access. Account logout/switch, Host replacement, authorization loss and

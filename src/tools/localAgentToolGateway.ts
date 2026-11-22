@@ -2,6 +2,7 @@ import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import {
   cloudRelayEntry,
   type CloudRelayEntry,
+  type CloudRelayHostCandidate,
 } from '../cloud/cloudRelayEntry';
 import {
   openCloudRelayPostSse,
@@ -20,6 +21,7 @@ import {
   type ToolApprovalResolution,
   type ToolCallRequest,
   type ToolCallResult,
+  type ToolDiscoveryHostCandidate,
   type ToolDiscoveryNoticeCode,
   type ToolDiscoveryResult,
   type ToolGatewayClient,
@@ -35,7 +37,7 @@ export interface CloudToolAccountContext {
 
 type CloudToolEntry = Pick<
   CloudRelayEntry,
-  'discoverSingleHost' | 'assertCurrentAccess' | 'reset'
+  'listHostCandidates' | 'discoverHost' | 'assertCurrentAccess'
 >;
 
 export interface LocalAgentToolGatewayOptions {
@@ -46,7 +48,69 @@ export interface LocalAgentToolGatewayOptions {
   cloudContext?: () => CloudToolAccountContext;
   json?: typeof requestCloudRelayJson;
   sse?: typeof openCloudRelayPostSse;
+  /**
+   * The current user turn only. It lets the Mobile side bind an explicitly
+   * named Host; absence is never an instruction to pick a recent one.
+   */
+  selectionText?: string;
 }
+
+type ProbedHost =
+  | { status: 'usable'; candidate: CloudRelayHostCandidate; toolNames: string[] }
+  | { status: 'unauthorized'; candidate: CloudRelayHostCandidate }
+  | { status: 'unavailable'; candidate: CloudRelayHostCandidate };
+
+const normalizeMatchText = (value: string): string =>
+  value.replace(/\s+/gu, ' ').trim().toLowerCase();
+
+const sortHostCandidates = (
+  hosts: readonly CloudRelayHostCandidate[],
+): CloudRelayHostCandidate[] =>
+  [...hosts].sort((left, right) => {
+    const byName = (left.name ?? '').localeCompare(right.name ?? '');
+    return byName !== 0 ? byName : left.hostId.localeCompare(right.hostId);
+  });
+
+const hostMentionedIn = (
+  candidate: CloudRelayHostCandidate,
+  text: string,
+): boolean => {
+  const name = candidate.name ? normalizeMatchText(candidate.name) : '';
+  // Very short names would match ordinary prose and could silently bind the
+  // wrong Host; require an id instead in that case.
+  if (name.length >= 2 && text.includes(name)) return true;
+  const id = candidate.hostId.toLowerCase();
+  if (id.length >= 4 && text.includes(id)) return true;
+  const shortId = id.slice(0, 12);
+  return shortId.length >= 4 && text.includes(shortId);
+};
+
+const candidateProjection = (
+  probes: readonly Extract<ProbedHost, { status: 'usable' }>[],
+): ToolDiscoveryHostCandidate[] =>
+  sortHostCandidates(probes.map(probe => probe.candidate)).map(candidate => {
+    const probe = probes.find(item => item.candidate.hostId === candidate.hostId);
+    return {
+      hostId: candidate.hostId,
+      name: candidate.name,
+      toolNames: probe?.toolNames ?? [],
+    };
+  });
+
+const probeFailure = (
+  error: unknown,
+): 'unauthorized' | 'unavailable' | null => {
+  if (!(error instanceof RemoteHostError)) return null;
+  // Account/Host identity drift is never a candidate-level permission result.
+  if (error.code === 'CLOUD_TOOL_HOST_CHANGED') return null;
+  if (UNAUTHORIZED_CODES.has(error.code) || error.status === 403) {
+    return 'unauthorized';
+  }
+  if (UNAVAILABLE_CODES.has(error.code) || (error.status ?? 0) >= 500) {
+    return 'unavailable';
+  }
+  return null;
+};
 
 const currentCloudContext = (): CloudToolAccountContext => {
   const state = useCloudAccountStore.getState();
@@ -127,6 +191,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly cloudContext: () => CloudToolAccountContext;
   private readonly json: typeof requestCloudRelayJson;
   private readonly sse: typeof openCloudRelayPostSse;
+  private readonly selectionText: string;
   private active: ToolGatewayClient | null = null;
   private pendingDiscovery: Promise<ToolDiscoveryResult> | null = null;
 
@@ -137,6 +202,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     this.cloudContext = options.cloudContext ?? currentCloudContext;
     this.json = options.json ?? requestCloudRelayJson;
     this.sse = options.sse ?? openCloudRelayPostSse;
+    this.selectionText = normalizeMatchText(options.selectionText ?? '');
   }
 
   async listTools(): Promise<readonly ToolManifest[]> {
@@ -207,45 +273,180 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
 
     const accountId = context.accountId;
     try {
-      const access = await this.entry.discoverSingleHost();
-      if (access.accountId !== accountId) {
-        throw new RemoteHostError(
-          'CLOUD_TOOL_HOST_CHANGED',
-          'The authorized Cloud Host changed during the Agent run',
-          403,
-        );
-      }
-      const remote = new RemoteToolGatewayClient(
-        new CloudToolHostClient(
-          accountId,
-          this.entry,
-          this.json,
-          this.sse,
-          changedAccountId => {
-            const current = this.cloudContext();
-            return (
-              !current.explicitlySignedOut &&
-              current.accountId === changedAccountId
-            );
-          },
-        ),
-      );
-      const composite = new CompositeToolGatewayClient(this.local, remote);
-      const discovery = await composite.discoverTools();
-      this.active = composite;
-      return discovery;
+      return await this.discoverCloudHost(accountId);
     } catch (error) {
       const notice = cloudNoticeFor(error);
       if (!notice) throw error;
-      this.active = this.local;
-      return {
-        tools: await this.local.listTools(),
-        notices: [{ code: notice }],
-      };
+      return this.localOnly(notice);
     }
+  }
+
+  private async discoverCloudHost(accountId: string): Promise<ToolDiscoveryResult> {
+    const directory = await this.entry.listHostCandidates();
+    if (directory.accountId !== accountId) throw hostChanged();
+    if (directory.hosts.length === 0) {
+      return this.localOnly('cloud-tools-unavailable');
+    }
+
+    const mentioned = this.selectionText
+      ? directory.hosts.filter(candidate =>
+          hostMentionedIn(candidate, this.selectionText))
+      : [];
+    if (mentioned.length === 1) {
+      return this.resolveMentionedHost(accountId, mentioned[0]);
+    }
+
+    const online = sortHostCandidates(
+      directory.hosts.filter(candidate => candidate.availability === 'available'),
+    );
+    if (online.length === 0) {
+      return this.localOnly('cloud-tools-unavailable');
+    }
+    if (online.length === 1) {
+      return this.resolveMentionedHost(accountId, online[0]);
+    }
+    if (mentioned.length > 1) {
+      // The user text points at more than one real Host; do not guess.
+      const probes = await Promise.all(
+        online.map(candidate => this.probeHost(accountId, candidate)),
+      );
+      return this.ambiguousHosts(probes);
+    }
+
+    const probes = await Promise.all(
+      online.map(candidate => this.probeHost(accountId, candidate)),
+    );
+    const usable = probes.filter(
+      (probe): probe is Extract<ProbedHost, { status: 'usable' }> =>
+        probe.status === 'usable',
+    );
+    if (usable.length === 1) {
+      return this.bindHost(accountId, usable[0].candidate.hostId);
+    }
+    if (usable.length > 1) {
+      return this.ambiguousHosts(usable);
+    }
+    return this.localOnly(
+      probes.every(probe => probe.status === 'unauthorized')
+        ? 'cloud-tools-unauthorized'
+        : 'cloud-tools-unavailable',
+    );
+  }
+
+  private async resolveMentionedHost(
+    accountId: string,
+    candidate: CloudRelayHostCandidate,
+  ): Promise<ToolDiscoveryResult> {
+    if (candidate.availability !== 'available') {
+      return this.localOnly('cloud-tools-unavailable');
+    }
+    const probe = await this.probeHost(accountId, candidate);
+    if (probe.status === 'usable') {
+      return this.bindHost(accountId, candidate.hostId);
+    }
+    return this.localOnly(
+      probe.status === 'unauthorized'
+        ? 'cloud-tools-unauthorized'
+        : 'cloud-tools-unavailable',
+    );
+  }
+
+  private async probeHost(
+    accountId: string,
+    candidate: CloudRelayHostCandidate,
+  ): Promise<ProbedHost> {
+    try {
+      const tools = await this.remoteGateway(accountId, candidate.hostId).listTools();
+      return {
+        status: 'usable',
+        candidate,
+        toolNames: tools.map(tool => tool.name),
+      };
+    } catch (error) {
+      const status = probeFailure(error);
+      if (!status) throw error;
+      return { status, candidate };
+    }
+  }
+
+  private async ambiguousHosts(
+    probes: readonly ProbedHost[],
+  ): Promise<ToolDiscoveryResult> {
+    const usable = probes.filter(
+      (probe): probe is Extract<ProbedHost, { status: 'usable' }> =>
+        probe.status === 'usable',
+    );
+    if (usable.length < 2) {
+      return this.localOnly(
+        probes.length > 0 && probes.every(probe => probe.status === 'unauthorized')
+          ? 'cloud-tools-unauthorized'
+          : 'cloud-tools-unavailable',
+      );
+    }
+    const result = await this.localOnly('cloud-tools-host-ambiguous');
+    return {
+      ...result,
+      hostCandidates: candidateProjection(usable),
+    };
+  }
+
+  private async bindHost(
+    accountId: string,
+    hostId: string,
+  ): Promise<ToolDiscoveryResult> {
+    const access = await this.entry.discoverHost(hostId);
+    if (access.accountId !== accountId || access.target.hostId !== hostId) {
+      throw hostChanged();
+    }
+    this.entry.assertCurrentAccess(access);
+    const composite = new CompositeToolGatewayClient(
+      this.local,
+      this.remoteGateway(accountId, hostId),
+    );
+    const discovery = await composite.discoverTools();
+    this.active = composite;
+    return discovery;
+  }
+
+  private remoteGateway(accountId: string, hostId: string): RemoteToolGatewayClient {
+    return new RemoteToolGatewayClient(
+      new CloudToolHostClient(
+        accountId,
+        hostId,
+        this.entry,
+        this.json,
+        this.sse,
+        changedAccountId => {
+          const current = this.cloudContext();
+          return (
+            !current.explicitlySignedOut &&
+            current.accountId === changedAccountId
+          );
+        },
+      ),
+    );
+  }
+
+  private async localOnly(
+    code: ToolDiscoveryNoticeCode,
+  ): Promise<ToolDiscoveryResult> {
+    this.active = this.local;
+    return {
+      tools: await this.local.listTools(),
+      notices: [{ code }],
+    };
   }
 }
 
+const hostChanged = (): RemoteHostError =>
+  new RemoteHostError(
+    'CLOUD_TOOL_HOST_CHANGED',
+    'The authorized Cloud Host changed during the Agent run',
+    403,
+  );
+
 /** A fresh gateway per Local Agent run keeps Cloud authority and tool IDs scoped. */
-export const createLocalAgentToolGateway = (): ToolGatewayClient =>
-  new LocalAgentToolGateway();
+export const createLocalAgentToolGateway = (
+  selectionText?: string,
+): ToolGatewayClient =>
+  new LocalAgentToolGateway({ selectionText });

@@ -44,9 +44,25 @@ export interface ToolDiscoveryNotice {
   code: ToolDiscoveryNoticeCode;
 }
 
+/**
+ * Real, server-owned Cloud Desktop Host identities exposed to the Local Agent
+ * only when a tool run must ask the user to choose a target. Transport rooms,
+ * tickets and credentials are never part of this projection.
+ */
+export interface ToolDiscoveryHostCandidate {
+  hostId: string;
+  name: string | null;
+  toolNames: readonly string[];
+}
+
 export interface ToolDiscoveryResult {
   tools: readonly ToolManifest[];
   notices: readonly ToolDiscoveryNotice[];
+  /**
+   * Present only when multiple usable Hosts remain after real reachability and
+   * grant checks. The Local Agent must ask instead of guessing.
+   */
+  hostCandidates?: readonly ToolDiscoveryHostCandidate[];
 }
 
 export type ToolApprovalResolution =
