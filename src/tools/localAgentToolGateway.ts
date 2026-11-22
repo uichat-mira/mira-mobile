@@ -16,6 +16,7 @@ import { mobileToolGatewayClient } from './mobileToolGatewayClient';
 import { RemoteToolGatewayClient } from './remoteToolGatewayClient';
 import {
   ToolGatewayError,
+  DESKTOP_HOST_DISCOVERY_TOOL,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
   type ToolApprovalResolution,
@@ -53,6 +54,8 @@ export interface LocalAgentToolGatewayOptions {
    * named Host; absence is never an instruction to pick a recent one.
    */
   selectionText?: string;
+  /** The immediately preceding local assistant message, if any. */
+  previousAssistantText?: string;
 }
 
 type ProbedHost =
@@ -83,6 +86,36 @@ const hostMentionedIn = (
   if (id.length >= 4 && text.includes(id)) return true;
   const shortId = id.slice(0, 12);
   return shortId.length >= 4 && text.includes(shortId);
+};
+
+const DESKTOP_HOST_DISCOVERY_MANIFEST: ToolManifest = {
+  name: DESKTOP_HOST_DISCOVERY_TOOL,
+  description: 'Discover authorized Mira Desktop computers when a user task needs tools on a Desktop. Do not call for ordinary chat or phone-only tools. With multiple Desktops, the user chooses in this chat before any remote execution.',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+};
+
+// Numbered selection only refers to a list in the immediately previous genuine
+// assistant response. Resolve its displayed Host ID against today's account
+// directory, never by a freshly sorted index or by a stored tool credential.
+const previousHostChoice = (
+  input: string,
+  previousAssistantText: string,
+  hosts: readonly CloudRelayHostCandidate[],
+): CloudRelayHostCandidate | null => {
+  if (!/^[1-9][0-9]?$/u.test(input)) return null;
+  if (!previousAssistantText.startsWith(
+    '检测到同一 Mira Cloud 账号下有多台可用的 Mira Desktop Host。请回复要使用哪一台：',
+  ) || !previousAssistantText.includes(
+    '请直接回复设备名称或 Host ID；确认后我会在下一轮使用该设备的工具。',
+  )) return null;
+  const line = previousAssistantText.split('\n').find(
+    item => item.startsWith(input + '. '),
+  );
+  const hostPrefix = line?.match(/（Host ID：([^；]+)；在线；/u)?.[1];
+  if (!hostPrefix) return null;
+  const matched = hosts.filter(host => host.hostId === hostPrefix ||
+    host.hostId.startsWith(hostPrefix));
+  return matched.length === 1 ? matched[0] : null;
 };
 
 const candidateProjection = (
@@ -192,6 +225,8 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly json: typeof requestCloudRelayJson;
   private readonly sse: typeof openCloudRelayPostSse;
   private readonly selectionText: string;
+  private readonly previousAssistantText: string;
+  private pendingHostSelectionAccount: string | null = null;
   private active: ToolGatewayClient | null = null;
   private pendingDiscovery: Promise<ToolDiscoveryResult> | null = null;
 
@@ -203,6 +238,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     this.json = options.json ?? requestCloudRelayJson;
     this.sse = options.sse ?? openCloudRelayPostSse;
     this.selectionText = normalizeMatchText(options.selectionText ?? '');
+    this.previousAssistantText = options.previousAssistantText ?? '';
   }
 
   async listTools(): Promise<readonly ToolManifest[]> {
@@ -224,6 +260,36 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     request: ToolCallRequest,
     options?: { signal?: AbortSignal },
   ): Promise<ToolCallResult> {
+    if (request.name === DESKTOP_HOST_DISCOVERY_TOOL) {
+      const current = this.cloudContext();
+      if (!this.pendingHostSelectionAccount ||
+          current.cloudSessionInvalid || current.explicitlySignedOut ||
+          current.accountId !== this.pendingHostSelectionAccount) {
+        throw hostChanged();
+      }
+      // A model-discovered Host list is a clarification, not permission to run
+      // any Desktop mutation. Confirm the Cloud account still owns its directory.
+      const directory = await this.entry.listHostCandidates();
+      if (directory.accountId !== this.pendingHostSelectionAccount) {
+        throw hostChanged();
+      }
+      const probes = await Promise.all(directory.hosts
+        .filter(candidate => candidate.availability === 'available')
+        .map(candidate => this.probeHost(directory.accountId, candidate)));
+      const usable = probes.filter(
+        (probe): probe is Extract<ProbedHost, { status: 'usable' }> =>
+          probe.status === 'usable',
+      );
+      if (usable.length < 2) {
+        throw new ToolGatewayError('CLOUD_HOST_SELECTION_STALE',
+          'The authorized Desktop selection changed; retry this turn');
+      }
+      return {
+        content: 'Desktop candidates verified',
+        hostSelectionRequired: true,
+        hostCandidates: candidateProjection(usable),
+      };
+    }
     return this.requireActive().callTool(request, options);
   }
 
@@ -288,7 +354,12 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       return this.localOnly('cloud-tools-unavailable');
     }
 
-    const mentioned = this.selectionText
+    const numbered = previousHostChoice(
+      this.selectionText,
+      this.previousAssistantText,
+      directory.hosts,
+    );
+    const mentioned = numbered ? [numbered] : this.selectionText
       ? directory.hosts.filter(candidate =>
           hostMentionedIn(candidate, this.selectionText))
       : [];
@@ -383,9 +454,16 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
           : 'cloud-tools-unavailable',
       );
     }
-    const result = await this.localOnly('cloud-tools-host-ambiguous');
+    this.pendingHostSelectionAccount = this.cloudContext().accountId;
+    this.active = this.local;
+    const localTools = await this.local.listTools();
+    if (localTools.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+      throw new ToolGatewayError('TOOL_NAME_COLLISION',
+        'Desktop discovery tool collides with an existing local tool');
+    }
     return {
-      ...result,
+      tools: [...localTools, DESKTOP_HOST_DISCOVERY_MANIFEST],
+      notices: [],
       hostCandidates: candidateProjection(usable),
     };
   }
@@ -448,5 +526,6 @@ const hostChanged = (): RemoteHostError =>
 /** A fresh gateway per Local Agent run keeps Cloud authority and tool IDs scoped. */
 export const createLocalAgentToolGateway = (
   selectionText?: string,
+  previousAssistantText?: string,
 ): ToolGatewayClient =>
-  new LocalAgentToolGateway({ selectionText });
+  new LocalAgentToolGateway({ selectionText, previousAssistantText });

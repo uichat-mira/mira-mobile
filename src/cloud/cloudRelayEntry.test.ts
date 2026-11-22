@@ -175,8 +175,8 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     expect(relayEntry.assertCurrentAccess.bind(relayEntry, first)).not.toThrow();
   });
 
-  it('joins a real device label only when the Host has no display name', async () => {
-    const unnamed = { ...host, id: 'host-unnamed', displayName: null };
+  it('prefers a real device name over the generic Host client name', async () => {
+    const unnamed = { ...host, id: 'host-unnamed', displayName: 'Mira Desktop' };
     const relayEntry = entry(
       await storedSession(),
       api({

@@ -270,7 +270,9 @@ export class CloudRelayEntry {
       hosts: hosts.map(host => ({
         hostId: host.id,
         deviceId: host.deviceId,
-        name: host.displayName ?? deviceNames.get(host.deviceId) ?? null,
+        // Cloud Host displayName is usually the generic client name. The
+        // device directory carries the user-identifiable machine label.
+        name: deviceNames.get(host.deviceId) ?? host.displayName ?? null,
         availability: host.availability,
         clientVersion: host.clientVersion,
         lastAdvertisedAt: host.lastAdvertisedAt,

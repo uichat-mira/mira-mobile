@@ -16,6 +16,7 @@ import {
   LocalAgentToolGateway,
   type CloudToolAccountContext,
 } from './localAgentToolGateway';
+import { DESKTOP_HOST_DISCOVERY_TOOL } from './toolGatewayClient';
 import type {
   ToolGatewayClient,
   ToolManifest,
@@ -240,6 +241,7 @@ const gateway = (
     paired?: ToolGatewayClient;
     context?: CloudToolAccountContext;
     selectionText?: string;
+    previousAssistantText?: string;
   } = {},
 ) => new LocalAgentToolGateway({
   local: options.local ?? localGateway(),
@@ -252,6 +254,8 @@ const gateway = (
   json: fixture.json as unknown as typeof requestCloudRelayJson,
   sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
   ...(options.selectionText ? { selectionText: options.selectionText } : {}),
+  ...(options.previousAssistantText
+    ? { previousAssistantText: options.previousAssistantText } : {}),
 });
 
 const asyncStream = <T>(events: T[]): AsyncIterable<T> =>
@@ -350,8 +354,10 @@ describe('LocalAgentToolGateway', () => {
       hosts: [{ host: hostA }, { host: hostB }],
     }));
     await expect(ambiguous.discoverTools()).resolves.toMatchObject({
-      tools: [localTool],
-      notices: [{ code: 'cloud-tools-host-ambiguous' }],
+      tools: [localTool, expect.objectContaining({
+        name: DESKTOP_HOST_DISCOVERY_TOOL,
+      })],
+      notices: [],
       hostCandidates: [
         { hostId: 'host-a', name: 'MacBook Pro', toolNames: [cloudTool.name] },
         { hostId: 'host-b', name: 'Office PC', toolNames: [cloudTool.name] },
@@ -528,17 +534,20 @@ describe('Cloud Local Agent joint entry', () => {
     });
 
     const clarificationModel = jest.fn(async () =>
-      modelStream([{ type: 'finish', reason: 'stop' }]));
+      modelStream([
+        { type: 'tool-call', callId: 'discover-hosts',
+          name: DESKTOP_HOST_DISCOVERY_TOOL, arguments: '{}' },
+        { type: 'finish', reason: 'tool_calls' },
+      ]));
     const clarification = await drain(await new MobileAgentLoop(
       gateway(fixture),
     ).run(
       [{ role: 'user', content: '帮我找一下资料' }],
       clarificationModel,
     ));
-    expect(clarificationModel).not.toHaveBeenCalled();
+    expect(clarificationModel).toHaveBeenCalledTimes(1);
     expect(fixture.sse).not.toHaveBeenCalled();
     expect(clarification).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'notice', code: 'cloud-tools-host-ambiguous' }),
       expect.objectContaining({
         type: 'text-delta',
         delta: expect.stringContaining('MacBook Pro'),
@@ -580,6 +589,95 @@ describe('Cloud Local Agent joint entry', () => {
     expect(fixture.sse.mock.calls[0][2]).toMatchObject({
       body: { toolId: cloudToolB.id, args: { query: 'selected' } },
     });
+  });
+
+  it('lets ordinary model and phone-only tool turns work with two online Desktops', async () => {
+    const fixture = discoveryFixture({
+      hosts: [{ host: hostA }, { host: hostB }],
+    });
+    const offered: string[][] = [];
+    const modelCall = jest.fn(async (
+      _messages: readonly OpenAiMessage[], tools: readonly OpenAiTool[],
+    ) => {
+      offered.push(tools.map(tool => tool.function.name));
+      return modelStream([
+        { type: 'text-delta', delta: '你好，有什么可以帮你？' },
+        { type: 'finish', reason: 'stop' },
+      ]);
+    });
+    const events = await drain(await new MobileAgentLoop(gateway(fixture)).run(
+      [{ role: 'user', content: '你好' }], modelCall,
+    ));
+    expect(modelCall).toHaveBeenCalledTimes(1);
+    expect(offered[0]).toEqual([localTool.name, DESKTOP_HOST_DISCOVERY_TOOL]);
+    expect(events).toContainEqual({
+      type: 'text-delta', delta: '你好，有什么可以帮你？',
+    });
+    expect(events.some(event => event.type === 'text-delta' &&
+      event.delta.includes('请回复要使用哪一台'))).toBe(false);
+    expect(fixture.sse).not.toHaveBeenCalled();
+
+    const weather = jest.fn()
+      .mockResolvedValueOnce(modelStream([
+        { type: 'tool-call', callId: 'weather-call',
+          name: localTool.name, arguments: '{}' },
+        { type: 'finish', reason: 'tool_calls' },
+      ]))
+      .mockResolvedValueOnce(modelStream([
+        { type: 'text-delta', delta: '当前天气已查询' },
+        { type: 'finish', reason: 'stop' },
+      ]));
+    const weatherEvents = await drain(await new MobileAgentLoop(gateway(fixture)).run(
+      [{ role: 'user', content: '查天气' }], weather,
+    ));
+    expect(weatherEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool-result',
+        name: localTool.name, content: 'local-result' }),
+    ]));
+    expect(fixture.sse).not.toHaveBeenCalled();
+  });
+
+  it('resolves a numbered reply against the previous assistant list, not a new sort', async () => {
+    const fixture = discoveryFixture({
+      hosts: [{ host: hostA, tools: [cloudTool] },
+        { host: hostB, tools: [cloudToolB] }],
+    });
+    const offered = gateway(fixture);
+    const model = jest.fn(async () => modelStream([
+      { type: 'tool-call', callId: 'list-hosts',
+        name: DESKTOP_HOST_DISCOVERY_TOOL, arguments: '{}' },
+      { type: 'finish', reason: 'tool_calls' },
+    ]));
+    const clarification = await drain(await new MobileAgentLoop(offered).run(
+      [{ role: 'user', content: '用电脑搜索' }], model,
+    ));
+    const prompt = clarification.find((event): event is Extract<RuntimeEvent,
+      { type: 'text-delta' }> => event.type === 'text-delta')?.delta ?? '';
+    expect(prompt).toContain('1. MacBook Pro');
+    expect(prompt).toContain('2. Office PC');
+
+    // An unrelated / stale chat must not resolve a bare digit.
+    const unrelated = await gateway(fixture, { selectionText: '2' }).discoverTools();
+    expect(unrelated.tools.map(tool => tool.name)).toContain(DESKTOP_HOST_DISCOVERY_TOOL);
+    const selected = gateway(fixture, {
+      selectionText: '2', previousAssistantText: prompt,
+    });
+    const selection = await selected.discoverTools();
+    expect(selection.tools.map(tool => tool.name)).toContain(sharedToolName);
+    await selected.callTool({
+      callId: 'numbered-call', name: sharedToolName, arguments: '{}',
+    });
+    expect(fixture.sse.mock.calls[0][2]).toMatchObject({
+      body: { toolId: cloudToolB.id },
+    });
+
+    // If the indexed Host disappears, the old index never jumps to Host A.
+    fixture.setups[1].host = { ...fixture.setups[1].host, availability: 'offline' };
+    const offline = await gateway(fixture, {
+      selectionText: '2', previousAssistantText: prompt,
+    }).discoverTools();
+    expect(offline.tools).toEqual([localTool]);
+    expect(offline.notices).toEqual([{ code: 'cloud-tools-unavailable' }]);
   });
 
   it('routes a same-named tool approval to the selected Host only', async () => {

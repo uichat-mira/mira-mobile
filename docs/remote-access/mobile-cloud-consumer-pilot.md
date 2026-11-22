@@ -113,9 +113,13 @@ Local Agent no longer inherits that guess.
 - One usable Host is adopted automatically. If the current user turn uniquely
   names a real Host (device name or Host id), that Host is adopted even when it
   is older than another online Host. If multiple usable Hosts remain, the Agent
-  emits a bounded chat clarification listing only the real candidates and waits
-  for the user's next turn; it never silently picks the most recently active
-  machine and never fabricates a device.
+  offers an Agent-visible Desktop discovery tool, without interrupting ordinary
+  chat or phone-only tasks. Only when the model requests Desktop discovery does
+  it emit a bounded clarification listing the real candidates. The next user
+  turn may name the machine, give its Host ID, or reply with the displayed number;
+  that number resolves against the previous assistant list and is revalidated
+  through the current account's Host directory and Host Grant. It never silently
+  picks the most recently active machine or fabricates a device.
 - Once selected, the run is bound to `accountId + hostId + Cloud Session`.
   Tool list, invocation, approval and cancel all go through the same Host's
   MOB-087 gateway. Switching sessions or Hosts builds a fresh gateway, so two
@@ -127,9 +131,11 @@ Local Agent no longer inherits that guess.
   a signed-in Cloud session to the paired Tailscale credential.
 
 Zero/offline Hosts yield `cloud-tools-unavailable`; a Host without the required
-tool scope/route yields `cloud-tools-unauthorized`; multiple usable Hosts yield
-`cloud-tools-host-ambiguous` plus the real candidate list. In each case Mobile
-keeps its compiled-in local tools and performs no remote tool mutation. An
+tool scope/route yields `cloud-tools-unauthorized`. Multiple usable Hosts
+expose the read-only `mira_desktop_hosts` tool to the model while keeping phone
+local tools available; ordinary chat is not interrupted. When the model requests
+Desktop discovery, the app re-checks current authorization and displays the real
+candidate list in chat, without executing any remote tool mutation. An
 explicitly signed-out Cloud account keeps the previous Local + paired Host
 toolset.
 

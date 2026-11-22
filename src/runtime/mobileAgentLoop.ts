@@ -3,6 +3,7 @@ import type { RuntimeEvent } from './conversationRuntime';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
+  DESKTOP_HOST_DISCOVERY_TOOL,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
   type ToolDiscoveryHostCandidate,
@@ -180,14 +181,6 @@ export class MobileAgentLoop {
           yield { type: 'notice' as const, code: notice.code };
         }
       }
-      if (hostCandidates.length > 1) {
-        yield {
-          type: 'text-delta' as const,
-          delta: hostSelectionPrompt(hostCandidates),
-        };
-        yield { type: 'finish' as const, reason: 'stop' };
-        return;
-      }
       const messages = [...initialMessages];
       let rounds = 0;
       let mailStage: 'none' | 'search' | 'body' = 'none';
@@ -239,6 +232,11 @@ export class MobileAgentLoop {
             pendingCalls.some(call => !activeManifests.some(manifest => manifest.name === call.name)))) {
           throw new ToolGatewayError('MAIL_TOOL_CHAIN_RESTRICTED',
             '邮件数据不能驱动其他工具操作。请另起一轮对话。');
+        }
+        if (pendingCalls.length > 1 && pendingCalls.some(call =>
+          call.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+          throw new ToolGatewayError('CLOUD_HOST_DISCOVERY_EXCLUSIVE',
+            'Desktop discovery cannot be batched with other tool operations');
         }
         if (pendingCalls.length > 1 && pendingCalls.some(call =>
           requiredMailRole(call.name) !== null)) {
@@ -294,6 +292,20 @@ export class MobileAgentLoop {
           let result;
           try {
             result = await gateway.callTool(call, { signal });
+            if (result.hostSelectionRequired) {
+              const verifiedCandidates = result.hostCandidates ?? hostCandidates;
+              if (verifiedCandidates.length < 2) {
+                throw new ToolGatewayError('CLOUD_HOST_SELECTION_STALE',
+                  'Desktop selection list is no longer valid');
+              }
+              // Clear the tool-running UI state before ending the turn to ask.
+              yield { type: 'tool-result' as const,
+                callId: call.callId, name: call.name, content: result.content };
+              yield { type: 'text-delta' as const,
+                delta: hostSelectionPrompt(verifiedCandidates) };
+              yield { type: 'finish' as const, reason: 'stop' };
+              return;
+            }
           } catch (error) {
             if (shouldPause()) {
               yield {

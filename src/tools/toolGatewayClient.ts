@@ -16,7 +16,14 @@ export interface ToolCallRequest {
 
 export interface ToolCallResult {
   content: string;
+  /** An Agent-requested Host discovery is shown as a deterministic clarification. */
+  hostSelectionRequired?: boolean;
+  /** Fresh, authorized candidates, re-checked when the model requests discovery. */
+  hostCandidates?: readonly ToolDiscoveryHostCandidate[];
 }
+
+/** Model-visible, read-only entry for finding an authorized Mira Desktop. */
+export const DESKTOP_HOST_DISCOVERY_TOOL = 'mira_desktop_hosts';
 
 export interface ToolApprovalRequest {
   invocationId: string;
