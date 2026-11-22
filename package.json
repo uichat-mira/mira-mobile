@@ -1,6 +1,6 @@
 {
   "name": "uichat-mira-mobile",
-  "version": "0.3.33",
+  "version": "0.3.34",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
