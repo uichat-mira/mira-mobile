@@ -21,6 +21,7 @@ import {
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
+import { WhoYouMailReadSection } from './WhoYouMailReadSection';
 import { fontSize, radius, spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import { CloudActionButton, cloudLayout } from './CloudAccountUi';
@@ -198,7 +199,7 @@ export function WhoYouScreen() {
           <View style={[styles.readOnlyNotice, { backgroundColor: colors.bg.soft }]}>
             <ShieldCheck size={16} color={colors.status.success} />
             <Text style={[styles.readOnlyText, { color: colors.text.base }]}>
-              仅请求 whoyou.read 短期只读凭证；不读取邮件正文，也不会发信。
+              仅请求 whoyou.read 短期只读凭证；阅读正文需主动操作，不会发信。
             </Text>
           </View>
         </View>
@@ -297,6 +298,10 @@ export function WhoYouScreen() {
               </View>
             )}
 
+            {mailboxes.some(mailbox => mailbox.messageCount > 0) ? (
+              <WhoYouMailReadSection key={identity?.accountId} mailboxes={mailboxes} />
+            ) : null}
+
             <View style={styles.actionRow}>
               <CloudActionButton
                 label="刷新邮箱"
@@ -316,7 +321,7 @@ export function WhoYouScreen() {
         ) : null}
 
         <Text style={[styles.footerNote, { color: colors.text.soft }]}>
-          Mira Mobile 只展示狐邮返回的只读身份与邮箱事实。邮件同步、授权续期和解绑均在狐邮网页完成。
+          Mira Mobile 只读展示已同步的邮件，未授权不会向模型传递邮件内容。邮件同步、授权续期和解绑均在狐邮网页完成。
         </Text>
       </ScrollView>
     </SafeAreaView>

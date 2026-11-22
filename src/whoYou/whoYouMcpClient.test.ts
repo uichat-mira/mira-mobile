@@ -84,6 +84,8 @@ const workingFetch = (
     whoamiContent?: unknown;
     identitiesContent?: unknown;
     mcpStatus?: number;
+    searchContent?: unknown;
+    messageContent?: unknown;
   } = {},
 ) =>
   jest.fn(async (url: string, init?: RequestInit) => {
@@ -99,7 +101,7 @@ const workingFetch = (
     const body = JSON.parse(String(init?.body)) as {
       id?: number;
       method: string;
-      params?: { name?: string };
+      params?: { name?: string; arguments?: Record<string, unknown> };
     };
     if (body.method === 'initialize') {
       return rpcResult(body.id, {
@@ -127,6 +129,35 @@ const workingFetch = (
         result: {
           content: [{ type: 'text', text: 'mailboxes' }],
           structuredContent: overrides.identitiesContent ?? identities,
+        },
+      });
+    }
+    if (body.method === 'tools/call' &&
+        body.params?.name === 'whoyou_mail_search') {
+      return rpcResult(body.id, {
+        content: [{ type: 'text', text: 'mail search' }],
+        structuredContent: overrides.searchContent ?? {
+          messages: [{
+            id: 'msg-1', threadId: 'thread-1', direction: 'inbound',
+            from: [{ name: 'Alice', address: 'alice@example.test' }],
+            subject: 'Test mail', receivedAt: 1790000000000,
+            snippet: 'Safe fixture body', attachmentCount: 0,
+          }],
+          nextCursor: null,
+        },
+      });
+    }
+    if (body.method === 'tools/call' &&
+        body.params?.name === 'whoyou_mail_message_get') {
+      return rpcResult(body.id, {
+        content: [{ type: 'text', text: 'message' }],
+        structuredContent: overrides.messageContent ?? {
+          id: 'msg-1', threadId: 'thread-1', direction: 'inbound',
+          from: [{ name: 'Alice', address: 'alice@example.test' }],
+          subject: 'Test mail', receivedAt: 1790000000000,
+          snippet: 'Safe fixture body', attachmentCount: 0,
+          bodyKind: 'text', body: 'Untrusted fixture text',
+          truncated: false, untrusted: true,
         },
       });
     }
@@ -192,7 +223,7 @@ describe('Who You read-only MCP client', () => {
       expect(String(init?.body)).not.toContain(READ_TOKEN);
       const body = JSON.parse(String(init?.body)) as {
         method: string;
-        params?: { name?: string };
+        params?: { name?: string; arguments?: Record<string, unknown> };
       };
       methods.push(body.method);
       if (body.method === 'tools/call' && body.params?.name) {
@@ -256,7 +287,7 @@ describe('Who You read-only MCP client', () => {
         const body = JSON.parse(String(init?.body)) as {
           id?: number;
           method: string;
-          params?: { name?: string };
+          params?: { name?: string; arguments?: Record<string, unknown> };
         };
         if (body.method === 'initialize') {
           return rpcResult(body.id, { protocolVersion: '2025-06-18' });
@@ -302,5 +333,53 @@ describe('Who You read-only MCP client', () => {
         }),
       ).load({ sessionToken: SESSION, accountId: 'account-1' }),
     ).rejects.toMatchObject({ kind: 'invalid_response' });
+  });
+});
+
+
+describe('Who You real read tools (MOB-086)', () => {
+  it('calls only official read tools with short-lived bearer, safely parses search and text', async () => {
+    const fetched = workingFetch();
+    const requester = jest.fn(async () => credential);
+    const api = client(fetched, requester);
+    const result = await api.searchMail({ sessionToken: SESSION, accountId: 'account-1', query: 'Test' });
+    expect(result.messages).toMatchObject([{ id: 'msg-1', subject: 'Test mail' }]);
+    expect(result.nextCursor).toBeNull();
+    const message = await api.readMail({ sessionToken: SESSION, accountId: 'account-1', messageId: 'msg-1' });
+    expect(message.body).toBe('Untrusted fixture text');
+    const readCalls = fetched.mock.calls.filter((entry: [string, RequestInit?]) => {
+      try {
+        const body = JSON.parse(String(entry[1]?.body)) as { method: string };
+        return body.method === 'tools/call';
+      } catch { return false; }
+    });
+    expect(readCalls.map((call: [string, RequestInit?]) => (JSON.parse(String(call[1]?.body)) as {
+      params: { name: string };
+    }).params.name)).toEqual([
+      'whoyou_whoami', 'whoyou_mail_search',
+      'whoyou_whoami', 'whoyou_mail_message_get',
+    ]);
+    expect(requester).toHaveBeenCalledTimes(2);
+    expect(readCalls.every((call: [string, RequestInit?]) =>
+      (call[1]?.headers as Record<string, string>).authorization === 'Bearer ' + READ_TOKEN)).toBe(true);
+    expect(JSON.stringify(readCalls)).not.toContain(SESSION);
+  });
+
+  it('rejects malformed search results, unsafe body contracts and untrusted ownership', async () => {
+    const clientA = client(workingFetch({ searchContent: { messages: [{ id: 'bad' }], nextCursor: null } }));
+    await expect(clientA.searchMail({ sessionToken: SESSION, accountId: 'account-1' }))
+      .rejects.toMatchObject({ kind: 'invalid_response' });
+    const clientB = client(workingFetch({ messageContent: {
+      id: 'msg-1', threadId: 't', direction: 'inbound', from: [],
+      subject: 'x', receivedAt: 1790000000000, snippet: '',
+      attachmentCount: 0, untrusted: false, bodyKind: 'text',
+      body: 'malicious', truncated: false,
+    } }));
+    await expect(clientB.readMail({ sessionToken: SESSION, accountId: 'account-1', messageId: 'msg-1' }))
+      .rejects.toMatchObject({ kind: 'invalid_response' });
+    await expect(client(workingFetch({ whoamiContent: {
+      accountId: 'foreign', consumerId: 'foreign', scopes: ['whoyou.read'],
+    } })).searchMail({ sessionToken: SESSION, accountId: 'account-1' }))
+      .rejects.toMatchObject({ kind: 'invalid_response' });
   });
 });

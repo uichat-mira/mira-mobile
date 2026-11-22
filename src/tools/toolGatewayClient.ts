@@ -4,6 +4,8 @@ export interface ToolManifest {
   parameters: Record<string, unknown>;
   destructive?: boolean;
   requiresApproval?: boolean;
+  /** Private data: restrict subsequent tool exposure after it reaches a model. */
+  sensitiveResult?: 'mail-search' | 'mail-body';
 }
 
 export interface ToolCallRequest {

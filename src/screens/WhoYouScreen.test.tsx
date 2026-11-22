@@ -1,3 +1,4 @@
+jest.mock('./WhoYouMailReadSection', () => ({ WhoYouMailReadSection: () => null }));
 import React from 'react';
 import { Linking, Text } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';

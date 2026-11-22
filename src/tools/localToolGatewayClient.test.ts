@@ -2,7 +2,7 @@ import {
   LocalToolGatewayClient,
   type LocalToolDefinition,
 } from './localToolGatewayClient';
-import type { ToolManifest } from './toolGatewayClient';
+import { ToolApprovalRequiredError, type ToolManifest } from './toolGatewayClient';
 
 const manifest: ToolManifest = {
   name: 'local_test_echo',
@@ -68,5 +68,44 @@ describe('LocalToolGatewayClient', () => {
     expect(
       () => new LocalToolGatewayClient([echoTool, echoTool]),
     ).toThrow('Duplicate local tool name');
+  });
+});
+
+describe('Local Tool consent and one-shot lifecycle', () => {
+  const privateTool: LocalToolDefinition = {
+    manifest: { name: 'private_search', parameters: { type: 'object' }, requiresApproval: true, sensitiveResult: 'mail-search' },
+    disclosure: { message: 'Disclose only this result', scope: 'one message' },
+    call: jest.fn(async () => ({ content: 'UNTRUSTED_EMAIL_CONTENT fixture' })),
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('does not fetch or emit mail until user explicitly approves; approval cannot be replayed', async () => {
+    const gateway = new LocalToolGatewayClient([privateTool]);
+    const request = { callId: 'call-1', name: 'private_search', arguments: '{}' };
+    let approval: import('./toolGatewayClient').ToolApprovalRequest | null = null;
+    try { await gateway.callTool(request); } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) approval = error.approval;
+      else throw error;
+    }
+    expect(approval).not.toBeNull();
+    expect(privateTool.call).not.toHaveBeenCalled();
+    const authorized = await gateway.resolveApproval(approval!, 'approved');
+    expect(authorized).toMatchObject({ status: 'completed', result: { content: 'UNTRUSTED_EMAIL_CONTENT fixture' } });
+    expect(privateTool.call).toHaveBeenCalledTimes(1);
+    await expect(gateway.resolveApproval(approval!, 'approved')).rejects.toMatchObject({ code: 'TOOL_APPROVAL_STALE' });
+  });
+
+  it('rejects without calling tool, and refuses stale cross-invocation approval', async () => {
+    const gateway = new LocalToolGatewayClient([privateTool]);
+    let one: import('./toolGatewayClient').ToolApprovalRequest | null = null;
+    try { await gateway.callTool({ callId: 'one', name: 'private_search', arguments: '{}' }); } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) one = error.approval;
+      else throw error;
+    }
+    expect(await gateway.resolveApproval(one!, 'rejected')).toEqual({ status: 'rejected' });
+    expect(privateTool.call).not.toHaveBeenCalled();
+    try { await gateway.callTool({ callId: 'two', name: 'private_search', arguments: '{}' }); } catch { /* next approval */ }
+    await expect(gateway.resolveApproval(one!, 'approved')).rejects.toMatchObject({ code: 'TOOL_APPROVAL_STALE' });
   });
 });

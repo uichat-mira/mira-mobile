@@ -23,6 +23,8 @@ import {
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const WHOAMI_TOOL = 'whoyou_whoami';
 const MAILBOX_LIST_TOOL = 'whoyou_mailbox_list';
+const MAIL_SEARCH_TOOL = 'whoyou_mail_search';
+const MAIL_MESSAGE_GET_TOOL = 'whoyou_mail_message_get';
 
 export interface WhoYouResourceMetadata {
   resource: string;
@@ -45,6 +47,49 @@ export type WhoYouCredentialStatus =
   | 'unreadable'
   | 'revoked';
 
+export interface WhoYouSyncStatus {
+  lastSyncedAt: number | null;
+  lastError: string | null;
+  inProgress: boolean;
+  initialImportComplete: boolean;
+}
+
+export interface WhoYouMailAddress {
+  name: string;
+  address: string;
+}
+
+export interface WhoYouMailSummary {
+  id: string;
+  threadId: string;
+  direction: 'inbound' | 'outbound';
+  from: WhoYouMailAddress[];
+  subject: string;
+  receivedAt: number;
+  snippet: string;
+  attachmentCount: number;
+}
+
+export interface WhoYouMailSearchPage {
+  messages: WhoYouMailSummary[];
+  nextCursor: string | null;
+}
+
+export interface WhoYouMailMessage extends WhoYouMailSummary {
+  body: string;
+  truncated: boolean;
+}
+
+export interface WhoYouReadSession {
+  sessionToken: string;
+  accountId: string;
+}
+
+export interface WhoYouMailReaderClient {
+  searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage>;
+  readMail(input: WhoYouReadSession & { messageId: string }): Promise<WhoYouMailMessage>;
+}
+
 export interface WhoYouMailbox {
   mailboxId: string;
   address: string;
@@ -56,6 +101,7 @@ export interface WhoYouMailbox {
   bytesUsed: number;
   messageCount: number;
   createdAt: string;
+  sync?: WhoYouSyncStatus | null;
 }
 
 export interface WhoYouSnapshot {
@@ -324,6 +370,81 @@ const parseIdentity = (
   };
 };
 
+const parseSync = (value: unknown): WhoYouSyncStatus | null => {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) ||
+      (value.lastSyncedAt !== null && !isNonNegativeInteger(value.lastSyncedAt)) ||
+      (value.lastError !== null && typeof value.lastError !== 'string') ||
+      typeof value.inProgress !== 'boolean' ||
+      typeof value.initialImportComplete !== 'boolean') {
+    throw invalidResponse('狐邮同步状态不可识别');
+  }
+  return {
+    lastSyncedAt: value.lastSyncedAt as number | null,
+    lastError: value.lastError as string | null,
+    inProgress: value.inProgress as boolean,
+    initialImportComplete: value.initialImportComplete as boolean,
+  };
+};
+
+const parseAddresses = (value: unknown): WhoYouMailAddress[] => {
+  if (!Array.isArray(value) || value.length > 30) throw invalidResponse();
+  return value.map(address => {
+    if (!isRecord(address) ||
+        typeof address.name !== 'string' ||
+        !isNonEmptyString(address.address)) throw invalidResponse();
+    return { name: address.name.slice(0, 160), address: address.address.slice(0, 320) };
+  });
+};
+
+const parseMailSummary = (value: unknown): WhoYouMailSummary => {
+  if (!isRecord(value) ||
+      !isNonEmptyString(value.id) || value.id.length > 80 ||
+      !isNonEmptyString(value.threadId) || value.threadId.length > 80 ||
+      (value.direction !== 'inbound' && value.direction !== 'outbound') ||
+      typeof value.subject !== 'string' ||
+      typeof value.snippet !== 'string' ||
+      !isNonNegativeInteger(value.receivedAt) ||
+      !isNonNegativeInteger(value.attachmentCount)) {
+    throw invalidResponse('狐邮邮件列表包含无效记录');
+  }
+  return {
+    id: value.id,
+    threadId: value.threadId,
+    direction: value.direction,
+    from: parseAddresses(value.from),
+    subject: value.subject.slice(0, 500),
+    receivedAt: value.receivedAt,
+    snippet: value.snippet.slice(0, 1000),
+    attachmentCount: value.attachmentCount,
+  };
+};
+
+const parseMailSearch = (value: Record<string, unknown>): WhoYouMailSearchPage => {
+  if (!Array.isArray(value.messages) || value.messages.length > 50 ||
+      (value.nextCursor !== null &&
+       (typeof value.nextCursor !== 'string' || value.nextCursor.length > 200))) {
+    throw invalidResponse('狐邮邮件搜索结果不可识别');
+  }
+  return {
+    messages: value.messages.map(parseMailSummary),
+    nextCursor: value.nextCursor,
+  };
+};
+
+const parseMailMessage = (value: Record<string, unknown>): WhoYouMailMessage => {
+  const summary = parseMailSummary(value);
+  if (value.untrusted !== true || value.bodyKind !== 'text' ||
+      typeof value.body !== 'string' || typeof value.truncated !== 'boolean') {
+    throw invalidResponse('狐邮没有返回可信契约的纯文本正文');
+  }
+  return {
+    ...summary,
+    body: value.body.slice(0, 40_000),
+    truncated: value.truncated || value.body.length > 40_000,
+  };
+};
+
 const parseMailbox = (value: unknown): WhoYouMailbox => {
   if (!isRecord(value)) throw invalidResponse('狐邮邮箱列表包含无效条目');
   const kind = value.kind;
@@ -377,6 +498,7 @@ const parseMailbox = (value: unknown): WhoYouMailbox => {
     bytesUsed: value.bytesUsed,
     messageCount: value.messageCount,
     createdAt: new Date(value.createdAt).toISOString(),
+    ...(value.sync !== undefined ? { sync: parseSync(value.sync) } : {}),
   };
 };
 
@@ -528,6 +650,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
   private async callTool(
     token: string,
     name: string,
+    args: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
     const id = this.nextRequestId++;
     const result = await this.sendRpc(
@@ -536,7 +659,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
         jsonrpc: '2.0',
         id,
         method: 'tools/call',
-        params: { name, arguments: {} },
+        params: { name, arguments: args },
       },
       id,
       MCP_PROTOCOL_VERSION,
@@ -544,10 +667,7 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
     return parseToolStructuredContent(result);
   }
 
-  async load(input: {
-    sessionToken: string;
-    accountId: string;
-  }): Promise<WhoYouSnapshot> {
+  private async authorize(input: WhoYouReadSession): Promise<{ token: string; identity: WhoYouIdentity }> {
     await this.discover();
 
     let credential: IssuedWhoYouReadCredential;
@@ -599,10 +719,40 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
       await this.callTool(credential.token, WHOAMI_TOOL),
       input.accountId,
     );
+    return { token: credential.token, identity };
+  }
+
+  async load(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
+    const { token, identity } = await this.authorize(input);
     const mailboxes = parseMailboxes(
-      await this.callTool(credential.token, MAILBOX_LIST_TOOL),
+      await this.callTool(token, MAILBOX_LIST_TOOL),
     );
     return { identity, mailboxes };
+  }
+
+  async searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage> {
+    const query = input.query?.trim();
+    if (query && query.length > 200) throw new WhoYouError('rejected', '搜索关键词过长');
+    if (input.cursor && input.cursor.length > 200) throw new WhoYouError('rejected', '分页游标无效');
+    const { token } = await this.authorize(input);
+    const result = await this.callTool(token, MAIL_SEARCH_TOOL, {
+      folder: 'inbox',
+      limit: 10,
+      ...(query ? { query } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+    });
+    return parseMailSearch(result);
+  }
+
+  async readMail(input: WhoYouReadSession & { messageId: string }): Promise<WhoYouMailMessage> {
+    if (!isNonEmptyString(input.messageId) || input.messageId.length > 80) {
+      throw new WhoYouError('rejected', '邮件标识无效');
+    }
+    const { token } = await this.authorize(input);
+    return parseMailMessage(await this.callTool(token, MAIL_MESSAGE_GET_TOOL, {
+      messageId: input.messageId,
+      include: 'text',
+    }));
   }
 }
 
