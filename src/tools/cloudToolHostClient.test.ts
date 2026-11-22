@@ -172,6 +172,17 @@ describe('CloudToolHostClient', () => {
     expect(json).toHaveBeenCalledTimes(1);
   });
 
+  it('never advertises an Agent tool when the Host grants read but not invoke', async () => {
+    const f = harness({ scopes: ['tools:read', 'tools:approve', 'tools:control'] });
+    await expect(f.client.listRemoteTools()).rejects.toMatchObject({
+      code: 'CLOUD_TOOL_GRANT_REQUIRED',
+      status: 403,
+    });
+    expect(f.json.mock.calls.map(([, , request]) => request.path))
+      .toEqual(['/remote/v1/manifest']);
+    expect(f.sse).not.toHaveBeenCalled();
+  });
+
   it('opens a Cloud tool invocation SSE with the exact frozen Host call', async () => {
     const f = harness();
     const session = await f.client.openToolInvocation({
