@@ -289,15 +289,19 @@ describe('LocalAgentToolGateway', () => {
   it('keeps the read-only Host tool out of the Local Agent model toolset', async () => {
     const fixture = discoveryFixture({ scopes: ['tools:read'] });
     const selected = gateway(fixture);
-    const modelCall = jest.fn(async () => modelStream([
-      { type: 'finish', reason: 'stop' },
-    ]));
+    const offeredTools: OpenAiTool[][] = [];
+    const modelCall = jest.fn(async (
+      _messages: readonly OpenAiMessage[],
+      tools: readonly OpenAiTool[],
+    ) => {
+      offeredTools.push([...tools]);
+      return modelStream([{ type: 'finish', reason: 'stop' }]);
+    });
     const events = await drain(await new MobileAgentLoop(selected).run(
       [{ role: 'user', content: 'Use Desktop search' }],
       modelCall,
     ));
-    const modelTools = modelCall.mock.calls[0]?.[1] as OpenAiTool[];
-    expect(modelTools.map(tool => tool.function.name)).toEqual([localTool.name]);
+    expect(offeredTools[0]?.map(tool => tool.function.name)).toEqual([localTool.name]);
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'notice', code: 'cloud-tools-unauthorized' }),
     ]));
