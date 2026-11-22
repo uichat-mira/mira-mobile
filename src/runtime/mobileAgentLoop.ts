@@ -249,7 +249,7 @@ export class MobileAgentLoop {
               const approval = error.approval;
               const disclosureMessage = approvedManifest.sensitiveResult
                 ? `${approval.message}
-接收方：${options.approvalRecipient ?? '当前 Local Provider'}。仅在本次明确批准后发送结果给模型。`
+接收方：${options.approvalRecipient ?? '当前 Local Provider'}。仅在本次明确批准后发送结果给模型；回复保留在手机聊天记录，后续不会自动再次传给模型。`
                 : approval.message;
               yield {
                 type: 'approval-required' as const,

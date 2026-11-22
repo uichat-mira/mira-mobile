@@ -160,7 +160,17 @@ export async function executeLocalConversationTurn(
 
       if (content) {
         await repository.appendMessages(threadId, [
-          { id: assistantId, role: 'assistant', content, timestamp: new Date() },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content,
+            timestamp: new Date(),
+            // Retain the answer for on-device viewing, never silently
+            // re-disclose it to a Provider in a later conversation turn.
+            ...(usedPrivateMail
+              ? { metadata: { localMailPrivate: true } }
+              : {}),
+          },
         ]);
       }
 

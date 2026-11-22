@@ -58,10 +58,18 @@ export async function assembleLocalRequestContext(
   canonicalMessages: readonly ChatMessage[],
   dependencies: LocalRequestContextDependencies,
 ): Promise<LocalRequestContext> {
-  const messages = canonicalMessages.map<OpenAiMessage>((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
+  const messages = canonicalMessages
+    // Per-call consent to disclose email content expires after that turn.
+    // Keep the derived answer visible in local history without silently
+    // resending it to any Local Provider on later model requests.
+    .filter(message =>
+      !(message.role === 'assistant' &&
+        message.metadata?.localMailPrivate === true),
+    )
+    .map<OpenAiMessage>(message => ({
+      role: message.role,
+      content: message.content,
+    }));
 
   const personalizationContext = await compilePersonalizationContext(
     dependencies.loadPersonalization,

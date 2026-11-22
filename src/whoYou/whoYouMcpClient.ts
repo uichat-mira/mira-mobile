@@ -514,7 +514,7 @@ const parseMailboxes = (
 /**
  * Minimal read-only Streamable HTTP MCP client. It performs the RFC 9728
  * discovery check, requests a fresh read credential for each load, completes a
- * stateless legacy MCP handshake and calls only the two approved read tools.
+ * stateless MCP handshake and exposes only the approved read-only tools.
  */
 export class WhoYouMcpClient implements WhoYouMcpClientLike {
   private readonly mcpUrl: string;
