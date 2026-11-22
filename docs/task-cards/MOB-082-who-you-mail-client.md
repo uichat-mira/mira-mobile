@@ -1,6 +1,12 @@
 # MOB-082：Who You 邮箱客户端接线（读信 + 草稿确认发送）
 
-状态：**待启动**
+> 历史草案，不再作为任务账本。原编号 MOB-082 已由 #312 使用。当前 Mobile 狐邮
+> 范围以 GitHub Issue
+> [#336](https://github.com/uichat-mira/mira-mobile/issues/336) 为准：首期仅只读
+> `whoyou.read`、账号邮箱列表与刷新，不含自有域邮箱创建、读信、草稿或发信。本
+> 文件保留原设计背景，其中发信、读信和扩展工具范围不得据以实现。
+
+状态：**已被 #336 取代**
 
 执行仓库：`uichat-mira/mira-mobile`（本卡）；服务端契约归 `uichat-mira/who-you`
 

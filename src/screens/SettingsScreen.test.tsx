@@ -127,6 +127,11 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     expect(strings.some((value) => value.includes(PUBLIC_FEEDBACK_EMAIL))).toBe(false);
   });
 
+  it('exposes the Who You read-only mailbox entry in 我的 Mira', async () => {
+    const tree = await renderScreen();
+    expect(rowTitles(tree)).toContain('狐邮 Who You');
+  });
+
   it('keeps the shared feedback consumer intact elsewhere in Settings', async () => {
     const tree = await renderScreen();
     const strings = renderedStrings(tree);
