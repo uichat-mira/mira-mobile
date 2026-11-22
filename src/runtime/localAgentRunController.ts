@@ -36,12 +36,21 @@ export interface LocalAgentRun {
   runToken: symbol;
 }
 
+export type LocalAgentToolGatewaySource =
+  | ToolGatewayClient
+  | (() => ToolGatewayClient);
+
+const resolveToolGateway = (
+  source: LocalAgentToolGatewaySource,
+): ToolGatewayClient =>
+  typeof source === 'function' ? source() : source;
+
 export class LocalAgentRunController {
   private activeAbortController: AbortController | null = null;
   private activeRunToken: symbol | null = null;
   private pendingApproval: PendingApproval | null = null;
 
-  constructor(private readonly toolGateway: ToolGatewayClient) {}
+  constructor(private readonly toolGateway: LocalAgentToolGatewaySource) {}
 
   get active(): boolean {
     return this.activeRunToken !== null;
@@ -55,7 +64,11 @@ export class LocalAgentRunController {
     this.activeRunToken = runToken;
 
     try {
-      const stream = await new MobileAgentLoop(this.toolGateway).run(
+      // A source factory supplies a fresh gateway for each run so Cloud account
+      // / Host authority and tool aliases never leak into a later Agent run.
+      const stream = await new MobileAgentLoop(
+        resolveToolGateway(this.toolGateway),
+      ).run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {

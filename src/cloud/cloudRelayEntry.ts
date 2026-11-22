@@ -21,6 +21,8 @@ export interface CloudRelayTarget extends CloudRelayTransportTarget {
 }
 
 export interface CloudRelayAccess {
+  /** Account that owns the Cloud Session and Host grant for this access. */
+  accountId: string;
   target: CloudRelayTarget;
   tickets: CloudRelayTicketProvider;
 }
@@ -136,6 +138,13 @@ export const selectCloudRelayHost = (
       return left.id.localeCompare(right.id);
     })[0] ?? null;
 
+type CloudRelayHostSelection = 'most-recent' | 'single';
+
+const availableCloudRelayHosts = (
+  hosts: CloudDesktopHost[],
+): CloudDesktopHost[] =>
+  hosts.filter(host => host.availability === 'available');
+
 class ApiCloudRelayTicketSource implements CloudRelayTicketProvider {
   constructor(
     private readonly api: CloudRelayApiLike,
@@ -190,6 +199,7 @@ export class CloudRelayEntry {
   private lastAccess: { key: string; access: CloudRelayAccess } | null = null;
   private generation = 0;
   private pendingDiscovery: Promise<CloudRelayAccess> | null = null;
+  private pendingSingleHostDiscovery: Promise<CloudRelayAccess> | null = null;
 
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -202,6 +212,7 @@ export class CloudRelayEntry {
   reset() {
     this.generation += 1;
     this.pendingDiscovery = null;
+    this.pendingSingleHostDiscovery = null;
     this.lastAccess = null;
     closeCloudRelayConnections();
   }
@@ -214,7 +225,7 @@ export class CloudRelayEntry {
 
   discover(): Promise<CloudRelayAccess> {
     if (this.pendingDiscovery) return this.pendingDiscovery;
-    const pending = this.discoverOnce();
+    const pending = this.discoverOnce('most-recent');
     this.pendingDiscovery = pending;
     const release = () => {
       if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
@@ -223,7 +234,27 @@ export class CloudRelayEntry {
     return pending;
   }
 
-  private async discoverOnce(): Promise<CloudRelayAccess> {
+  /**
+   * Tool execution must never guess between two online account-owned Hosts.
+   * Chat may keep its deterministic most-recent Host choice; a tool run fails
+   * closed so MOB-088 can own explicit multi-Host selection.
+   */
+  discoverSingleHost(): Promise<CloudRelayAccess> {
+    if (this.pendingSingleHostDiscovery) return this.pendingSingleHostDiscovery;
+    const pending = this.discoverOnce('single');
+    this.pendingSingleHostDiscovery = pending;
+    const release = () => {
+      if (this.pendingSingleHostDiscovery === pending) {
+        this.pendingSingleHostDiscovery = null;
+      }
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async discoverOnce(
+    selection: CloudRelayHostSelection,
+  ): Promise<CloudRelayAccess> {
     const generation = this.generation;
     let stored;
     try {
@@ -274,7 +305,16 @@ export class CloudRelayEntry {
     if (generation !== this.generation) {
       throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during discovery');
     }
-    const host = selectCloudRelayHost(hosts);
+    const availableHosts = availableCloudRelayHosts(hosts);
+    if (selection === 'single' && availableHosts.length > 1) {
+      throw failure(
+        'CLOUD_RELAY_HOST_AMBIGUOUS',
+        'More than one Desktop Host is online for this Mira Cloud account',
+      );
+    }
+    const host = selection === 'single'
+      ? availableHosts[0] ?? null
+      : selectCloudRelayHost(hosts);
     if (!host) {
       throw hosts.length === 0
         ? failure(
@@ -297,6 +337,7 @@ export class CloudRelayEntry {
       room: host.relayRoom,
     };
     const access: CloudRelayAccess = {
+      accountId: stored.account.id,
       target: {
         endpoint,
         room: host.relayRoom,

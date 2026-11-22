@@ -33,7 +33,12 @@ export type ToolApprovalDecision = 'approved' | 'rejected';
  * Non-fatal findings from tool discovery. These must be user-visible so a
  * partially available toolset is never presented as complete.
  */
-export type ToolDiscoveryNoticeCode = 'toolset-degraded';
+export type ToolDiscoveryNoticeCode =
+  | 'toolset-degraded'
+  | 'cloud-tools-unavailable'
+  | 'cloud-tools-unauthorized'
+  | 'cloud-tools-session-invalid'
+  | 'cloud-tools-host-ambiguous';
 
 export interface ToolDiscoveryNotice {
   code: ToolDiscoveryNoticeCode;

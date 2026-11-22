@@ -128,6 +128,23 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     ).toBeNull();
   });
 
+  it('fails closed for tool runs when more than one Host is online', async () => {
+    const apiLike = api({
+      listHosts: jest.fn(async () => [
+        host,
+        { ...host, id: 'host-2', relayRoom: 'room_2234567890abcdef' },
+      ]),
+    });
+    const relayEntry = entry(await storedSession(), apiLike);
+    await expect(relayEntry.discoverSingleHost()).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_HOST_AMBIGUOUS',
+    });
+    // Chat keeps its deterministic most-recent Host choice.
+    await expect(relayEntry.discover()).resolves.toMatchObject({
+      target: { hostId: host.id },
+    });
+  });
+
   it('distinguishes no Host, offline Host and ambiguous Host data', async () => {
     await expect(
       entry(

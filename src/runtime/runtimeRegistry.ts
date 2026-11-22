@@ -4,7 +4,7 @@ import { LocalProviderRuntime } from './localProviderRuntime';
 import { RemoteHostRuntime } from './remoteHostRuntime';
 import { CloudHostRuntime } from './cloudHostRuntime';
 import type { ConversationRuntime } from './conversationRuntime';
-import { mobileToolGatewayClient } from '../tools/mobileToolGatewayClient';
+import { createLocalAgentToolGateway } from '../tools/localAgentToolGateway';
 
 export type SessionSourceFilter = 'all' | SessionSource;
 
@@ -14,7 +14,9 @@ export class RuntimeRegistry {
   readonly local: LocalProviderRuntime;
 
   constructor(
-    local = new LocalProviderRuntime({ toolGateway: mobileToolGatewayClient }),
+    local = new LocalProviderRuntime({
+      toolGateway: createLocalAgentToolGateway,
+    }),
     remote = new RemoteHostRuntime(),
     cloud = new CloudHostRuntime(),
   ) {

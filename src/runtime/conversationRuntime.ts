@@ -47,7 +47,13 @@ export type RuntimeEvent =
    */
   | {
       type: 'notice';
-      code: 'tool-channel-unavailable' | 'toolset-degraded';
+      code:
+        | 'tool-channel-unavailable'
+        | 'toolset-degraded'
+        | 'cloud-tools-unavailable'
+        | 'cloud-tools-unauthorized'
+        | 'cloud-tools-session-invalid'
+        | 'cloud-tools-host-ambiguous';
     }
   | { type: 'error'; message: string };
 
