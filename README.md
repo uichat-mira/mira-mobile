@@ -61,6 +61,16 @@ src/
     └── HomeScreen.tsx
 ```
 
+## Mira Cloud 设备恢复
+
+Cloud Auth 是设备撤销的权威来源。普通退出、Session 过期、网络故障及无效
+OAuth Grant 不会替换本机 Cloud Installation ID。仅在原生 Mobile OAuth
+兑换返回服务端确认的 \`OAUTH_DEVICE_REVOKED\` 后，账户页显示「重新注册此设备」。
+确认操作会替换 Cloud 安全存储中的安装身份，以全新浏览器授权注册；旧设备和
+Session 仍然撤销。中途取消或重试使用已持久化的新身份，不重新生成设备。
+本地聊天、Local Provider、独立 Remote Host/Tailscale 及 Push 身份均不改变。
+服务端错误契约见 [Cloud Auth OAuth](https://github.com/uichat-mira/cloud-auth/blob/dev/docs/oauth-authorization-v0.md)。
+
 ## 分支流程
 
 仓库遵循 Mira Organization 的环境模型：

@@ -107,6 +107,26 @@ test('signed out keeps Cloud optional and allows browser login', async () => {
   expect(labels(tree)).not.toContain('我的设备');
 });
 
+test('revoked installation requires confirmation before re-enrollment', async () => {
+  const signIn = jest.fn().mockResolvedValue(undefined);
+  const original = useCloudAccountStore.getState().signIn;
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  setState({ ...base, status: 'device_revoked', signIn });
+  try {
+    const tree = await render();
+    expect(labels(tree)).toContain('重新注册此设备');
+    expect(labels(tree)).not.toContain('使用浏览器登录 Mira Cloud');
+    act(() => tree.root.findByProps({ accessibilityLabel: '重新注册此设备' }).props.onPress());
+    expect(signIn).not.toHaveBeenCalled();
+    const buttons = alert.mock.calls[0]?.[2];
+    expect(buttons?.[0]?.text).toBe('取消');
+    await act(async () => { buttons?.[1]?.onPress?.(); });
+    expect(signIn).toHaveBeenCalledWith(true);
+  } finally {
+    setState({ signIn: original });
+  }
+});
+
 test('signed in shows account and active devices on a single page without subpage entries', async () => {
   setState({
     ...base,

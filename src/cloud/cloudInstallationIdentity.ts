@@ -11,6 +11,7 @@ export interface StoredCloudInstallation {
   schemaVersion: 1;
   installationId: string;
   createdAt: string;
+  revoked?: true;
 }
 
 export interface CloudInstallationStore {
@@ -20,6 +21,9 @@ export interface CloudInstallationStore {
 
 export interface CloudInstallationIdentity {
   getOrCreate(): Promise<string>;
+  isRevoked(): Promise<boolean>;
+  markRevoked(installationId: string): Promise<void>;
+  reenroll(): Promise<string>;
 }
 
 export class CloudInstallationStoreError extends Error {
@@ -49,6 +53,7 @@ export const parseStoredCloudInstallation = (
     parsed.schemaVersion !== 1 ||
     typeof parsed.installationId !== 'string' ||
     !isValidUuidV4(parsed.installationId) ||
+    (parsed.revoked !== undefined && parsed.revoked !== true) ||
     typeof parsed.createdAt !== 'string' ||
     !Number.isFinite(Date.parse(parsed.createdAt))
   ) {
@@ -61,6 +66,7 @@ export const parseStoredCloudInstallation = (
     schemaVersion: 1,
     installationId: parsed.installationId,
     createdAt: new Date(parsed.createdAt).toISOString(),
+    ...(parsed.revoked === true ? { revoked: true as const } : {}),
   };
 };
 
@@ -115,7 +121,30 @@ export class MiraCloudInstallationIdentity
   async getOrCreate(): Promise<string> {
     const existing = await this.store.load();
     if (existing) return existing.installationId;
+    return this.createIdentity();
+  }
 
+  async isRevoked(): Promise<boolean> {
+    return (await this.store.load())?.revoked === true;
+  }
+
+  async markRevoked(installationId: string): Promise<void> {
+    const existing = await this.store.load();
+    if (!existing || existing.installationId !== installationId) {
+      throw new CloudInstallationStoreError('Cloud installation changed during OAuth');
+    }
+    await this.store.save({ ...existing, revoked: true });
+  }
+
+  async reenroll(): Promise<string> {
+    const existing = await this.store.load();
+    if (!existing?.revoked) {
+      throw new CloudInstallationStoreError('Cloud installation is not confirmed revoked');
+    }
+    return this.createIdentity();
+  }
+
+  private async createIdentity(): Promise<string> {
     const encoded = await (
       this.random ?? requireNativeSecureRandom()
     ).randomBytes(16);

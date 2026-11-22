@@ -54,7 +54,8 @@ export type CloudAuthSessionState =
       account: CloudAccountIdentity | null;
       expiresAt: string | null;
     }
-  | { status: 'session_rejected'; message?: string };
+  | { status: 'session_rejected'; message?: string }
+  | { status: 'device_revoked' };
 
 const OAUTH_CALLBACK_ERRORS = new Set([
   'invalid_request',
@@ -72,7 +73,8 @@ export type CloudAuthServiceErrorKind =
   | 'invalid_state'
   | 'cancelled'
   | 'storage'
-  | 'browser';
+  | 'browser'
+  | 'device_revoked';
 
 export class CloudAuthServiceError extends Error {
   constructor(
@@ -363,7 +365,13 @@ export class MiraCloudAuthService {
       };
     }
 
-    if (!stored) return { status: 'signed_out' };
+    if (!stored) {
+      try {
+        return { status: (await this.installationIdentity.isRevoked()) ? 'device_revoked' : 'signed_out' };
+      } catch {
+        return { status: 'cloud_unavailable', account: null, expiresAt: null };
+      }
+    }
 
     if (Date.parse(stored.expiresAt) <= this.now().getTime()) {
       await clearSessionQuietly(this.store);
@@ -442,7 +450,28 @@ export class MiraCloudAuthService {
     }
   }
 
-  async beginSignIn(): Promise<void> {
+  beginSignIn(reenroll = false): Promise<void> {
+    return this.serializeSession(() => this.beginSignInOnce(reenroll));
+  }
+
+  private async beginSignInOnce(reenroll: boolean): Promise<void> {
+    try {
+      if (reenroll) {
+        // Never replace an installation while it still has a saved session.
+        const restored = await this.restoreSessionOnce();
+        if (restored.status !== 'device_revoked' || await this.store.load()) {
+          throw new CloudAuthServiceError('invalid_state', '本机尚未确认需要重新注册，请刷新登录状态。');
+        }
+        await this.pendingStore.clear();
+        await this.installationIdentity.reenroll();
+      } else if (await this.installationIdentity.isRevoked() && !(await this.store.load())) {
+        throw new CloudAuthServiceError('device_revoked', '本机授权已撤销，请重新注册此设备。');
+      }
+    } catch (error) {
+      if (error instanceof CloudAuthServiceError) throw error;
+      throw storageError();
+    }
+
     let verifier: string;
     let state: string;
     try {
@@ -584,6 +613,22 @@ export class MiraCloudAuthService {
         installationId,
       });
     } catch (error) {
+      if (error instanceof CloudAuthRequestError &&
+          error.kind === 'rejected' && error.code === 'OAUTH_DEVICE_REVOKED') {
+        try {
+          await this.installationIdentity.markRevoked(installationId);
+        } catch {
+          throw storageError();
+        }
+        // A separate previously saved account may still have a valid Session.
+        // Preserve it rather than rotating its installation implicitly.
+        const restored = await this.restoreSessionOnce();
+        if (restored.status === 'device_revoked' ||
+            (restored.status === 'session_rejected' && !(await this.store.load()))) {
+          return { status: 'device_revoked' };
+        }
+        throw new CloudAuthServiceError('device_revoked', '本机授权已撤销，请退出原账户后重新注册此设备。');
+      }
       throw requestError(error);
     }
 
@@ -799,12 +844,14 @@ export class MiraCloudAuthService {
     }
   }
 
-  async cancelPendingSignIn(): Promise<void> {
-    try {
-      await this.pendingStore.clear();
-    } catch {
-      throw storageError();
-    }
+  cancelPendingSignIn(): Promise<void> {
+    return this.serializeSession(async () => {
+      try {
+        await this.pendingStore.clear();
+      } catch {
+        throw storageError();
+      }
+    });
   }
 }
 
