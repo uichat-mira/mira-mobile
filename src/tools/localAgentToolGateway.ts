@@ -29,6 +29,8 @@ import {
 export interface CloudToolAccountContext {
   accountId: string | null;
   explicitlySignedOut: boolean;
+  /** A revoked/rejected Cloud identity is not an intentional switch to pairing. */
+  cloudSessionInvalid?: boolean;
 }
 
 type CloudToolEntry = Pick<
@@ -50,8 +52,8 @@ const currentCloudContext = (): CloudToolAccountContext => {
   const state = useCloudAccountStore.getState();
   return {
     accountId: state.account?.id ?? null,
-    explicitlySignedOut:
-      state.status === 'signed_out' ||
+    explicitlySignedOut: state.status === 'signed_out',
+    cloudSessionInvalid:
       state.status === 'session_rejected' ||
       state.status === 'device_revoked',
   };
@@ -65,6 +67,20 @@ const UNAUTHORIZED_CODES = new Set([
   'REMOTE_TOOL_ROUTE_UNAVAILABLE',
   'HTTP_403',
   'FORBIDDEN',
+  'CLOUD_RELAY_TICKET_DENIED',
+  'CLOUD_RELAY_TICKET_REJECTED',
+]);
+
+/** Only actual transport/Host availability faults may downgrade to local tools. */
+const UNAVAILABLE_CODES = new Set([
+  'CLOUD_RELAY_HOST_NOT_FOUND',
+  'CLOUD_RELAY_HOST_OFFLINE',
+  'CLOUD_RELAY_AUTH_UNAVAILABLE',
+  'RELAY_HOST_OFFLINE',
+  'RELAY_DISCONNECTED',
+  'RELAY_NETWORK_ERROR',
+  'RELAY_CONNECT_TIMEOUT',
+  'RELAY_HANDSHAKE_TIMEOUT',
 ]);
 
 const cloudNoticeFor = (
@@ -75,19 +91,16 @@ const cloudNoticeFor = (
   if (error.code === 'CLOUD_RELAY_HOST_AMBIGUOUS') {
     return 'cloud-tools-host-ambiguous';
   }
+  if (
+    error.code === 'CLOUD_RELAY_SESSION_REJECTED' ||
+    error.code === 'CLOUD_RELAY_SESSION_REQUIRED'
+  ) {
+    return 'cloud-tools-session-invalid';
+  }
   if (UNAUTHORIZED_CODES.has(error.code)) {
     return 'cloud-tools-unauthorized';
   }
-  if (error.status !== undefined && error.status >= 500) {
-    return 'cloud-tools-unavailable';
-  }
-  if (
-    error.code.startsWith('CLOUD_RELAY_') ||
-    error.code.startsWith('RELAY_') ||
-    error.code === 'CLOUD_TOOL_HOST_CHANGED' ||
-    error.code === 'CLOUD_RELAY_HOST_NOT_FOUND' ||
-    error.code === 'CLOUD_RELAY_HOST_OFFLINE'
-  ) {
+  if (UNAVAILABLE_CODES.has(error.code)) {
     return 'cloud-tools-unavailable';
   }
   return null;
@@ -184,7 +197,11 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       this.active = this.local;
       return {
         tools: await this.local.listTools(),
-        notices: [{ code: 'cloud-tools-unavailable' }],
+        notices: [{
+          code: context.cloudSessionInvalid
+            ? 'cloud-tools-session-invalid'
+            : 'cloud-tools-unavailable',
+        }],
       };
     }
 
