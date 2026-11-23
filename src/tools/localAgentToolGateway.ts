@@ -118,6 +118,28 @@ const previousHostChoice = (
   return matched.length === 1 ? matched[0] : null;
 };
 
+const isExplicitHostSelectionReply = (
+  selectionText: string,
+  previousAssistantText: string,
+): boolean => {
+  if (!selectionText || !previousAssistantText.startsWith(
+    '检测到同一 Mira Cloud 账号下有多台可用的 Mira Desktop Host。请回复要使用哪一台：',
+  ) || !previousAssistantText.includes(
+    '请直接回复设备名称或 Host ID；确认后我会在下一轮使用该设备的工具。',
+  )) return false;
+
+  return previousAssistantText.split('\n').some(line => {
+    const match = line.match(/^([1-9][0-9]?)\. (.+?)（Host ID：([^；]+)；在线；/u);
+    if (!match) return false;
+    const [, number, name, hostId] = match;
+    const shortId = normalizeMatchText(hostId);
+    const label = normalizeMatchText(name);
+    return selectionText === number ||
+      (label.length >= 2 && selectionText.includes(label)) ||
+      (shortId.length >= 4 && selectionText.includes(shortId));
+  });
+};
+
 const candidateProjection = (
   probes: readonly Extract<ProbedHost, { status: 'usable' }>[],
 ): ToolDiscoveryHostCandidate[] =>
@@ -160,6 +182,7 @@ const UNAUTHORIZED_CODES = new Set([
   'CLOUD_TOOL_GRANT_REQUIRED',
   'CLOUD_TOOL_ROUTE_UNAVAILABLE',
   'CLOUD_HOST_GRANT_REQUIRED',
+  'RELAY_CLOUD_GRANT_REQUIRED',
   'REMOTE_SCOPE_REQUIRED',
   'REMOTE_TOOL_ROUTE_UNAVAILABLE',
   'HTTP_403',
@@ -280,9 +303,25 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         (probe): probe is Extract<ProbedHost, { status: 'usable' }> =>
           probe.status === 'usable',
       );
-      if (usable.length < 2) {
-        throw new ToolGatewayError('CLOUD_HOST_SELECTION_STALE',
-          'The authorized Desktop selection changed; retry this turn');
+      if (usable.length === 0) {
+        if (directory.hosts.length > 0 && probes.length > 0 &&
+            probes.every(probe => probe.status === 'unauthorized')) {
+          throw new RemoteHostError('CLOUD_TOOL_GRANT_REQUIRED',
+            'No Desktop grants this Mobile permission to execute tools', 403);
+        }
+        throw new RemoteHostError('CLOUD_RELAY_HOST_OFFLINE',
+          'No authorized Desktop tool Host is currently reachable');
+      }
+      if (usable.length === 1) {
+        // Only an Agent-requested discovery may hydrate Host tool schemas.
+        // Keep their credential and Host binding inside the existing gateway.
+        const selected = usable[0].candidate;
+        const discovery = await this.bindHost(directory.accountId, selected.hostId);
+        return {
+          content: 'Mira Desktop connected: ' + (selected.name ?? selected.hostId) +
+            '. Authorized tools are now available for this Agent run.',
+          refreshedTools: discovery.tools,
+        };
       }
       return {
         content: 'Desktop candidates verified',
@@ -337,14 +376,34 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       };
     }
 
-    const accountId = context.accountId;
-    try {
-      return await this.discoverCloudHost(accountId);
-    } catch (error) {
-      const notice = cloudNoticeFor(error);
-      if (!notice) throw error;
-      return this.localOnly(notice);
+    if (context.cloudSessionInvalid) {
+      return this.localOnly('cloud-tools-session-invalid');
     }
+    const accountId = context.accountId;
+    // A numbered/name reply to our immediately preceding Host list is explicit
+    // selection. All other turns must reach the model before any Cloud RPC.
+    if (isExplicitHostSelectionReply(
+      this.selectionText, this.previousAssistantText,
+    )) {
+      try {
+        return await this.discoverCloudHost(accountId);
+      } catch (error) {
+        const notice = cloudNoticeFor(error);
+        if (!notice) throw error;
+        return this.localOnly(notice);
+      }
+    }
+    this.pendingHostSelectionAccount = accountId;
+    this.active = this.local;
+    const tools = await this.local.listTools();
+    if (tools.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+      throw new ToolGatewayError('TOOL_NAME_COLLISION',
+        'Desktop discovery tool collides with an existing local tool');
+    }
+    return {
+      tools: [...tools, DESKTOP_HOST_DISCOVERY_MANIFEST],
+      notices: [],
+    };
   }
 
   private async discoverCloudHost(accountId: string): Promise<ToolDiscoveryResult> {
