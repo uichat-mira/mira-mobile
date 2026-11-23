@@ -1,62 +1,86 @@
 import { parsePairingUriV1 } from './remotePairingV1';
 
+const host = 'https://desktop.example.ts.net';
+const relayEndpoint = 'https://relay.tomz.io';
+const relayId = 'relay_1234567890abcdef';
+const relayToken = 't'.repeat(43);
+
 describe('parsePairingUriV1', () => {
-  it('keeps Direct and authenticated Relay endpoints from one pairing link', () => {
-    const token = 't'.repeat(43);
+  it('accepts a host-only Tailscale Direct pairing link', () => {
     const parsed = parsePairingUriV1(
       `mira://pair?version=1&challenge=challenge-1&code=abcd2345&host=${encodeURIComponent(
-        'https://desktop.example.ts.net',
-      )}&relay=${encodeURIComponent('https://relay.tomz.io')}&relayId=relay_1234567890abcdef&relayToken=${token}`,
+        host,
+      )}`,
     );
 
     expect(parsed).toEqual({
       version: 1,
-      hostUrl: 'https://desktop.example.ts.net',
-      relay: {
-        endpoint: 'https://relay.tomz.io',
-        relayId: 'relay_1234567890abcdef',
-        token,
-      },
-      relayHint: {
-        endpoint: 'https://relay.tomz.io',
-        relayId: 'relay_1234567890abcdef',
-      },
+      hostUrl: host,
       challengeId: 'challenge-1',
       code: 'ABCD2345',
     });
   });
 
-  it('accepts the current Desktop relay hint without treating it as Relay access', () => {
+  it('keeps a Direct link usable while ignoring historical Relay hints', () => {
     const parsed = parsePairingUriV1(
       `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=${encodeURIComponent(
-        'https://desktop.example.ts.net',
-      )}&relay=${encodeURIComponent('https://relay.tomz.io')}&relayId=relay_1234567890abcdef`,
+        host,
+      )}&relay=${encodeURIComponent(relayEndpoint)}&relayId=${relayId}`,
     );
 
-    expect(parsed.hostUrl).toBe('https://desktop.example.ts.net');
-    expect(parsed.relay).toBeNull();
-    expect(parsed.relayHint).toEqual({
-      endpoint: 'https://relay.tomz.io',
-      relayId: 'relay_1234567890abcdef',
+    expect(parsed).toEqual({
+      version: 1,
+      hostUrl: host,
+      challengeId: 'challenge-1',
+      code: 'ABCD2345',
     });
   });
 
-  it('accepts Relay-only pairing links only when transport access is present', () => {
-    const token = 't'.repeat(43);
+  it('does not let a historical Relay token enter the pairing descriptor', () => {
     const parsed = parsePairingUriV1(
-      `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&relay=https%3A%2F%2Frelay.tomz.io&relayId=relay_1234567890abcdef&relayToken=${token}`,
+      `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=${encodeURIComponent(
+        host,
+      )}&relay=${encodeURIComponent(relayEndpoint)}&relayId=${relayId}&relayToken=${relayToken}`,
     );
 
-    expect(parsed.hostUrl).toBeNull();
-    expect(parsed.relay?.endpoint).toBe('https://relay.tomz.io');
+    expect(parsed).toEqual({
+      version: 1,
+      hostUrl: host,
+      challengeId: 'challenge-1',
+      code: 'ABCD2345',
+    });
+    expect(parsed).not.toHaveProperty('relay');
+    expect(parsed).not.toHaveProperty('relayHint');
   });
 
-  it('does not pretend a Relay-only hint is reachable', () => {
+  it('rejects Relay-only pairing links because the QR entry is Direct-only', () => {
     expect(() =>
       parsePairingUriV1(
-        'mira://pair?version=1&challenge=challenge-1&code=ABCD2345&relay=https%3A%2F%2Frelay.tomz.io&relayId=relay_1234567890abcdef',
+        `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&relay=${encodeURIComponent(
+          relayEndpoint,
+        )}&relayId=${relayId}&relayToken=${relayToken}`,
       ),
-    ).toThrow('does not contain a reachable Mira endpoint');
+    ).toThrow('must include a Tailscale Direct Host address');
+  });
+
+  it('rejects a Relay-only hint even without transport access', () => {
+    expect(() =>
+      parsePairingUriV1(
+        `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&relay=${encodeURIComponent(
+          relayEndpoint,
+        )}&relayId=${relayId}`,
+      ),
+    ).toThrow('must include a Tailscale Direct Host address');
+  });
+
+  it('rejects an invalid Direct Host address', () => {
+    expect(() =>
+      parsePairingUriV1(
+        `mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=${encodeURIComponent(
+          'not-a-host',
+        )}`,
+      ),
+    ).toThrow('Mira Host address is not a valid URL');
   });
 
   it('rejects ordinary HTTP(S) URLs as pairing input', () => {

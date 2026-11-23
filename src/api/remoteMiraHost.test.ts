@@ -21,7 +21,6 @@ const pending: PendingPairing = {
   descriptor: {
     version: 1,
     hostUrl: 'https://mira.example.ts.net',
-    relay: null,
     challengeId: 'challenge-1',
     code: 'ABCD2345',
   },
@@ -90,7 +89,6 @@ const createManifestPayload = {
 const pairingDescriptor = {
   version: 1 as const,
   hostUrl: 'https://mira.example.ts.net',
-  relay,
   challengeId: 'challenge-1',
   code: 'ABCD2345',
 };
@@ -165,37 +163,7 @@ describe('RemoteMiraHostClient pairing credential retention', () => {
 });
 
 describe('RemoteMiraHostClient transport selection', () => {
-  it('prefers Relay for pairing and reports the selected transport', async () => {
-    const store = new MemoryDeviceCredentialStore();
-    const directMock = jest.fn();
-    const direct: JsonTransport = async request => {
-      directMock(request);
-      return request.parse({ status: 'ok' });
-    };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
-      return request.path === '/health'
-        ? request.parse({ status: 'ok' })
-        : request.parse(claimPayload);
-    };
-    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
-
-    await expect(
-      client.claimPairing(pairingDescriptor, {
-        name: 'Android phone',
-        platform: 'android',
-      }),
-    ).resolves.toMatchObject({ ...claimPayload, transport: 'relay' });
-    expect(directMock).not.toHaveBeenCalled();
-    expect(relayJsonMock.mock.calls.map(call => call[1].path)).toEqual([
-      '/health',
-      '/remote/pairing/claim',
-    ]);
-    expect(relayJsonMock.mock.calls[1][1].body).toMatchObject({ transport: 'relay' });
-  });
-
-  it('falls back to Direct only when the Relay preflight fails', async () => {
+  it('claims only over the Direct Host and never probes Relay', async () => {
     const store = new MemoryDeviceCredentialStore();
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
@@ -205,9 +173,9 @@ describe('RemoteMiraHostClient transport selection', () => {
         : request.parse(claimPayload);
     };
     const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
-      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay unavailable');
+    const relayJson: RelayJsonTransport = async () => {
+      relayJsonMock();
+      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay must not be used');
     };
     const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
 
@@ -217,26 +185,50 @@ describe('RemoteMiraHostClient transport selection', () => {
         platform: 'android',
       }),
     ).resolves.toMatchObject({ ...claimPayload, transport: 'direct' });
-    expect(relayJsonMock).toHaveBeenCalledTimes(1);
     expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
       '/remote/pairing/claim',
     ]);
     expect(directMock.mock.calls[1][0].body).toMatchObject({ transport: 'direct' });
+    expect(relayJsonMock).not.toHaveBeenCalled();
   });
 
-  it('does not retry a dispatched Relay claim through Direct', async () => {
+  it('does not submit a claim when the Direct preflight is unreachable', async () => {
     const store = new MemoryDeviceCredentialStore();
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
-      return request.parse(claimPayload);
+      throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
     };
     const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
+    const relayJson: RelayJsonTransport = async () => {
+      relayJsonMock();
+      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay must not be used');
+    };
+    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+
+    await expect(
+      client.claimPairing(pairingDescriptor, {
+        name: 'Android phone',
+        platform: 'android',
+      }),
+    ).rejects.toMatchObject({ code: 'PAIRING_DIRECT_UNREACHABLE' });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual(['/health']);
+    expect(relayJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an ambiguous Direct claim uncertain without trying Relay', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
       if (request.path === '/health') return request.parse({ status: 'ok' });
-      throw new RemoteHostError('RELAY_DISCONNECTED', 'relay disconnected');
+      throw new RemoteHostError('NETWORK_ERROR', 'response lost');
+    };
+    const relayJsonMock = jest.fn();
+    const relayJson: RelayJsonTransport = async () => {
+      relayJsonMock();
+      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay must not be used');
     };
     const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
 
@@ -246,8 +238,41 @@ describe('RemoteMiraHostClient transport selection', () => {
         platform: 'android',
       }),
     ).rejects.toMatchObject({ code: 'PAIRING_CLAIM_UNCERTAIN' });
-    expect(relayJsonMock).toHaveBeenCalledTimes(2);
-    expect(directMock).not.toHaveBeenCalled();
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/health',
+      '/remote/pairing/claim',
+    ]);
+    expect(relayJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('polls a claimed pairing only over its Direct transport', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      return request.parse({
+        status: 'pending',
+        expiresAt: pending.expiresAt,
+        deviceId: null,
+        scopes: [],
+      });
+    };
+    const relayJsonMock = jest.fn();
+    const relayJson: RelayJsonTransport = async () => {
+      relayJsonMock();
+      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay must not be used');
+    };
+    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+
+    await expect(client.pollPairing(pending)).resolves.toMatchObject({
+      status: 'pending',
+    });
+    expect(directMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/remote/pairing/claims/claim-1/poll',
+      }),
+    );
+    expect(relayJsonMock).not.toHaveBeenCalled();
   });
 
   it('falls back from Direct network failure to Relay for idempotent JSON requests', async () => {

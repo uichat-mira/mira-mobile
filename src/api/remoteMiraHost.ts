@@ -276,15 +276,16 @@ export class RemoteMiraHostClient {
     descriptor: PairingDescriptorV1,
     identity: MobileDeviceIdentity,
   ): Promise<PairingClaimWithTransport> {
-    const transport = await this.selectPairingTransport(descriptor);
+    await this.ensureDirectPairingEndpoint(descriptor);
     let claim: PairingClaimResponse;
     try {
-      claim = await this.claimPairingOnTransport(descriptor, identity, transport);
+      claim = await this.claimPairingOnTransport(
+        descriptor,
+        identity,
+        'direct',
+      );
     } catch (error) {
-      if (
-        isDirectNetworkError(error) ||
-        (transport === 'relay' && isRelayTransportError(error))
-      ) {
+      if (isDirectNetworkError(error)) {
         throw new RemoteHostError(
           'PAIRING_CLAIM_UNCERTAIN',
           'Mira Desktop may have received the pairing request; do not retry through another transport',
@@ -294,12 +295,12 @@ export class RemoteMiraHostClient {
       }
       throw error;
     }
-    return { ...claim, transport };
+    return { ...claim, transport: 'direct' };
   }
 
   async pollPairing(pending: PendingPairing): Promise<PairingPollResponse> {
     const result = await this.requestJsonOnTransport(
-      pending.descriptor,
+      { hostUrl: pending.descriptor.hostUrl, relay: null },
       pending.transport,
       {
         path: `/remote/pairing/claims/${encodeURIComponent(pending.claimId)}/poll`,
@@ -321,7 +322,7 @@ export class RemoteMiraHostClient {
 
     const stored: StoredDeviceCredential = {
       hostUrl: pending.descriptor.hostUrl,
-      relay: pending.descriptor.relay,
+      relay: null,
       credential: result.credential,
       deviceId: result.deviceId,
       scopes: result.scopes,
@@ -918,38 +919,36 @@ export class RemoteMiraHostClient {
     }
   }
 
-  private async selectPairingTransport(
+  private async ensureDirectPairingEndpoint(
     descriptor: PairingDescriptorV1,
-  ): Promise<RemoteTransportKind> {
-    if (descriptor.relay) {
-      try {
-        await this.requestJsonOnTransport(descriptor, 'relay', {
-          path: '/health',
-          raw: true,
-          parse: value => value,
-        });
-        return 'relay';
-      } catch (error) {
-        if (!isRelayTransportError(error) || !descriptor.hostUrl) throw error;
-      }
-    }
-
+  ): Promise<void> {
     if (!descriptor.hostUrl) {
       throw new RemoteHostError(
-        'PAIRING_ENDPOINT_UNAVAILABLE',
-        'No Mira pairing endpoint is available',
+        'PAIRING_DIRECT_HOST_REQUIRED',
+        'Pairing requires a Tailscale Direct Mira Host address',
       );
     }
 
-    await this.jsonTransport({
-      hostUrl: descriptor.hostUrl,
-      path: '/health',
-      allowInsecureDevelopment: __DEV__,
-      raw: true,
-      parse: value => value,
-    });
+    try {
+      await this.jsonTransport({
+        hostUrl: descriptor.hostUrl,
+        path: '/health',
+        allowInsecureDevelopment: __DEV__,
+        raw: true,
+        parse: value => value,
+      });
+    } catch (error) {
+      if (isDirectNetworkError(error)) {
+        throw new RemoteHostError(
+          'PAIRING_DIRECT_UNREACHABLE',
+          'Mira Desktop is not reachable over Tailscale Direct',
+          undefined,
+          error,
+        );
+      }
+      throw error;
+    }
     this.directRetryAfter = 0;
-    return 'direct';
   }
 
   private async claimPairingOnTransport(
@@ -957,22 +956,26 @@ export class RemoteMiraHostClient {
     identity: MobileDeviceIdentity,
     transport: RemoteTransportKind,
   ): Promise<PairingClaimResponse> {
-    return this.requestJsonOnTransport(descriptor, transport, {
-      path: '/remote/pairing/claim',
-      method: 'POST',
-      body: {
-        challengeId: descriptor.challengeId,
-        code: descriptor.code,
-        deviceName: normalizeDeviceName(identity.name),
-        platform: identity.platform ?? Platform.OS,
-        transport,
-        ...(identity.publicKey ? { publicKey: identity.publicKey } : {}),
-        ...(identity.requestedScopes
-          ? { requestedScopes: identity.requestedScopes }
-          : {}),
+    return this.requestJsonOnTransport(
+      { hostUrl: descriptor.hostUrl, relay: null },
+      transport,
+      {
+        path: '/remote/pairing/claim',
+        method: 'POST',
+        body: {
+          challengeId: descriptor.challengeId,
+          code: descriptor.code,
+          deviceName: normalizeDeviceName(identity.name),
+          platform: identity.platform ?? Platform.OS,
+          transport,
+          ...(identity.publicKey ? { publicKey: identity.publicKey } : {}),
+          ...(identity.requestedScopes
+            ? { requestedScopes: identity.requestedScopes }
+            : {}),
+        },
+        parse: parsePairingClaimResponse,
       },
-      parse: parsePairingClaimResponse,
-    });
+    );
   }
 
   private async getManifestWithCredential(
