@@ -2,12 +2,13 @@
 
 ## 当前工程主线
 
-- [Mobile Canonical Work Ledger](workbench/00-work-ledger.md)
-- [Mobile 工作台账详细镜像](work-ledger.md)
+- [Pi Core Local Agent 当前实现与验收边界](engineering/pi-core-mobile-bridge.md)
+- [Mobile / Desktop 工具联调任务 MOB-089](https://github.com/uichat-mira/mira-mobile/issues/349)
+- [历史工作台账（非当前任务状态源）](workbench/00-work-ledger.md)
 
-`docs/work-ledger.md` 是当前移动端线程、项目与角色展示工作的任务事实来源。任务状态、Host 依赖、产品决定和验收结果统一在台账维护。
+**任务契约、待办与验收结论以当前 GitHub Issue 为准**；实际能力以 `dev` 的代码、配置和运行证据为准。旧台账仅保存当时的工程记录，不再是当前任务状态源，也不存在可用的 `docs/work-ledger.md` 详细镜像。
 
-Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop / Server 的协议问题只记录为依赖，未经明确授权不在本仓库越界修改。
+Mobile 具有 Local Provider 和 Remote Host 两条链路。Host / Harness 保留远程工具执行与审批权威；Local Provider 的工具声明与模型协议适配属于 Mobile 消费端。跨仓协议债应在所属仓库 Issue 跟踪，不能擅自越界改 Host。
 
 ## 功能设计
 
@@ -32,7 +33,7 @@ Mobile 新能力仍只消费 Mira Host 的 canonical contract；跨到 Desktop /
 - [Tailscale 联通工程进度（历史）](remote-access/tailscale-connectivity-progress.md)
 - [Trae Host V1 交接（历史）](remote-access/trae-host-v1-handoff.md)
 
-归档文档中的“当前”“下一阶段”“排期”等措辞均按其原始日期理解，不覆盖 `docs/work-ledger.md` 的当前状态。
+归档文档中的“当前”“下一阶段”“排期”均按原始日期理解，不覆盖 GitHub Issue 的当前合同与执行状态。历史联通工程归档不表示当前 Remote Host / Relay 功能被移除。
 
 ## 设计体系
 
