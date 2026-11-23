@@ -24,12 +24,12 @@ import {
   createLocalProviderExecutor,
   LocalProviderExecutionController,
 } from './localProviderExecution';
-import { LocalAgentRunController } from './localAgentRunController';
+import {
+  LocalAgentRunController,
+  type LocalAgentToolGatewaySource,
+} from './localAgentRunController';
 import { executeLocalConversationTurn } from './localConversationExecution';
-import type {
-  ToolApprovalDecision,
-  ToolGatewayClient,
-} from '../tools/toolGatewayClient';
+import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
   stageLocalSessionReferenceRemoval,
   type StagedLocalSessionReferenceRemoval,
@@ -114,7 +114,7 @@ export interface LocalProviderRuntimeOptions {
     config: LocalProviderConfig,
     apiKey: string,
   ) => OpenAiStandardClient;
-  toolGateway?: ToolGatewayClient;
+  toolGateway?: LocalAgentToolGatewaySource;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
   stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;

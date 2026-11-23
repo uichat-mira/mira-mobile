@@ -26,6 +26,10 @@ interface PendingApproval {
 export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
   initialMessages: readonly OpenAiMessage[];
+  approvalRecipient?: string;
+  /** Current user turn used only to bind an explicitly named Cloud Host. */
+  selectionText?: string;
+  previousAssistantText?: string;
   shouldPause?: () => boolean;
 }
 
@@ -35,12 +39,23 @@ export interface LocalAgentRun {
   runToken: symbol;
 }
 
+export type LocalAgentToolGatewaySource =
+  | ToolGatewayClient
+  | ((selectionText?: string, previousAssistantText?: string) => ToolGatewayClient);
+
+const resolveToolGateway = (
+  source: LocalAgentToolGatewaySource,
+  selectionText?: string,
+  previousAssistantText?: string,
+): ToolGatewayClient =>
+  typeof source === 'function' ? source(selectionText, previousAssistantText) : source;
+
 export class LocalAgentRunController {
   private activeAbortController: AbortController | null = null;
   private activeRunToken: symbol | null = null;
   private pendingApproval: PendingApproval | null = null;
 
-  constructor(private readonly toolGateway: ToolGatewayClient) {}
+  constructor(private readonly toolGateway: LocalAgentToolGatewaySource) {}
 
   get active(): boolean {
     return this.activeRunToken !== null;
@@ -54,11 +69,16 @@ export class LocalAgentRunController {
     this.activeRunToken = runToken;
 
     try {
-      const stream = await new MobileAgentLoop(this.toolGateway).run(
+      // A source factory supplies a fresh gateway for each run so Cloud account
+      // / Host authority and tool aliases never leak into a later Agent run.
+      const stream = await new MobileAgentLoop(
+        resolveToolGateway(this.toolGateway, input.selectionText, input.previousAssistantText),
+      ).run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {
           shouldPause: input.shouldPause,
+          approvalRecipient: input.approvalRecipient,
           signal: abortController.signal,
           // A Local turn must stay answerable when the approved remote tool
           // channel is temporarily unreachable; Agent mode degrades to a plain

@@ -402,7 +402,10 @@ describe('SessionListScreen session collection', () => {
     ).toEqual({ kind: 'chat' });
   });
 
-  it('surfaces the Agent workspace contract error instead of navigating', async () => {
+  it('opens an Agent session without a public project instead of blocking it', async () => {
+    const { useNavigation } = jest.requireMock('@react-navigation/native');
+    const navigation = { navigate: jest.fn(), goBack: jest.fn() };
+    (useNavigation as jest.Mock).mockReturnValue(navigation);
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     runtimeRegistry.listSessions.mockResolvedValue([
       {
@@ -410,7 +413,7 @@ describe('SessionListScreen session collection', () => {
         title: 'Agent 会话',
         updatedAt: new Date('2026-08-28T00:10:00.000Z'),
         agentEnabled: true,
-        workspaceId: '   ',
+        workspaceId: null,
       },
     ]);
 
@@ -425,12 +428,19 @@ describe('SessionListScreen session collection', () => {
       row.props.onPress();
     });
 
-    expect(alertSpy).toHaveBeenCalledWith(
-      '无法打开会话',
-      '该 Agent 会话缺少项目归属，无法在移动端打开。',
+    // Desktop's default-Agent thread owns a private Host workspace and has no
+    // public workspaceId, which is a valid state on Mobile.
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(navigation.navigate).toHaveBeenCalledWith(
+      'Chat',
+      expect.objectContaining({ sessionId: 'thread-agent' }),
     );
 
     alertSpy.mockRestore();
+    (useNavigation as jest.Mock).mockReturnValue({
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+    });
     await act(async () => tree.unmount());
   });
 

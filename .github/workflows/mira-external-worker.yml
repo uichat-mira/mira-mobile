@@ -120,18 +120,19 @@ jobs:
   worker:
     needs: enrollment
     permissions:
+      actions: read
       contents: write
-      issues: read
+      issues: write
       pull-requests: write
-    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@1380017dbedd147fdfec4c5b2404443e12967182
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@ffafbf0c79ad59daeaf3f78f88f9942a219a02e1
     with:
       issue_number: ${{ fromJSON(needs.enrollment.outputs.issue_number) }}
       base_branch: dev
       timeout_minutes: 60
-      verification_command: |
-        npm ci
-        npm run typecheck
-        npm run lint
-        npm test -- --runInBand
+      provider: opencode-go
+      model: deepseek-v4.1-flash
+      validation_profile: mobile-feature
+      validation_max_tier: L3
     secrets:
       opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
+      haomai_reporter_hmac_secret: ${{ secrets.HAOMAI_REPORTER_HMAC_SECRET }}

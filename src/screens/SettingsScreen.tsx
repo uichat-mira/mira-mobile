@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   ChevronLeft,
@@ -30,6 +30,7 @@ import {
   MessageCircle,
   Palette,
   Cloud,
+  Mail,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme, type AccentColor, type ThemeMode } from '../theme/ThemeContext';
@@ -79,19 +80,26 @@ export function SettingsScreen() {
   const [disconnecting, setDisconnecting] = useState(false);
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
-  const [localConfigured, setLocalConfigured] = useState(false);
+  const [providerCount, setProviderCount] = useState(0);
   const cloudStatus = useCloudAccountStore((state) => state.status);
   const cloudAccount = useCloudAccountStore((state) => state.account);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    void new ProviderConfigStore().load().then((configs) => {
-      if (!cancelled) setLocalConfigured(configs.length > 0);
-    }).catch(() => {
-      if (!cancelled) setLocalConfigured(false);
-    });
-    return () => { cancelled = true; };
-  }, []);
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void new ProviderConfigStore()
+        .load()
+        .then((configs) => {
+          if (!cancelled) setProviderCount(configs.length);
+        })
+        .catch(() => {
+          if (!cancelled) setProviderCount(0);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
 
   const remoteHasError = !['idle', 'probing', 'ready'].includes(remoteConnectivityState);
   const remoteVisualStatus: ConnectionVisualStatus = remoteHasError
@@ -161,13 +169,16 @@ export function SettingsScreen() {
         navigation.navigate('HostConfig');
         break;
       case 'local-provider':
-        navigation.navigate('LocalProviderConfig');
+        navigation.navigate('LocalProviderList');
         break;
       case 'disconnect-host':
         requestDisconnect();
         break;
       case 'cloud-account':
         navigation.navigate('CloudAccount');
+        break;
+      case 'who-you':
+        navigation.navigate('WhoYou');
         break;
       case 'plugins':
         navigation.navigate('Plugins');
@@ -202,7 +213,9 @@ export function SettingsScreen() {
         ? '等待浏览器完成登录'
         : cloudStatus === 'cloud_unavailable'
           ? 'Cloud 暂时不可用'
-          : cloudStatus === 'session_rejected'
+          : cloudStatus === 'device_revoked'
+            ? '本机授权已撤销，需重新注册'
+            : cloudStatus === 'session_rejected'
             ? '登录已失效，点击重新登录'
             : cloudStatus === 'loading'
               ? '正在读取…'
@@ -251,12 +264,12 @@ export function SettingsScreen() {
         <RowGroup onAction={handleSettingAction}>
           <Row
             icon={MessageCircle}
-            title="本地连接"
+            title="模型直连"
+            subtitle={providerCount > 0 ? `${providerCount} 个已保存配置 · 未验证连接` : '未配置'}
             actionId="local-provider"
             isFirst
             isLast={false}
-            right={<ConnectionStatusDot status={localConfigured ? 'connected' : 'not-configured'} />}
-            showChevron={false}
+            showChevron
           />
           <Row
             icon={Monitor}
@@ -276,6 +289,17 @@ export function SettingsScreen() {
             subtitle={cloudSubtitle}
             actionId="cloud-account"
             isFirst
+            isLast={false}
+          />
+          <Row
+            icon={Mail}
+            title="狐邮 Who You"
+            subtitle={
+              cloudStatus === 'signed_in'
+                ? '云端只读邮箱'
+                : '需要登录 Mira Cloud'
+            }
+            actionId="who-you"
             isLast={false}
           />
           <Row icon={Smile} title="个性化" actionId="personalization" isLast={false} />

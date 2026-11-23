@@ -65,6 +65,10 @@ const createHarness = () => {
     listDevices: jest.fn(),
     revokeDevice: jest.fn(),
   };
+  (api.getSession as jest.Mock).mockResolvedValue({
+    account: issued.account,
+    expiresAt: issued.expiresAt,
+  });
   const service = new MiraCloudAuthService({
     sessionStore,
     installationIdentity,
@@ -127,6 +131,43 @@ describe('Mira Cloud OAuth service', () => {
     expect(installation?.installationId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
+  });
+
+  it('requires explicit re-enrollment after a confirmed revoked installation and reuses the replacement on retry', async () => {
+    const h = createHarness();
+    await h.service.beginSignIn();
+    const old = h.installationStore.peek()!.installationId;
+    const pending = h.pendingStore.peek()!;
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('rejected', 'revoked', 'OAUTH_DEVICE_REVOKED'),
+    );
+    await expect(h.service.completeSignIn({ code, state: pending.state })).resolves.toEqual({ status: 'device_revoked' });
+    expect(h.installationStore.peek()).toMatchObject({ installationId: old, revoked: true });
+    await expect(h.service.restoreSession()).resolves.toEqual({ status: 'device_revoked' });
+    await expect(h.service.beginSignIn()).rejects.toMatchObject({ kind: 'device_revoked' });
+    expect(h.installationStore.peek()!.installationId).toBe(old);
+    await h.service.beginSignIn(true);
+    const replacement = h.installationStore.peek()!.installationId;
+    expect(replacement).not.toBe(old);
+    await h.service.cancelPendingSignIn();
+    await h.service.beginSignIn();
+    expect(h.installationStore.peek()!.installationId).toBe(replacement);
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockResolvedValueOnce(issued);
+    await expect(h.service.completeSignIn({ code, state: h.pendingStore.peek()!.state })).resolves.toMatchObject({ status: 'signed_in' });
+    expect(h.api.exchangeAuthorizationCode).toHaveBeenLastCalledWith(expect.objectContaining({ installationId: replacement }));
+  });
+
+  it('never replaces an installation on an ordinary invalid grant', async () => {
+    const h = createHarness();
+    await h.service.beginSignIn();
+    const old = h.installationStore.peek()!.installationId;
+    (h.api.exchangeAuthorizationCode as jest.Mock).mockRejectedValueOnce(
+      new CloudAuthRequestError('rejected', 'invalid', 'OAUTH_INVALID_GRANT'),
+    );
+    await expect(h.service.completeSignIn({ code, state: h.pendingStore.peek()!.state })).rejects.toMatchObject({ kind: 'rejected' });
+    await expect(h.service.beginSignIn(true)).rejects.toMatchObject({ kind: 'invalid_state' });
+    await h.service.beginSignIn();
+    expect(h.installationStore.peek()!.installationId).toBe(old);
   });
 
   it('exchanges the callback exactly once and persists the issued Cloud Session', async () => {
@@ -633,6 +674,76 @@ describe('Mira Cloud device service', () => {
       devices: [device],
     });
     expect(harness.api.listDevices).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('refreshes this installation metadata only after verifying its server-owned device id', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account,
+      expiresAt: issued.expiresAt,
+      deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => device);
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    const result = await harness.service.listDevices();
+    expect(result).toEqual({ status: 'listed', devices: [device], currentDeviceId: device.id });
+    expect(harness.api.registerDevice).toHaveBeenCalledWith(
+      issued.sessionToken,
+      expect.stringMatching(/^[0-9a-f]{8}-/u),
+      expect.objectContaining({ clientName: 'Mira Mobile', clientVersion: expect.any(String) }),
+    );
+    expect(harness.api.getSession).toHaveBeenCalledWith(issued.sessionToken);
+  });
+
+  it('refuses to label a different registration as the current device', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => ({ ...device, id: revokedDevice.id }));
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toMatchObject({
+      status: 'listed',
+      devices: [device],
+      currentDeviceId: null,
+    });
+    expect(harness.api.listDevices).toHaveBeenCalled();
+    expect(harness.sessionStore.peek()).not.toBeNull();
+  });
+
+  it('preserves the active list and stored Session if optional metadata upload is unavailable', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => {
+      throw new CloudAuthRequestError('network', 'optional metadata upload failed');
+    });
+    (harness.api.listDevices as jest.Mock).mockResolvedValue([device]);
+
+    await expect(harness.service.listDevices()).resolves.toEqual({
+      status: 'listed', devices: [device], currentDeviceId: null,
+    });
+    expect(harness.sessionStore.peek()?.sessionToken).toBe(issued.sessionToken);
+  });
+
+  it('clears a genuinely rejected Session during the metadata request', async () => {
+    const harness = createHarness();
+    await harness.sessionStore.save(storedSession());
+    (harness.api.getSession as jest.Mock).mockResolvedValue({
+      account: issued.account, expiresAt: issued.expiresAt, deviceId: device.id,
+    });
+    harness.api.registerDevice = jest.fn(async () => {
+      throw new CloudAuthRequestError('rejected', 'Session revoked', 'AUTH_REAUTH_REQUIRED');
+    });
+    await expect(harness.service.listDevices()).resolves.toMatchObject({ status: 'rejected' });
+    expect(harness.sessionStore.peek()).toBeNull();
+    expect(harness.api.listDevices).not.toHaveBeenCalled();
   });
 
   it('clears local Cloud authority when the device list is rejected', async () => {

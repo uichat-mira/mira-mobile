@@ -111,7 +111,7 @@ export function CloudAuthCallbackScreen() {
               <AlertCircle size={30} color={colors.status.error} />
             </View>
             <Text style={[styles.title, { color: colors.text.ink }]}>
-              未完成 Mira Cloud 登录
+              {result === 'device_revoked' ? '本机授权已撤销' : '未完成 Mira Cloud 登录'}
             </Text>
             <Text style={[styles.description, { color: colors.text.soft }]}>
               {summary ?? '登录回调未通过校验，请重新发起登录。'}

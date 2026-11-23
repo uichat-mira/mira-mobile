@@ -21,7 +21,7 @@ describe('unpaired Mobile navigation safety', () => {
   });
 
   it('places a newly created local chat above the SessionList root', () => {
-    const config = source('src/screens/LocalProviderConfigScreen.tsx');
+    const config = source('src/screens/LocalProviderListScreen.tsx');
     expect(config).toContain("navigation.reset({");
     expect(config).toContain("{ name: 'SessionList' }");
   });

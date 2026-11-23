@@ -176,13 +176,23 @@ export class RemoteHostBusinessClient {
     });
   }
 
-  async createThread(title?: string): Promise<RemoteThread> {
+  async createThread(
+    title?: string,
+    options?: { agentEnabled?: boolean },
+  ): Promise<RemoteThread> {
     const channel = await this.transport.openChannel();
+    const agentEnabled = options?.agentEnabled;
     return channel.mutateOnce(
       {
         path: '/threads',
         method: 'POST',
-        body: title ? { title } : {},
+        body: {
+          ...(title ? { title } : {}),
+          // Desktop's canonical default-Agent conversation is a Host-owned
+          // thread; Mobile must request it explicitly or it creates a legacy
+          // non-Agent thread that the current Desktop UI no longer produces.
+          ...(typeof agentEnabled === 'boolean' ? { agentEnabled } : {}),
+        },
         parse: parseRemoteThread,
       },
       'THREAD_CREATE_UNCERTAIN',

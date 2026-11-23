@@ -82,11 +82,17 @@ export class CompositeToolGatewayClient implements ToolGatewayClient {
     return this.remote.callTool(request, options);
   }
 
-  resolveApproval(
+  async resolveApproval(
     approval: ToolApprovalRequest,
     decision: ToolApprovalDecision,
     options?: { signal?: AbortSignal },
   ): Promise<ToolApprovalResolution> {
+    // Mobile-owned disclosure approvals never reach the Host. Route by the
+    // compiled-in tool name; a Host cannot impersonate this local decision.
+    if (this.local.resolveApproval &&
+        (await this.local.listTools()).some(tool => tool.name === approval.name)) {
+      return this.local.resolveApproval(approval, decision, options);
+    }
     const resolve = this.remote.resolveApproval;
     if (!resolve) {
       return Promise.reject(

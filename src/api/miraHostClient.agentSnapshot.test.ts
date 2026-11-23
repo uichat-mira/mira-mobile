@@ -176,7 +176,25 @@ describe('PairedRemoteMiraHostClient canonical thread creation', () => {
       status: 'active',
       messageCount: 0,
     });
-    expect(remote.createThread).toHaveBeenCalledWith('新对话');
+    expect(remote.createThread).toHaveBeenCalledWith('新对话', undefined);
+  });
+
+  test('passes the requested Agent contract through to the Host thread create', async () => {
+    const remote = {
+      getManifest: jest.fn(async () =>
+        manifest({ messagesWriteScope: true, createRoute: true }),
+      ),
+      createThread: jest.fn(async () => createdThread),
+    } as unknown as RemoteMiraHostClient;
+    const client = new PairedRemoteMiraHostClient(remote);
+
+    await client.createSession(undefined, { agentEnabled: true });
+
+    // Mobile's new Remote chat must be a Host Agent thread, matching what
+    // current Desktop creates by default.
+    expect(remote.createThread).toHaveBeenCalledWith(undefined, {
+      agentEnabled: true,
+    });
   });
 });
 

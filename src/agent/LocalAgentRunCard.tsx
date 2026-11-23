@@ -39,7 +39,11 @@ export type LocalAgentPauseReason =
 
 export type LocalAgentNoticeCode =
   | 'tool-channel-unavailable'
-  | 'toolset-degraded';
+  | 'toolset-degraded'
+  | 'cloud-tools-unavailable'
+  | 'cloud-tools-unauthorized'
+  | 'cloud-tools-session-invalid'
+  | 'cloud-tools-host-ambiguous';
 
 export interface LocalAgentApprovalView {
   invocationId: string;
@@ -94,6 +98,14 @@ const noticeLabel: Record<LocalAgentNoticeCode, string> = {
     '工具通道当前不可用，本次已按普通回答处理，未使用任何工具。',
   'toolset-degraded':
     'Host 工具暂时不可用，本轮只使用手机内置工具（如天气）。',
+  'cloud-tools-unavailable':
+    'Mira Cloud 或 Desktop Host 暂不可连接；本轮只使用手机内置工具。',
+  'cloud-tools-unauthorized':
+    '本机未获得 Desktop 工具执行权限；本轮只使用手机内置工具。请检查 Cloud Host 授权。',
+  'cloud-tools-session-invalid':
+    'Mira Cloud 登录已失效或本机设备授权已撤销；本轮只使用手机内置工具，请重新登录或注册设备。',
+  'cloud-tools-host-ambiguous':
+    '同一 Mira Cloud 账号有多台可用 Desktop Host；请从本轮消息中的设备列表选择一台后再发送。',
 };
 
 const preview = (value: string) => {

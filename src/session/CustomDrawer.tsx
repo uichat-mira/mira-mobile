@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -37,6 +37,7 @@ import {
   useThreadReadStore,
 } from '../store/threadReadStore';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../settings/generalSettings';
+import { SettingsChoiceModal } from '../settings/SettingsChoiceModal';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
@@ -90,6 +91,8 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const hydrateReads = useThreadReadStore((state) => state.hydrate);
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
   const [creatingChat, setCreatingChat] = useState(false);
+  const creatingChatRef = useRef(false);
+  const [sourcePickerVisible, setSourcePickerVisible] = useState(false);
 
   const hydrateLocalState = useCallback(
     () =>
@@ -177,9 +180,9 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     navigation.navigate('HostConfig');
   }, [navigation, onClose]);
 
-  const handleOpenLocalProvider = useCallback(() => {
+  const handleOpenLocalProvider = useCallback((forChat = false) => {
     onClose();
-    navigation.navigate('LocalProviderConfig');
+    navigation.navigate('LocalProviderList', forChat ? { mode: 'create' } : undefined);
   }, [navigation, onClose]);
 
   const handleOpenPlugins = () => {
@@ -199,9 +202,16 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   );
 
   const createRemoteChat = useCallback(async () => {
+    if (creatingChatRef.current) return;
+    creatingChatRef.current = true;
     setCreatingChat(true);
     try {
-      const session = await miraHostClient.createSession();
+      // Desktop's current canonical conversation is an Agent thread. Creating a
+      // legacy non-Agent thread here produced conversations the Desktop UI no
+      // longer defaults to, so a new Remote chat asks for Agent explicitly.
+      const session = await miraHostClient.createSession(undefined, {
+        agentEnabled: true,
+      });
       onClose();
       navigation.navigate('Chat', {
         sessionId: session.id,
@@ -215,6 +225,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
           : '无法新建远程会话，请稍后重试。';
       Alert.alert('无法新建远程会话', message);
     } finally {
+      creatingChatRef.current = false;
       setCreatingChat(false);
     }
   }, [navigation, onClose]);
@@ -227,21 +238,20 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
       return;
     }
     if (settings.defaultSessionSource === 'local-provider') {
-      handleOpenLocalProvider();
+      handleOpenLocalProvider(true);
       return;
     }
-    Alert.alert('新建会话', '选择会话来源', [
-      {
-        text: '远程连接',
-        onPress: () => void createRemoteChat(),
-      },
-      {
-        text: '本地连接',
-        onPress: handleOpenLocalProvider,
-      },
-      { text: '取消', style: 'cancel' },
-    ]);
+    setSourcePickerVisible(true);
   }, [creatingChat, createRemoteChat, handleOpenLocalProvider]);
+
+  const handleChooseSource = useCallback((source: 'remote' | 'local') => {
+    setSourcePickerVisible(false);
+    if (source === 'local') {
+      handleOpenLocalProvider(true);
+    } else {
+      void createRemoteChat();
+    }
+  }, [createRemoteChat, handleOpenLocalProvider]);
 
   const renderDrawerSession = useCallback(
     ({ item }: { item: Session }) => {
@@ -357,7 +367,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
               cat.id === 'remote'
                 ? handleOpenRemoteConnection
                 : cat.id === 'local-provider'
-                  ? handleOpenLocalProvider
+                  ? () => handleOpenLocalProvider()
                 : cat.id === 'workspaces'
                   ? handleOpenWorkspaces
                   : cat.id === 'plugins'
@@ -487,6 +497,21 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
           <Text style={[styles.avatarLabel, { color: colors.primary }]}>M</Text>
         </View>
       </View>
+      <SettingsChoiceModal
+        withinModal
+        title="选择聊天方式"
+        visible={sourcePickerVisible}
+        value="remote"
+        options={[
+          {
+            value: 'remote', label: '远程连接',
+            description: 'Mira Desktop / Tailscale',
+          },
+          { value: 'local', label: '本地连接', description: '手机直连模型服务' },
+        ]}
+        onChange={handleChooseSource}
+        onClose={() => setSourcePickerVisible(false)}
+      />
     </View>
   );
 }

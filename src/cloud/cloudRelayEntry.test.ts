@@ -44,16 +44,19 @@ const ticketFor = (
 interface FakeCloudRelayApi extends CloudRelayApiLike {
   listHosts: jest.Mock;
   issueRelayClientTicket: jest.Mock;
+  listDevices?: jest.Mock;
 }
 
 const api = (overrides: {
   listHosts?: jest.Mock;
   issueRelayClientTicket?: jest.Mock;
+  listDevices?: jest.Mock;
 } = {}): FakeCloudRelayApi => ({
   listHosts: overrides.listHosts ?? jest.fn(async () => [host]),
   issueRelayClientTicket:
     overrides.issueRelayClientTicket ??
     jest.fn(async (_token: string, room: string) => ticketFor(room)),
+  ...(overrides.listDevices ? { listDevices: overrides.listDevices } : {}),
 });
 
 const storedSession = async () => {
@@ -126,6 +129,94 @@ describe('MOB-080 Cloud Relay discovery and ticket slice', () => {
     expect(
       selectCloudRelayHost([{ ...host, availability: 'offline' }]),
     ).toBeNull();
+  });
+
+  it('projects real candidates and resolves an explicitly selected Host without drift', async () => {
+    const secondHost = {
+      ...host,
+      id: 'host-2',
+      deviceId: 'device-desktop-2',
+      displayName: 'Office PC',
+      relayRoom: 'room_2234567890abcdef',
+      lastAdvertisedAt: '2026-10-31T14:59:55.000Z',
+    };
+    const apiLike = api({
+      listHosts: jest.fn(async () => [host, secondHost]),
+    });
+    const relayEntry = entry(await storedSession(), apiLike);
+
+    const directory = await relayEntry.listHostCandidates();
+    expect(directory).toEqual({
+      accountId: 'account-1',
+      hosts: [
+        expect.objectContaining({
+          hostId: 'host-1',
+          deviceId: 'device-desktop-1',
+          name: 'Mira Desktop',
+          availability: 'available',
+        }),
+        expect.objectContaining({
+          hostId: 'host-2',
+          name: 'Office PC',
+          availability: 'available',
+        }),
+      ],
+    });
+    expect(JSON.stringify(directory)).not.toContain('room_');
+
+    // The older Host remains selectable even though another Host is newer.
+    const first = await relayEntry.discoverHost('host-1');
+    expect(first.target).toMatchObject({ hostId: 'host-1', room: host.relayRoom });
+    expect(relayEntry.assertCurrentAccess.bind(relayEntry, first)).not.toThrow();
+    // Chat keeps its deterministic most-recent Host choice independently.
+    await expect(relayEntry.discover()).resolves.toMatchObject({
+      target: { hostId: 'host-2' },
+    });
+    expect(relayEntry.assertCurrentAccess.bind(relayEntry, first)).not.toThrow();
+  });
+
+  it('prefers a real device name over the generic Host client name', async () => {
+    const unnamed = { ...host, id: 'host-unnamed', displayName: 'Mira Desktop' };
+    const relayEntry = entry(
+      await storedSession(),
+      api({
+        listHosts: jest.fn(async () => [unnamed]),
+        listDevices: jest.fn(async () => [{
+          id: 'device-desktop-1',
+          platform: 'desktop',
+          clientName: 'Mira Desktop',
+          clientVersion: '1.0.0',
+          deviceName: 'Studio Mac',
+          osName: 'macOS',
+          osVersion: '15',
+          createdAt: '2026-10-01T00:00:00.000Z',
+          lastSeenAt: '2026-10-31T14:59:00.000Z',
+          revokedAt: null,
+        }]),
+      }),
+    );
+
+    await expect(relayEntry.listHostCandidates()).resolves.toMatchObject({
+      hosts: [{ hostId: 'host-unnamed', name: 'Studio Mac' }],
+    });
+  });
+
+  it('fails closed for a selected Host that is offline or no longer registered', async () => {
+    const offlineEntry = entry(
+      await storedSession(),
+      api({
+        listHosts: jest.fn(async () => [
+          host,
+          { ...host, id: 'host-offline', availability: 'offline' as const },
+        ]),
+      }),
+    );
+    await expect(offlineEntry.discoverHost('host-offline')).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_HOST_OFFLINE',
+    });
+    await expect(offlineEntry.discoverHost('host-missing')).rejects.toMatchObject({
+      code: 'CLOUD_RELAY_HOST_NOT_FOUND',
+    });
   });
 
   it('distinguishes no Host, offline Host and ambiguous Host data', async () => {

@@ -76,8 +76,8 @@ export class CloudRemoteBusinessClient {
     return this.business.getMessages(threadId);
   }
 
-  createThread(title?: string) {
-    return this.business.createThread(title);
+  createThread(title?: string, options?: { agentEnabled?: boolean }) {
+    return this.business.createThread(title, options);
   }
 
   deleteThread(threadId: string) {
