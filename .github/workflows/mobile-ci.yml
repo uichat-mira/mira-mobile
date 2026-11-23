@@ -389,11 +389,24 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$derived_data" \
             MARKETING_VERSION="$package_version" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY='-' \
+            CODE_SIGN_STYLE=Manual \
             build
 
           app_path=$(find "$derived_data/Build/Products" -type d -name '*.app' -print -quit)
           test -n "$app_path"
+
+          # A simulator app can launch without signing entitlements but then
+          # fail every Keychain read with errSecMissingEntitlement (-34018).
+          # Check the executable section, not only codesign output: simulator
+          # entitlements are embedded in __TEXT,__entitlements.
+          codesign --verify "$app_path"
+          if ! otool -l "$app_path/UIChatMira" | grep 'sectname __entitlements' >/dev/null; then
+            echo "iOS simulator app is missing embedded entitlements (Keychain unusable)" >&2
+            exit 1
+          fi
+
           ditto -c -k --sequesterRsrc --keepParent "$app_path" ios/build/uichat-mira-mobile-ios-simulator.zip
 
       - name: Upload iOS simulator app

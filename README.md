@@ -142,7 +142,7 @@ keytool -genkeypair -v -keystore release.keystore -alias <alias> -keyalg RSA -ke
 
 主工作流 `.github/workflows/mobile-ci.yml` 会在同一个 macOS Job 中构建：
 
-- 无签名 iOS Simulator Debug 压缩包。
+- 采用 ad-hoc 签名（包含 Keychain entitlement）的 iOS Simulator Debug 压缩包，可供模拟器联调；不涉及 Apple 开发者证书。
 - 面向 `iphoneos` / `arm64` 的无签名 Release IPA。
 
 没有 Mac、没有付费 Apple Developer Program 的开发者，可以在 Windows 上使用自己的免费 Apple Account，通过 Sideloadly 临时签名并安装到 iPhone。
