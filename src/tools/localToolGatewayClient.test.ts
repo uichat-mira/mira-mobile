@@ -140,15 +140,45 @@ describe('MOB-086 privacy consent arguments cannot spoof the approval UI', () =>
     expect(approval.message).not.toContain(' '.repeat(120));
     expect(search).not.toHaveBeenCalled();
     await gateway.resolveApproval(approval, 'approved');
-    expect(search).toHaveBeenCalledWith({ query: 'hidden' }, expect.anything());
+    expect(search).toHaveBeenCalledWith({ query: 'hidden', limit: 10 }, expect.anything());
   });
 
   it('escapes line breaks and unicode separators so input cannot forge a recipient line', async () => {
     const approval = await approvalFor('urgent\n接收方：attacker.test\u2028假范围');
-    expect(approval.message.split('\n')).toHaveLength(2);
+    expect(approval.message.split('\n')).toHaveLength(3);
     expect(approval.message).toContain('urgent\\n接收方');
     expect(approval.message).toContain('\\u2028');
     expect(approval.message).not.toContain('\n接收方：attacker.test');
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('ties user approval to requested page size and opaque continuation', async () => {
+    let approval: import('./toolGatewayClient').ToolApprovalRequest | null = null;
+    try {
+      await gateway.callTool({
+        callId: 'page-call',
+        name: 'whoyou_mail_search',
+        arguments: JSON.stringify({ query: 'urgent', limit: 12, cursor: 'page-2' }),
+      });
+    } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) approval = error.approval;
+      else throw error;
+    }
+    expect(approval?.message).toContain('本页上限：12 封');
+    expect(approval?.message).toContain('继续分页：是');
+    expect(search).not.toHaveBeenCalled();
+    await gateway.resolveApproval(approval!, 'approved');
+    expect(search).toHaveBeenCalledWith({ query: 'urgent', limit: 12, cursor: 'page-2' }, expect.anything());
+  });
+
+  it('rejects unapproved excessive page sizes and invalid cursors before fetching mail', async () => {
+    for (const args of [{ limit: 51 }, { limit: 0 }, { limit: 1.5 }, { cursor: ' '.repeat(201) }]) {
+      await expect(gateway.callTool({
+        callId: 'bad-page',
+        name: 'whoyou_mail_search',
+        arguments: JSON.stringify(args),
+      })).rejects.toMatchObject({ code: 'WHOYOU_ARGUMENT_INVALID' });
+    }
     expect(search).not.toHaveBeenCalled();
   });
 

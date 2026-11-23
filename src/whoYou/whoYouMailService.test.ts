@@ -36,11 +36,11 @@ describe('WhoYouMailService session ownership', () => {
     });
   });
 
-  it('passes a bounded Agent read limit while preserving the manual search default', async () => {
+  it('passes per-call limit and cursor while preserving the manual search default', async () => {
     const { service, client } = createService();
-    await service.search('', undefined, undefined, 5);
+    await service.search('', 'page-2', undefined, 12);
     expect(client.searchMail).toHaveBeenCalledWith({
-      sessionToken: stored.sessionToken, accountId: account, limit: 5,
+      sessionToken: stored.sessionToken, accountId: account, limit: 12, cursor: 'page-2',
     });
     await service.search('');
     expect(client.searchMail).toHaveBeenLastCalledWith({
