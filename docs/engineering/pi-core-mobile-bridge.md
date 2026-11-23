@@ -55,6 +55,27 @@ There is no independent or hidden second budget in Pi.
 - Tool result size bounds, app suspension, run cancellation and execution
   deadlines are enforced by Pi just as before.
 
+### Host discovery and Provider compatibility (2026-11-23)
+
+- `mira_desktop_hosts` is a discovery entry, not an unconditional grant to
+  every Desktop tool. Its results can refresh the current run's tool manifests;
+  a new Local Agent run resolves its current Cloud / Host authority again.
+- The model-facing conversion in `src/runtime/piAgentLoop.ts`
+  (`toProviderParameters()`, [Mobile PR #358](https://github.com/uichat-mira/mira-mobile/pull/358))
+  adds root `type: "object"` only to root-untyped `oneOf` schemas whose
+  every branch is explicitly an object. The original Host manifest, branches,
+  invocation checks and approvals are preserved. This avoids a reproduced
+  OpenAI-compatible Provider HTTP 400 after Desktop discovery.
+- The four observed affected Desktop tools are `github_repository`,
+  `github_issue`, `github_pull_request` and `github_actions`.
+  Their exported Schema ownership remains Desktop-side; follow
+  [Desktop AGT-070](https://github.com/uichat-mira/mira-desktop/issues/491).
+  Do not remove the Mobile compatibility layer without independent evidence.
+- `news_search` queries Desktop's News Hub cache, **not live internet news**.
+  `web_search` is a separate Desktop capability gated by configured search
+  provider readiness and current Host authority. A registered Desktop tool
+  is not necessarily exposed to a given Mobile session.
+
 ## Validation and rollout
 
 Node 26 typecheck, lint and Jest are the source-level gates, including migrated
@@ -62,8 +83,16 @@ regressions from the former loop. Tests execute the real Pi Agent while faking
 only Provider/Host external IO when appropriate; Cloud adapter fixture tests
 exercise the actual client boundary.
 
-Metro/Hermes bundling was checked for the earlier isolated bridge candidate.
-Default cutover still requires **one Android true-device validation**:
+The earlier isolated Metro/Hermes bridge was checked. On 2026-11-23, a
+signed **0.3.36 Build 38 iPhone 17 Pro / iOS 26.5 simulator** with candidate
+JavaScript completed real `local_weather_current` (Open-Meteo result → model
+reply) and `mira_desktop_hosts → news_search → model reply` (real empty cache
+result). See [MOB-089](https://github.com/uichat-mira/mira-mobile/issues/349)
+and [PR #358](https://github.com/uichat-mira/mira-mobile/pull/358).
+These results do **not** prove a newly built post-merge installation, Android
+device behavior, live `web_search`, or full Who-You consent/reading acceptance.
+
+Remaining Android true-device and cross-service acceptance includes:
 1. Local Provider plain text and conversation persistence.
 2. One approved Desktop tool call with model continuation.
 3. Multiple Desktop Hosts: visible choice without guessing.

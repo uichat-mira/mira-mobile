@@ -1,8 +1,8 @@
-# Mira Mobile Work Ledger
+# Mira Mobile Work Ledger（历史台账，不再作为当前任务状态）
 
 更新时间：2026-09-12（Asia/Shanghai）
 
-这是 Mira Mobile 的唯一当前任务台账，按 Mira Forge 的台账规则维护。Mobile 任务继续使用本仓库既有的 `MOB-*` 编号；Forge 的 `Txxx` 编号只属于 Forge 自身工作台，不在 Mobile 仓库复制。
+> 历史台账：此文件头部仍标注 2026-09-12，后续行也曾追加其他日期的记录；这些状态不再反映当下进度。当前任务合同和验收结论以 [mira-mobile GitHub Issues](https://github.com/uichat-mira/mira-mobile/issues) 为准。
 
 状态语义统一为：
 

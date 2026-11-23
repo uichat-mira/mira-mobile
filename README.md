@@ -4,9 +4,9 @@ Mira 官方移动端工程，基于 React Native 构建。
 
 ## 项目定位
 
-移动端是用户随身连接 Mira Host 的入口，负责移动交互、设备能力和可靠连接。
+移动端有两条独立路径：**Remote Host** 消费 Mira Host 的远端会话与工具能力；**Local Provider** 在手机端保存用户配置的模型凭据，运行本地会话与前台 Pi Core Agent。
 
-当前处于基建阶段，首要目标是建立稳定、可维护、可验证的移动端骨架。
+当前重点是两条路径的可靠连接、跨端工具授权、错误恢复与 Android / iOS 真实验收。具体实现边界见 [Pi Core Local Agent 工程说明](docs/engineering/pi-core-mobile-bridge.md)，不能把已合并代码等同于所有设备、Provider 或远程工具都已验收。
 
 ## 技术栈
 
@@ -53,12 +53,14 @@ npm run lint
 
 ```text
 src/
-├── api/           # Mira Host API 适配层接口
-│   └── miraHost.ts
-├── types/         # 共享类型定义
-│   └── index.ts
-└── screens/       # 页面组件
-    └── HomeScreen.tsx
+├── api/        # Host / Cloud 网络客户端
+├── chat/       # 会话编排与状态
+├── provider/   # Local Provider 线协议与流式响应
+├── runtime/    # Pi Core Agent、运行控制与会话 Runtime
+├── tools/      # 本地工具、Remote / Cloud Tool Gateway
+├── settings/   # 设置与 Agent 执行预算
+├── screens/    # 移动端页面
+└── types/      # 共享类型
 ```
 
 ## Mira Cloud 设备恢复
@@ -77,8 +79,11 @@ Session 仍然撤销。中途取消或重试使用已持久化的新身份，不
 并由用户主动搜索、阅读**已同步**邮件的纯文本正文，不依赖 Desktop 或 Relay。
 同步不完整时，搜索不到不代表 Gmail 中没有这封邮件；同步、重授权、解绑继续由狐邮网页管理。
 
-Local Provider 的 Agent 模式只注册狐邮搜索与正文读取两项只读工具。
-**每次**将搜索结果或正文发送给用户配置的外部模型前，都展示接收方、用途和范围并请求确认。
+Local Provider 的 Agent 工具注册不止狐邮两项：内置 `local_weather_current` 与
+`whoyou_mail_search`、`whoyou_mail_message_get`；在具备相应云账号身份与权限时，
+还可通过 `mira_desktop_hosts` 按需发现授权的 Desktop 工具。工具**被注册**不代表
+当前账号已获权、Host 已就绪或 Provider 本轮已经看见对应 Schema。
+**每次**将狐邮搜索结果或正文发送给用户配置的外部模型前，都展示接收方、用途和范围并请求确认。
 邮件属于不可信输入，不能用于后续工具执行或权限提升；发信、附件及后台同步不在本能力范围。
 含邮件信息的回答可在手机**本地会话历史**查看，但会携带私密标记，
 不自动加入未来的模型请求上下文或自动记忆整理。
