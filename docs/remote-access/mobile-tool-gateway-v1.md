@@ -12,7 +12,7 @@ V1 工具链固定为：
 
 ```text
 Local Provider on Mobile
-  -> MobileAgentLoop
+  -> PiCoreAgentLoop
   -> ToolGatewayClient
   -> paired Mira Host Remote Gateway
   -> Harness
@@ -312,7 +312,7 @@ External MCP 继续使用 Host 已有 redaction。
 - 新 route 必须同时更新 Remote Gateway scope mapping、manifest、Mobile parser 和测试；
 - 老 Mobile 不认识 `tools` route 时继续使用原 Remote 会话能力；
 - 老 paired device 不自动获得 `tools:*`；
-- Provider adapter、MobileAgentLoop 和 ToolGatewayClient 继续保持 transport-neutral，未来可以替换具体远程实现而不改 Chat UI。
+- Provider adapter、PiCoreAgentLoop 和 ToolGatewayClient 继续保持 transport-neutral，未来可以替换具体远程实现而不改 Chat UI。
 
 ## 12. MOB-041 与后续卡边界
 

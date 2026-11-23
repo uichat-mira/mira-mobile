@@ -24,6 +24,12 @@ import {
   type LaunchBehavior,
 } from '../settings/generalSettings';
 import { startContinuousVibration, stopContinuousVibration } from '../haptics/haptics';
+import {
+  AGENT_ROUNDS_MIN,
+  AGENT_ROUNDS_MAX,
+  AGENT_DURATION_MINUTES_MIN,
+  AGENT_DURATION_MINUTES_MAX,
+} from '../settings/agentExecutionBudget';
 
 const defaultSessionSourceOptions: readonly SettingsChoice<DefaultSessionSource>[] = [
   { value: 'ask', label: '每次询问（默认）' },
@@ -203,6 +209,61 @@ export function GeneralSettingsScreen() {
         </SettingsGroup>
         <Text style={[styles.help, { color: colors.text.muted }]}>
           新建会话时默认使用的连接来源；选择“每次询问”会在新建时单独确认。
+        </Text>
+
+        <SettingsSectionHeader>智能体执行预算</SettingsSectionHeader>
+        <View style={[styles.strengthRow, { backgroundColor: colors.bg.card }]}>
+          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>
+            工具调用轮数上限 · {settings.agentBudget.maxToolRounds} 轮
+          </Text>
+          <Slider
+            style={styles.strengthSlider}
+            minimumValue={AGENT_ROUNDS_MIN}
+            maximumValue={AGENT_ROUNDS_MAX}
+            step={1}
+            value={settings.agentBudget.maxToolRounds}
+            minimumTrackTintColor={colors.primary}
+            maximumTrackTintColor={colors.border.default}
+            thumbTintColor={colors.primary}
+            disabled={loadFailed || saving}
+            accessibilityLabel="智能体工具轮数上限"
+            onValueChange={(value) => setSettings((current) => ({
+              ...current,
+              agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
+            }))}
+            onSlidingComplete={(value) => applySettings({
+              ...settings,
+              agentBudget: { ...settings.agentBudget, maxToolRounds: Math.round(value) },
+            })}
+          />
+        </View>
+        <View style={[styles.strengthRow, { backgroundColor: colors.bg.card }]}>
+          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>
+            单次运行最长时间 · {settings.agentBudget.maxDurationMinutes} 分钟
+          </Text>
+          <Slider
+            style={styles.strengthSlider}
+            minimumValue={AGENT_DURATION_MINUTES_MIN}
+            maximumValue={AGENT_DURATION_MINUTES_MAX}
+            step={1}
+            value={settings.agentBudget.maxDurationMinutes}
+            minimumTrackTintColor={colors.primary}
+            maximumTrackTintColor={colors.border.default}
+            thumbTintColor={colors.primary}
+            disabled={loadFailed || saving}
+            accessibilityLabel="智能体最长运行分钟数"
+            onValueChange={(value) => setSettings((current) => ({
+              ...current,
+              agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
+            }))}
+            onSlidingComplete={(value) => applySettings({
+              ...settings,
+              agentBudget: { ...settings.agentBudget, maxDurationMinutes: Math.round(value) },
+            })}
+          />
+        </View>
+        <Text style={[styles.help, { color: colors.text.muted }]}>
+          仅控制本机智能体的工具循环和总时长；下次运行生效，不限制费用。
         </Text>
 
         <SettingsSectionHeader>显示</SettingsSectionHeader>

@@ -1,3 +1,10 @@
+// The Agent budget store is a native IO boundary in unit tests.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentBudget: { maxToolRounds: 16, maxDurationMinutes: 15 },
+  })),
+}));
+
 import { RemoteHostError } from '../api/remoteHttp';
 import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
@@ -20,7 +27,6 @@ import {
   LocalProviderRuntime,
   type LocalProviderRuntimeOptions,
 } from './localProviderRuntime';
-import { LOCAL_AGENT_ENGINE } from './localAgentEngine';
 
 const config: LocalProviderConfig = {
   id: 'provider-a',
@@ -57,7 +63,7 @@ const createConfiguredRuntime = async (options: {
   configStore?: ProviderConfigStore;
   clientFactory?: LocalProviderRuntimeOptions['clientFactory'];
   toolGateway?: LocalProviderRuntimeOptions['toolGateway'];
-  agentLoopEngine?: LocalProviderRuntimeOptions['agentLoopEngine'];
+  loadAgentBudget?: LocalProviderRuntimeOptions['loadAgentBudget'];
 }) => {
   const providerConfig = options.providerConfig ?? config;
   const configStore =
@@ -75,8 +81,8 @@ const createConfiguredRuntime = async (options: {
     sessionRepository: repository,
     ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
     ...(options.toolGateway ? { toolGateway: options.toolGateway } : {}),
-    ...(options.agentLoopEngine
-      ? { agentLoopEngine: options.agentLoopEngine }
+    ...(options.loadAgentBudget
+      ? { loadAgentBudget: options.loadAgentBudget }
       : {}),
   });
   return { runtime, repository, configStore, credentialStore };
@@ -260,7 +266,7 @@ describe('LocalProviderRuntime standard protocol routing', () => {
   });
 });
 
-describe('LocalProviderRuntime Pi Core Agent engine (opt-in)', () => {
+describe('LocalProviderRuntime Pi Core Agent engine (default)', () => {
   it('keeps ConversationRuntime approval, tool gateway, and assistant persistence around the real Pi loop', async () => {
     const approval: ToolApprovalRequest = {
       invocationId: 'pi-inv-1',
@@ -297,7 +303,7 @@ describe('LocalProviderRuntime Pi Core Agent engine (opt-in)', () => {
       throw new ToolApprovalRequiredError(approval);
     });
     const { runtime, repository } = await createConfiguredRuntime({
-      agentLoopEngine: 'pi-core',
+      loadAgentBudget: async () => ({ maxToolRounds: 16, maxDurationMinutes: 15 }),
       clientFactory: () => ({
         cancelActiveRun: jest.fn(),
         streamMessages,
@@ -354,8 +360,12 @@ describe('LocalProviderRuntime Pi Core Agent engine (opt-in)', () => {
     ]);
   });
 
-  it('keeps the existing MobileAgentLoop as the default engine', () => {
-    expect(LOCAL_AGENT_ENGINE).toBe('mobile');
+  it('uses Pi Core as the sole Local Agent engine', async () => {
+    const { runtime } = await createConfiguredRuntime({
+      toolGateway: { listTools: async () => [], callTool: async () => ({ content: 'unused' }) },
+      loadAgentBudget: async () => ({ maxToolRounds: 16, maxDurationMinutes: 15 }),
+    });
+    expect(runtime.supportsAgent).toBe(true);
   });
 });
 

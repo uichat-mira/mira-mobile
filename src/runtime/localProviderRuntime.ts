@@ -28,10 +28,6 @@ import {
   LocalAgentRunController,
   type LocalAgentToolGatewaySource,
 } from './localAgentRunController';
-import {
-  LOCAL_AGENT_ENGINE,
-  type LocalAgentEngine,
-} from './localAgentEngine';
 import { executeLocalConversationTurn } from './localConversationExecution';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
@@ -119,8 +115,8 @@ export interface LocalProviderRuntimeOptions {
     apiKey: string,
   ) => OpenAiStandardClient;
   toolGateway?: LocalAgentToolGatewaySource;
-  /** Experimental Local Agent engine selection; production default is mobile. */
-  agentLoopEngine?: LocalAgentEngine;
+  /** Injected only for deterministic tests; production reads General settings per run. */
+  loadAgentBudget?: () => Promise<import('../settings/agentExecutionBudget').AgentExecutionBudget>;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
   stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
@@ -183,7 +179,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.agentRun = options.toolGateway
       ? new LocalAgentRunController(
           options.toolGateway,
-          options.agentLoopEngine ?? LOCAL_AGENT_ENGINE,
+          options.loadAgentBudget,
         )
       : null;
     this.supportsAgent = Boolean(options.toolGateway);
@@ -680,7 +676,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
   setExecutionSuspended(suspended: boolean): void {
     // Set the shared suspension predicate before interrupting Agent approval /
-    // control flow so MobileAgentLoop reports app-suspended, not cancelled.
+    // control flow so PiCoreAgentLoop reports app-suspended, not cancelled.
     this.providerExecution.setExecutionSuspended(suspended);
     if (suspended) {
       this.cancelCurrentProviderSend();

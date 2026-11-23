@@ -342,7 +342,7 @@ describe('PiCoreAgentLoop', () => {
     expect(events).toContainEqual({ type: 'finish', reason: 'stop' });
   });
 
-  it('does not expose mailbox-sensitive tools before the mail policy is shared', async () => {
+  it('exposes verified mail tools under the migrated privacy policy', async () => {
     const gateway: ToolGatewayClient = {
       listTools: async () => [
         {
@@ -371,18 +371,21 @@ describe('PiCoreAgentLoop', () => {
       },
     ));
 
-    expect(seenTools[0]).toEqual([
+    expect(seenTools[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        function: expect.objectContaining({ name: 'whoyou_mail_search' }),
+      }),
       expect.objectContaining({
         function: expect.objectContaining({ name: 'weather' }),
       }),
-    ]);
-    expect(events).toContainEqual({
+    ]));
+    expect(events).not.toContainEqual({
       type: 'notice',
       code: 'toolset-degraded',
     });
   });
 
-  it('is reachable through LocalAgentRunController without becoming the default engine', async () => {
+  it('is reachable through the Pi-only LocalAgentRunController', async () => {
     const { gateway } = approvalGateway();
     const executor = {
       client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
@@ -391,7 +394,7 @@ describe('PiCoreAgentLoop', () => {
         yield { type: 'finish' as const, reason: 'stop' };
       })()),
     };
-    const controller = new LocalAgentRunController(gateway, 'pi-core');
+    const controller = new LocalAgentRunController(gateway, async () => ({ maxToolRounds: 16, maxDurationMinutes: 15 }));
 
     const run = await controller.beginRun({
       executor,
@@ -406,5 +409,47 @@ describe('PiCoreAgentLoop', () => {
       delta: 'pi-core',
     });
     expect(executor.streamMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('reloads the user execution budget for every new run', async () => {
+    const callTool = jest.fn(async () => ({ content: 'done' }));
+    const gateway: ToolGatewayClient = {
+      listTools: async () => [{ name: 'read_file', parameters: { type: 'object' } }],
+      callTool,
+    };
+    const loadBudget = jest.fn()
+      .mockResolvedValueOnce({ maxToolRounds: 1, maxDurationMinutes: 15 })
+      .mockResolvedValueOnce({ maxToolRounds: 2, maxDurationMinutes: 15 });
+    const executor = {
+      client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
+      streamMessages: jest.fn(async () => (async function* () {
+        yield {
+          type: 'tool-call' as const, callId: 'call-budget',
+          name: 'read_file', arguments: '{}',
+        };
+        yield { type: 'finish' as const, reason: 'tool_calls' };
+      })()),
+    };
+    const controller = new LocalAgentRunController(gateway, loadBudget);
+    const input = {
+      executor,
+      initialMessages: [{ role: 'user' as const, content: 'read something' }],
+    };
+    const first = await controller.beginRun(input);
+    const firstEvents = await collect(first.stream);
+    controller.finishRun(first);
+    expect(firstEvents).toContainEqual({
+      type: 'error', message: 'Tool round limit reached (1)',
+    });
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    const second = await controller.beginRun(input);
+    const secondEvents = await collect(second.stream);
+    controller.finishRun(second);
+    expect(secondEvents).toContainEqual({
+      type: 'error', message: 'Tool round limit reached (2)',
+    });
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(loadBudget).toHaveBeenCalledTimes(2);
   });
 });

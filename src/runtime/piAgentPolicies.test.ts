@@ -1,5 +1,5 @@
 import type { RuntimeEvent } from './conversationRuntime';
-import { MobileAgentLoop } from './mobileAgentLoop';
+import { PiCoreAgentLoop } from './piAgentLoop';
 import { RemoteHostError } from '../api/remoteHttp';
 import {
   ToolApprovalRequiredError,
@@ -15,7 +15,7 @@ const collect = async (stream: AsyncIterable<RuntimeEvent>) => {
   return events;
 };
 
-describe('MobileAgentLoop', () => {
+describe('PiCoreAgentLoop', () => {
   it('executes an allowed tool and feeds the result into the next model round', async () => {
     const calls: unknown[][] = [];
     const gateway: ToolGatewayClient = {
@@ -23,7 +23,7 @@ describe('MobileAgentLoop', () => {
       callTool: async (request) => ({ content: `result:${request.name}` }),
     };
     let round = 0;
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
     const events = await collect(await loop.run(
       [{ role: 'user', content: 'find' }],
       async (messages, tools) => {
@@ -83,7 +83,7 @@ describe('MobileAgentLoop', () => {
     };
     const requested: ToolApprovalRequest[] = [];
     let round = 0;
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     const events = await collect(
       await loop.run(
@@ -164,11 +164,11 @@ describe('MobileAgentLoop', () => {
         return { status: 'rejected' };
       },
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     const events = await collect(
       await loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield {
@@ -219,9 +219,9 @@ describe('MobileAgentLoop', () => {
           result: { content: 'should not run' },
         }),
       };
-      const loop = new MobileAgentLoop(gateway);
+      const loop = new PiCoreAgentLoop(gateway);
       const stream = await loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield {
@@ -257,10 +257,10 @@ describe('MobileAgentLoop', () => {
       callTool: async () => ({ content: 'abcdefghij' }),
     };
     let round = 0;
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
     const events = await collect(
       await loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () => {
           round += 1;
           if (round === 1) {
@@ -329,9 +329,9 @@ describe('MobileAgentLoop', () => {
           });
         },
       };
-      const loop = new MobileAgentLoop(gateway);
+      const loop = new PiCoreAgentLoop(gateway);
       const stream = await loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield {
@@ -385,12 +385,12 @@ describe('MobileAgentLoop', () => {
         );
       },
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     await expect(
       collect(
         await loop.run(
-          [],
+          [{ role: 'user', content: 'test' }],
           async () =>
             (async function* () {
               yield {
@@ -417,8 +417,8 @@ describe('MobileAgentLoop', () => {
       listTools: async () => [{ name: 'search', parameters: { type: 'object' } }],
       callTool: async () => ({ content: 'ok' }),
     };
-    const loop = new MobileAgentLoop(gateway);
-    const events = await collect(await loop.run([], async () => (async function* () {
+    const loop = new PiCoreAgentLoop(gateway);
+    const events = await collect(await loop.run([{ role: 'user', content: 'test' }], async () => (async function* () {
       yield { type: 'tool-call' as const, callId: 'c1', name: 'search', arguments: '{}' };
       yield { type: 'finish' as const, reason: 'tool_calls' };
     })(), { maxToolRounds: 1 }));
@@ -436,10 +436,10 @@ describe('MobileAgentLoop', () => {
     };
     const controller = new AbortController();
     let suspended = false;
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
     const events = await collect(
       await loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield {
@@ -471,8 +471,8 @@ describe('MobileAgentLoop', () => {
       listTools: async () => [],
       callTool: async () => ({ content: 'unused' }),
     };
-    const loop = new MobileAgentLoop(gateway);
-    const events = await collect(await loop.run([], async () => (async function* () {
+    const loop = new PiCoreAgentLoop(gateway);
+    const events = await collect(await loop.run([{ role: 'user', content: 'test' }], async () => (async function* () {
       yield { type: 'finish' as const, reason: 'stop' };
     })(), { shouldPause: () => true }));
 
@@ -490,7 +490,7 @@ describe('MobileAgentLoop', () => {
       callTool: async () => ({ content: 'unused' }),
     };
     const calls: unknown[][] = [];
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     const events = await collect(
       await loop.run(
@@ -525,7 +525,7 @@ describe('MobileAgentLoop', () => {
       }),
       callTool: async () => ({ content: 'unused' }),
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     const events = await collect(
       await loop.run(
@@ -557,7 +557,7 @@ describe('MobileAgentLoop', () => {
       },
       callTool,
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     await expect(
       collect(
@@ -586,11 +586,11 @@ describe('MobileAgentLoop', () => {
       },
       callTool: async () => ({ content: 'unused' }),
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     await expect(
       loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield { type: 'finish' as const, reason: 'stop' };
@@ -610,11 +610,11 @@ describe('MobileAgentLoop', () => {
       },
       callTool: async () => ({ content: 'unused' }),
     };
-    const loop = new MobileAgentLoop(gateway);
+    const loop = new PiCoreAgentLoop(gateway);
 
     await expect(
       loop.run(
-        [],
+        [{ role: 'user', content: 'test' }],
         async () =>
           (async function* () {
             yield { type: 'finish' as const, reason: 'stop' };
@@ -652,7 +652,7 @@ describe('MOB-086 Local Agent mail privacy', () => {
       },
     };
     let round = 0;
-    const events = await collect(await new MobileAgentLoop(gateway).run(
+    const events = await collect(await new PiCoreAgentLoop(gateway).run(
       [{ role: 'user', content: 'Tell me about email' }],
       async (_messages, manifests) => {
         offered.push(manifests.map(m => m.function.name));
@@ -698,8 +698,8 @@ describe('MOB-086 Local Agent mail privacy', () => {
       listTools: async () => tools,
       callTool: called,
     };
-    const loop = new MobileAgentLoop(gateway);
-    const run = await loop.run([], async () => {
+    const loop = new PiCoreAgentLoop(gateway);
+    const run = await loop.run([{ role: 'user', content: 'test' }], async () => {
       rounds++;
       return (async function* () {
         yield { type: 'tool-call' as const, callId: 'one',
@@ -714,9 +714,9 @@ describe('MOB-086 Local Agent mail privacy', () => {
 
   it('refuses batched mail + unrelated operations before any execution', async () => {
     const called = jest.fn(async () => ({ content: 'anything' }));
-    const run = await new MobileAgentLoop({
+    const run = await new PiCoreAgentLoop({
       listTools: async () => tools, callTool: called,
-    }).run([], async () => (async function* () {
+    }).run([{ role: 'user', content: 'test' }], async () => (async function* () {
       yield { type: 'tool-call' as const, callId: 'one', name: 'whoyou_mail_search', arguments: '{}' };
       yield { type: 'tool-call' as const, callId: 'two', name: 'remote_post', arguments: '{}' };
       yield { type: 'finish' as const, reason: 'tool_calls' };
@@ -736,7 +736,7 @@ it('fails closed before model invocation when a mail manifest loses its privacy 
     ],
     callTool: jest.fn(async () => ({ content: 'unexpected' })),
   };
-  await expect(new MobileAgentLoop(gateway).run([], model))
+  await expect(new PiCoreAgentLoop(gateway).run([{ role: 'user', content: 'test' }], model))
     .rejects.toMatchObject({ code: 'MAIL_TOOL_POLICY_INVALID' });
   expect(model).not.toHaveBeenCalled();
 });

@@ -1,6 +1,11 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
 import { setTextScale, type TextScaleId } from '../theme/tokens';
 import type { SessionSource } from '../types';
+import {
+  DEFAULT_AGENT_EXECUTION_BUDGET,
+  sanitizeAgentExecutionBudget,
+  type AgentExecutionBudget,
+} from './agentExecutionBudget';
 
 export type DefaultSessionSource = 'ask' | SessionSource;
 export type LaunchBehavior = 'home' | 'last-session';
@@ -25,6 +30,7 @@ export interface GeneralSettings {
   textScale: TextScaleId;
   hapticsEnabled: boolean;
   hapticsStrength: number;
+  agentBudget: AgentExecutionBudget;
 }
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
@@ -34,6 +40,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   textScale: 'standard',
   hapticsEnabled: true,
   hapticsStrength: HAPTICS_STRENGTH_DEFAULT,
+  agentBudget: { ...DEFAULT_AGENT_EXECUTION_BUDGET },
 };
 
 const GENERAL_SETTINGS_KEY = 'mira.mobile.general.v1';
@@ -74,6 +81,7 @@ const sanitizeGeneralSettings = (value: unknown): GeneralSettings => {
       typeof candidate.hapticsEnabled === 'boolean'
         ? candidate.hapticsEnabled
         : DEFAULT_GENERAL_SETTINGS.hapticsEnabled,
+    agentBudget: sanitizeAgentExecutionBudget(candidate.agentBudget),
     hapticsStrength:
       typeof candidate.hapticsStrength === 'number' &&
       Number.isFinite(candidate.hapticsStrength)
