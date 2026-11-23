@@ -338,6 +338,7 @@ describe('PiCoreAgentLoop', () => {
     ));
 
     expect(callTool).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === 'tool-call')).toBe(false);
     expect(events.some((event) => event.type === 'tool-running')).toBe(false);
     expect(events).toContainEqual({ type: 'finish', reason: 'stop' });
   });
@@ -451,5 +452,32 @@ describe('PiCoreAgentLoop', () => {
     });
     expect(callTool).toHaveBeenCalledTimes(3);
     expect(loadBudget).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed with an actionable error when the saved execution budget cannot be read', async () => {
+    const listTools = jest.fn(async () => []);
+    const gateway: ToolGatewayClient = {
+      listTools,
+      callTool: jest.fn(async () => ({ content: 'must-not-run' })),
+    };
+    const executor = {
+      client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
+      streamMessages: jest.fn(async () => (async function* () {
+        yield { type: 'text-delta' as const, delta: 'must-not-run' };
+      })()),
+    };
+    const controller = new LocalAgentRunController(gateway, async () => {
+      throw new Error('native storage unavailable');
+    });
+    await expect(controller.beginRun({
+      executor,
+      initialMessages: [{ role: 'user', content: 'hello' }],
+    })).rejects.toMatchObject({
+      code: 'LOCAL_AGENT_BUDGET_UNAVAILABLE',
+      message: expect.stringContaining('通用'),
+    });
+    expect(listTools).not.toHaveBeenCalled();
+    expect(executor.streamMessages).not.toHaveBeenCalled();
+    expect(controller.active).toBe(false);
   });
 });
