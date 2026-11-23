@@ -1,5 +1,7 @@
 # Mobile Local Agent: Pi Core 1.6
 
+> **文档边界（2026-11-23）**：本文仅描述当前 Pi Core 和 Tool Gateway 的已实现行为及验收边界。0.4.0 以后确认的三层渐进式披露、Desktop 能力严选、跨工具合法调用等**目标产品决策与外部研究**统一见 [Mobile 0.4.0 产品决策与研究唯一真相](../mobile-0.4.0-product-decisions-and-research.md)。特别是下文的邮件调用链阻断属于**当前实现**，不代表新的 D9 产品目标已经交付；不得未经实施合同就移除敏感数据保护。
+
 ## Current implementation
 
 Pi Core is the sole orchestration loop for the Mobile **Local Provider** path.
