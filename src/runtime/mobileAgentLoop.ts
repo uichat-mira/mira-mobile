@@ -292,6 +292,20 @@ export class MobileAgentLoop {
           let result;
           try {
             result = await gateway.callTool(call, { signal });
+            if (call.name === DESKTOP_HOST_DISCOVERY_TOOL && result.refreshedTools) {
+              // Dynamic tools are allowed only after the model explicitly asks
+              // for Desktop discovery; revalidate mail privacy invariants too.
+              if (result.refreshedTools.some(manifest => {
+                const role = requiredMailRole(manifest.name);
+                return role !== null && manifest.sensitiveResult !== role;
+              })) {
+                throw new ToolGatewayError('MAIL_TOOL_POLICY_INVALID',
+                  '狐邮邮件工具的隐私规则缺失，已拒绝执行。');
+              }
+              manifests = result.refreshedTools;
+              tools = manifests.map(toOpenAiTool);
+              hostCandidates = [];
+            }
             if (result.hostSelectionRequired) {
               const verifiedCandidates = result.hostCandidates ?? hostCandidates;
               if (verifiedCandidates.length < 2) {

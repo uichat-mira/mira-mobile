@@ -20,6 +20,8 @@ export interface ToolCallResult {
   hostSelectionRequired?: boolean;
   /** Fresh, authorized candidates, re-checked when the model requests discovery. */
   hostCandidates?: readonly ToolDiscoveryHostCandidate[];
+  /** Verified run-bound tools exposed only after the model explicitly discovers a single Host. */
+  refreshedTools?: readonly ToolManifest[];
 }
 
 /** Model-visible, read-only entry for finding an authorized Mira Desktop. */

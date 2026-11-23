@@ -186,6 +186,22 @@ describe('chatSessionState', () => {
     ).toBe('天气服务正在维护，请稍后再试');
   });
 
+  it('distinguishes Cloud Host grant denial from Relay protocol corruption', () => {
+    const grantError = getChatSendErrorMessage(
+      new RemoteHostError('RELAY_CLOUD_GRANT_REQUIRED', 'Host denied'),
+      'local-provider',
+    );
+    expect(grantError).toContain('工具权限');
+    expect(grantError).not.toContain('API Key');
+
+    const protocolError = getChatSendErrorMessage(
+      new RemoteHostError('RELAY_NO_RESPONSE_STATUS', 'missing frame'),
+      'local-provider',
+    );
+    expect(protocolError).toContain('协议');
+    expect(protocolError).not.toContain('API Key');
+  });
+
   it('keeps an unrecognized local Host send failure code-free and user-appropriate', () => {
     const message = getChatSendErrorMessage(
       new RemoteHostError('UNRECOGNIZED_HOST_FAILURE', 'boom'),

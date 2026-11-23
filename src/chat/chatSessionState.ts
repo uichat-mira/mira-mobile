@@ -83,6 +83,7 @@ export const getChatSendErrorMessage = (
     if (
       error.code === 'CLOUD_TOOL_GRANT_REQUIRED' ||
       error.code === 'CLOUD_HOST_GRANT_REQUIRED' ||
+      error.code === 'RELAY_CLOUD_GRANT_REQUIRED' ||
       error.code === 'CLOUD_TOOL_ROUTE_UNAVAILABLE'
     ) {
       return '所选 Desktop 未授予本机所需的工具权限，本轮已停止。请在桌面端检查 Cloud Host 授权。';
@@ -110,6 +111,13 @@ export const getChatSendErrorMessage = (
     }
     if (error.code === 'REMOTE_TOOL_ROUTE_UNAVAILABLE') {
       return '当前 Mira Host 还没有提供工具能力';
+    }
+    if (
+      error.code === 'RELAY_NO_RESPONSE_STATUS' ||
+      error.code === 'RELAY_PROTOCOL_ERROR' ||
+      error.code === 'CLOUD_RELAY_INVALID_RESPONSE'
+    ) {
+      return 'Desktop 工具通道返回了异常协议响应。本机聊天不受影响，请检查 Desktop Relay 连接。';
     }
     if (error.code === 'REMOTE_ENDPOINT_UNAVAILABLE') {
       return '当前没有可用的远程工具通道，Agent 工具暂不可用';
