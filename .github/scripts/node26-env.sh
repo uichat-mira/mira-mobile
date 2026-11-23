@@ -15,6 +15,15 @@ MIRA_NODE_MAJOR="${MIRA_NODE_VERSION%%.*}"
 
 node_bin="$(find /opt/hostedtoolcache/node -path "*/${MIRA_NODE_MAJOR}.*/x64/bin/node" -print 2>/dev/null | sort -V | tail -n 1 || true)"
 if [ -n "$node_bin" ] && [ -x "$node_bin" ]; then
+  cached_version="$("$node_bin" -p "process.versions.node")"
+  oldest="$(printf "%s\n" "$MIRA_NODE_VERSION" "$cached_version" | sort -V | head -n 1)"
+  if [ "$oldest" != "$MIRA_NODE_VERSION" ]; then
+    # A cached Node 26 can be older than this projects minimum; install the
+    # pinned release rather than silently validating under an unsupported Node.
+    node_bin=""
+  fi
+fi
+if [ -n "$node_bin" ] && [ -x "$node_bin" ]; then
   PATH="$(dirname "$node_bin"):$PATH"
   export PATH
 else
