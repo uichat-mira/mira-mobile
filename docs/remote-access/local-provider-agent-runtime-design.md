@@ -341,7 +341,7 @@ device tests and real Tool Gateway measurements.
 src/runtime/
   conversationRuntime.ts       # runtime-neutral interface and events
   runtimeRegistry.ts           # selects Remote Host or Local Provider
-  mobileAgentLoop.ts            # bounded foreground loop
+  piAgentLoop.ts                # Pi Core bounded foreground loop
 
 src/provider/
   openAiCompatibleClient.ts     # provider HTTP/SSE adapter
@@ -359,7 +359,7 @@ src/local/
 
 ### 13.1 Implemented bounded-loop boundary
 
-`src/runtime/mobileAgentLoop.ts` now provides the protocol-neutral foreground
+`src/runtime/piAgentLoop.ts` now provides the protocol-neutral foreground
 loop used by `LocalProviderRuntime` when `agentEnabled` is explicitly enabled
 and a `ToolGatewayClient` is injected. The loop exposes a conservative maximum
 of eight tool rounds, an overall timeout, cancellation, tool-result truncation,

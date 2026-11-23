@@ -9,7 +9,7 @@ import type { CloudDesktopHost } from '../cloud/cloudAuthApi';
 import type { CloudRelayAccess } from '../cloud/cloudRelayEntry';
 import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
-import { MobileAgentLoop } from '../runtime/mobileAgentLoop';
+import { PiCoreAgentLoop } from '../runtime/piAgentLoop';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import {
@@ -411,7 +411,7 @@ describe('LocalAgentToolGateway', () => {
         { type: 'finish', reason: 'stop' },
       ]);
     });
-    const events = await drain(await new MobileAgentLoop(selected).run(
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
       [{ role: 'user', content: '你好' }], modelCall,
     ));
     expect(offeredTools[0]?.map(tool => tool.function.name))
@@ -553,7 +553,7 @@ describe('Cloud Local Agent joint entry', () => {
           name: DESKTOP_HOST_DISCOVERY_TOOL, arguments: '{}' },
         { type: 'finish', reason: 'tool_calls' },
       ]));
-    const clarification = await drain(await new MobileAgentLoop(
+    const clarification = await drain(await new PiCoreAgentLoop(
       gateway(fixture),
     ).run(
       [{ role: 'user', content: '帮我找一下资料' }],
@@ -594,7 +594,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'text-delta', delta: 'done' },
         { type: 'finish', reason: 'stop' },
       ]));
-    const events = await drain(await new MobileAgentLoop(selected).run(
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
       [{ role: 'user', content: '用 Office PC 搜索' }],
       modelCall,
     ));
@@ -624,7 +624,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'finish', reason: 'stop' },
       ]);
     });
-    const events = await drain(await new MobileAgentLoop(gateway(fixture)).run(
+    const events = await drain(await new PiCoreAgentLoop(gateway(fixture)).run(
       [{ role: 'user', content: '你好' }], modelCall,
     ));
     expect(modelCall).toHaveBeenCalledTimes(1);
@@ -646,7 +646,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'text-delta', delta: '当前天气已查询' },
         { type: 'finish', reason: 'stop' },
       ]));
-    const weatherEvents = await drain(await new MobileAgentLoop(gateway(fixture)).run(
+    const weatherEvents = await drain(await new PiCoreAgentLoop(gateway(fixture)).run(
       [{ role: 'user', content: '查天气' }], weather,
     ));
     expect(weatherEvents).toEqual(expect.arrayContaining([
@@ -673,7 +673,7 @@ describe('Cloud Local Agent joint entry', () => {
           { type: 'finish', reason: 'stop' },
         ]);
       });
-      const result = await drain(await new MobileAgentLoop(selected).run(
+      const result = await drain(await new PiCoreAgentLoop(selected).run(
         [{ role: 'user', content: '你好' }], model,
       ));
       expect(result).toContainEqual({ type: 'text-delta', delta: '你好' });
@@ -707,7 +707,7 @@ describe('Cloud Local Agent joint entry', () => {
         name: DESKTOP_HOST_DISCOVERY_TOOL, arguments: '{}' },
       { type: 'finish', reason: 'tool_calls' },
     ]));
-    const clarification = await drain(await new MobileAgentLoop(offered).run(
+    const clarification = await drain(await new PiCoreAgentLoop(offered).run(
       [{ role: 'user', content: '用电脑搜索' }], model,
     ));
     const prompt = clarification.find((event): event is Extract<RuntimeEvent,
@@ -795,7 +795,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'text-delta', delta: 'approved' },
         { type: 'finish', reason: 'stop' },
       ]));
-    const events = await drain(await new MobileAgentLoop(selected).run(
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
       [{ role: 'user', content: 'Office PC 搜索' }],
       modelCall,
       { requestApproval: jest.fn(async () => 'approved' as const) },
@@ -846,7 +846,7 @@ describe('Cloud Local Agent joint entry', () => {
     });
   });
 
-  it('runs MobileAgentLoop through the real Cloud adapter and existing RemoteToolGatewayClient', async () => {
+  it('runs PiCoreAgentLoop through the real Cloud adapter and existing RemoteToolGatewayClient', async () => {
     const fixture = discoveryFixture();
     const selected = gateway(fixture);
     const modelCall = jest.fn()
@@ -869,7 +869,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'finish', reason: 'stop' },
       ]));
 
-    const events = await drain(await new MobileAgentLoop(selected).run(
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
       [{ role: 'user', content: 'search' }],
       modelCall,
     ));
@@ -950,7 +950,7 @@ describe('Cloud Local Agent joint entry', () => {
         { type: 'finish', reason: 'stop' },
       ]));
 
-    const events = await drain(await new MobileAgentLoop(selected).run(
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
       [{ role: 'user', content: 'search' }],
       modelCall,
       { requestApproval },

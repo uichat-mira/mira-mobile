@@ -1,7 +1,7 @@
 import type { OpenAiMessage } from '../provider/openAiStandardClient';
-import { MobileAgentLoop } from './mobileAgentLoop';
 import { PiCoreAgentLoop } from './piAgentLoop';
-import type { LocalAgentEngine } from './localAgentEngine';
+import { loadGeneralSettings } from '../settings/generalSettings';
+import type { AgentExecutionBudget } from '../settings/agentExecutionBudget';
 import type { LocalProviderExecutor } from './localProviderExecution';
 import type { RuntimeEvent } from './conversationRuntime';
 import type {
@@ -59,7 +59,8 @@ export class LocalAgentRunController {
 
   constructor(
     private readonly toolGateway: LocalAgentToolGatewaySource,
-    private readonly engine: LocalAgentEngine = 'mobile',
+    private readonly loadBudget: () => Promise<AgentExecutionBudget> =
+      async () => (await loadGeneralSettings()).agentBudget,
   ) {}
 
   get active(): boolean {
@@ -81,13 +82,16 @@ export class LocalAgentRunController {
         input.selectionText,
         input.previousAssistantText,
       );
-      const loop = this.engine === 'pi-core'
-        ? new PiCoreAgentLoop(gateway)
-        : new MobileAgentLoop(gateway);
+      // Re-read on every run so changing General settings takes effect on the
+      // next turn without restarting the app or leaking mutable global state.
+      const budget = await this.loadBudget();
+      const loop = new PiCoreAgentLoop(gateway);
       const stream = await loop.run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {
+          maxToolRounds: budget.maxToolRounds,
+          overallTimeoutMs: budget.maxDurationMinutes * 60_000,
           shouldPause: input.shouldPause,
           approvalRecipient: input.approvalRecipient,
           signal: abortController.signal,

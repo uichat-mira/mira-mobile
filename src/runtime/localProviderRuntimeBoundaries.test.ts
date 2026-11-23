@@ -1,3 +1,10 @@
+// Budget storage is native IO; inject the persisted General settings boundary.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentBudget: { maxToolRounds: 16, maxDurationMinutes: 15 },
+  })),
+}));
+
 import { LocalSessionRepository } from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';

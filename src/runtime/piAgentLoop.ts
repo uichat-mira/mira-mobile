@@ -21,37 +21,46 @@ import type {
 } from '@earendil-works/pi-ai';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import type { RuntimeEvent } from './conversationRuntime';
-import type {
-  AgentModelCall,
-  MobileAgentLoopOptions,
-} from './mobileAgentLoop';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
+  DESKTOP_HOST_DISCOVERY_TOOL,
   type ToolApprovalDecision,
   type ToolCallResult,
   type ToolGatewayClient,
   type ToolManifest,
+  type ToolDiscoveryHostCandidate,
 } from '../tools/toolGatewayClient';
-import { limitToolResult } from '../tools/toolPolicy';
+import { limitToolResult, validateToolCall } from '../tools/toolPolicy';
+import {
+  allowedMailStageTools,
+  hostSelectionPrompt,
+  validateMailManifests,
+  validateToolBatch,
+  type MailStage,
+} from '../tools/agentToolPolicies';
+import { DEFAULT_AGENT_EXECUTION_BUDGET } from '../settings/agentExecutionBudget';
 
-// Experimental Pi Core Agent Loop for the Local Provider path.
-//
-// This bridge is intentionally not the default execution path. It lets Mira's
-// existing Local Provider executor and Tool Gateway drive pi-agent-core's real
-// agent loop without moving credentials, Host authority, approval, or tool
-// execution into Pi. Provider calls still go through LocalProviderExecutor and
-// tools still go through ToolGatewayClient, so the current permission boundary
-// is unchanged.
-//
-// Deliberate v1 limits (the MobileAgentLoop remains authoritative for these):
-// - mailbox-sensitive tools are not exposed until the mail chaining policy is
-//   ported as a shared contract;
-// - Cloud Desktop host selection is not automated; a discovery result ends the
-//   run with an explicit error instead of guessing a Host.
+/**
+ * Pi Core is the sole Local Agent orchestration engine. Provider IO,
+ * Tool Gateway authority and the conversation transcript stay Mira-owned.
+ */
+export interface PiAgentLoopOptions {
+  maxToolRounds?: number;
+  overallTimeoutMs?: number;
+  maxToolResultBytes?: number;
+  shouldPause?: () => boolean;
+  signal?: AbortSignal;
+  onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
+  approvalRecipient?: string;
+  requestApproval?: (approval: import('../tools/toolGatewayClient').ToolApprovalRequest) =>
+    Promise<ToolApprovalDecision>;
+}
 
-const PI_AGENT_MAX_TOOL_ROUNDS = 8;
-const PI_AGENT_TIMEOUT_MS = 5 * 60 * 1000;
+export type AgentModelCall = (
+  messages: readonly OpenAiMessage[],
+  tools: readonly OpenAiTool[],
+) => Promise<AsyncIterable<RuntimeEvent>>;
 
 const createUsage = (): Usage => ({
   input: 0,
@@ -317,7 +326,9 @@ const toStopReason = (reason: string | null | undefined): {
  */
 const createPiStreamFn = (
   modelCall: AgentModelCall,
-  tools: readonly OpenAiTool[],
+  tools: () => readonly OpenAiTool[],
+  preflightCalls: (calls: readonly ToolCall[]) => void,
+  onProviderError: (error: unknown) => void,
 ): StreamFn =>
   (model, context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -340,7 +351,7 @@ const createPiStreamFn = (
         if (signal?.aborted) throw abortError();
         const providerStream = await modelCall(
           toOpenAiMessages(context.messages),
-          tools,
+          tools(),
         );
         stream.push({ type: 'start', partial: output });
         iterator = providerStream[Symbol.asyncIterator]();
@@ -421,15 +432,21 @@ const createPiStreamFn = (
         if (signal?.aborted) throw abortError();
         const { stopReason, doneReason } = toStopReason(finishReason);
         output.stopReason = stopReason;
-        // MobileAgentLoop only acts on tool calls when the provider explicitly
+        // The Local Agent only acts on tool calls when the provider explicitly
         // finished with tool_calls. Do not let a malformed round execute tools
         // because it emitted a tool-call event under a normal stop reason.
         if (doneReason !== 'toolUse') {
           output.content = output.content.filter((block) => block.type !== 'toolCall');
+        } else {
+          // Validate every tool request before Pi executes the first tool.
+          preflightCalls(output.content.filter(
+            (block): block is ToolCall => block.type === 'toolCall',
+          ));
         }
         stream.push({ type: 'done', reason: doneReason, message: output });
         stream.end();
       } catch (error) {
+        if (!signal?.aborted) onProviderError(error);
         output.stopReason = signal?.aborted ? 'aborted' : 'error';
         output.errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -467,14 +484,16 @@ export class PiCoreAgentLoop {
   async run(
     initialMessages: readonly OpenAiMessage[],
     modelCall: AgentModelCall,
-    options: MobileAgentLoopOptions = {},
+    options: PiAgentLoopOptions = {},
   ): Promise<AsyncIterable<RuntimeEvent>> {
     let manifests: readonly ToolManifest[];
+    let hostCandidates: readonly ToolDiscoveryHostCandidate[] = [];
     let notices: RuntimeEvent[] = [];
     try {
       if (this.gateway.discoverTools) {
         const discovery = await this.gateway.discoverTools();
         manifests = discovery.tools;
+        hostCandidates = discovery.hostCandidates ?? [];
         notices = discovery.notices.map((notice) => ({
           type: 'notice',
           code: notice.code,
@@ -493,17 +512,11 @@ export class PiCoreAgentLoop {
       manifests = [];
       notices = [{ type: 'notice', code: 'tool-channel-unavailable' }];
     }
-    const safeManifests = manifests.filter(
-      (manifest) => manifest.sensitiveResult === undefined,
-    );
-    if (safeManifests.length !== manifests.length) {
-      notices = [...notices, { type: 'notice', code: 'toolset-degraded' }];
-    }
-    const tools = safeManifests.map(toTool);
+    validateMailManifests(manifests);
     const queue = new RuntimeEventQueue();
-    const maxToolRounds = options.maxToolRounds ?? PI_AGENT_MAX_TOOL_ROUNDS;
+    const maxToolRounds = options.maxToolRounds ?? DEFAULT_AGENT_EXECUTION_BUDGET.maxToolRounds;
     const maxToolResultBytes = options.maxToolResultBytes;
-    const deadline = Date.now() + (options.overallTimeoutMs ?? PI_AGENT_TIMEOUT_MS);
+    const deadline = Date.now() + (options.overallTimeoutMs ?? DEFAULT_AGENT_EXECUTION_BUDGET.maxDurationMinutes * 60_000);
     const shouldPause = options.shouldPause ?? (() => false);
     const externalSignal = options.signal;
     const gateway = this.gateway;
@@ -532,11 +545,19 @@ export class PiCoreAgentLoop {
       let cancelled = false;
       let approvalRejected = false;
       let fatalError: string | null = null;
+      let originalError: unknown = null;
+      const recordError = (error: unknown): void => {
+        if (originalError === null) originalError = error;
+        fatalError = error instanceof Error ? error.message : String(error);
+      };
       let limitReached = false;
       let toolRounds = 0;
       let lastStopReason: AssistantMessage['stopReason'] | null = null;
       let terminalEmitted = false;
       let agent: Agent | null = null;
+      let mailStage: MailStage = 'none';
+      let hostSelectionReply: string | null = null;
+      const activeManifests = () => allowedMailStageTools(manifests, mailStage);
       let unsubscribe = () => {};
 
       const abortRun = () => {
@@ -579,7 +600,9 @@ export class PiCoreAgentLoop {
               invocationId: approval.invocationId,
               callId: approval.callId,
               name: approval.name,
-              message: approval.message,
+              message: manifest.sensitiveResult
+                ? `${approval.message}\n接收方：${options.approvalRecipient ?? '当前 Local Provider'}。仅在本次明确批准后发送结果给模型；回复保留在手机聊天记录，后续不会自动再次传给模型。`
+                : approval.message,
               ...(approval.scope ? { scope: approval.scope } : {}),
             });
             let decision: ToolApprovalDecision;
@@ -603,12 +626,25 @@ export class PiCoreAgentLoop {
                 );
               });
             } catch (approvalError) {
-              if (!signal?.aborted) {
-                fatalError = approvalError instanceof Error
-                  ? approvalError.message
-                  : String(approvalError);
-              }
+              if (!signal?.aborted) recordError(approvalError);
               throw approvalError;
+            }
+            let resolution;
+            try {
+              resolution = await gateway.resolveApproval(
+                approval,
+                decision,
+                { signal },
+              );
+            } catch (resolveError) {
+              // The Host may already have executed the approved side effect.
+              // Never misclassify this uncertainty as a harmless cancellation
+              // or encourage the caller to retry automatically.
+              if (resolveError instanceof ToolGatewayError &&
+                resolveError.code === 'TOOL_APPROVAL_UNCERTAIN') {
+                recordError(resolveError);
+              }
+              throw resolveError;
             }
             queue.push({
               type: 'approval-resolved',
@@ -617,40 +653,48 @@ export class PiCoreAgentLoop {
               name: approval.name,
               decision,
             });
-            const resolution = await gateway.resolveApproval(
-              approval,
-              decision,
-              { signal },
-            );
             if (decision === 'rejected' || resolution.status === 'rejected') {
               approvalRejected = true;
               throw new PiApprovalRejectedError();
             }
             result = resolution.result;
           } else {
-            fatalError = error instanceof Error ? error.message : String(error);
+            recordError(error);
             throw error;
           }
         }
         if (signal?.aborted) throw abortError();
+        if (manifest.name === DESKTOP_HOST_DISCOVERY_TOOL && result.refreshedTools) {
+          validateMailManifests(result.refreshedTools);
+          manifests = result.refreshedTools;
+          // Pi obtains the fresh Host-scoped tool set only after an explicit
+          // authorized discovery call; never invent a Host or its tools.
+          agent!.state.tools = buildAgentTools(activeManifests());
+        }
         if (result.hostSelectionRequired) {
-          // Host selection is a deterministic MobileAgentLoop policy. The
-          // experimental Pi path must not bind or guess a Host itself.
-          fatalError =
-            'Pi Core 实验路径暂不支持自动选择 Desktop Host，请使用现有 Local Agent Loop。';
-          throw new ToolGatewayError(
-            'PI_AGENT_HOST_SELECTION_UNSUPPORTED',
-            fatalError,
-          );
+          const candidates = result.hostCandidates ?? hostCandidates;
+          if (candidates.length < 2) {
+            const error = new ToolGatewayError(
+              'CLOUD_HOST_SELECTION_STALE',
+              'Desktop selection list is no longer valid',
+            );
+            recordError(error);
+            throw error;
+          }
+          hostSelectionReply = hostSelectionPrompt(candidates);
         }
         const limited = limitToolResult(result.content, maxToolResultBytes);
+        if (manifest.sensitiveResult) {
+          mailStage = manifest.sensitiveResult === 'mail-search' ? 'search' : 'body';
+          agent!.state.tools = buildAgentTools(activeManifests());
+        }
         return {
           content: [{ type: 'text', text: limited }],
           details: { truncated: limited !== result.content },
         };
       };
 
-      const agentTools: AgentTool[] = safeManifests.map((manifest) => ({
+      const buildAgentTools = (items: readonly ToolManifest[]): AgentTool[] => items.map((manifest) => ({
         name: manifest.name,
         description: manifest.description ?? '',
         parameters: manifest.parameters,
@@ -660,7 +704,23 @@ export class PiCoreAgentLoop {
           executeTool(manifest, callId, params, signal),
       }));
 
-      const streamFn = createPiStreamFn(modelCall, tools);
+      const preflightCalls = (calls: readonly ToolCall[]): void => {
+        validateToolBatch(calls, manifests, mailStage);
+        if (notices.some((item) =>
+          item.type === 'notice' && item.code === 'tool-channel-unavailable'
+        ) && calls.length > 0) {
+          throw new ToolGatewayError(
+            'TOOL_CHANNEL_UNAVAILABLE',
+            'The model requested tools while the tool channel was unavailable',
+          );
+        }
+      };
+      const streamFn = createPiStreamFn(
+        modelCall,
+        () => activeManifests().map(toTool),
+        preflightCalls,
+        recordError,
+      );
 
       const handleEvent = (event: AgentEvent): void => {
         if (event.type === 'message_update') {
@@ -720,7 +780,9 @@ export class PiCoreAgentLoop {
             }
           } else if (message.stopReason === 'error') {
             terminalEmitted = true;
-            fatalError = message.errorMessage ?? 'Pi Agent request failed';
+            if (!fatalError) recordError(new Error(
+              message.errorMessage ?? 'Pi Agent request failed',
+            ));
           } else {
             queue.push({
               type: 'finish',
@@ -737,11 +799,28 @@ export class PiCoreAgentLoop {
           initialState: {
             model: PI_MODEL,
             messages: toAgentMessages(initialMessages),
-            tools: agentTools,
+            tools: buildAgentTools(activeManifests()),
           },
           streamFn,
           toolExecution: 'sequential',
-          beforeToolCall: async () => {
+          prepareNextTurnWithContext: async ({ context }) => ({
+            context: { ...context, tools: buildAgentTools(activeManifests()) },
+          }),
+          beforeToolCall: async ({ assistantMessage, toolCall }) => {
+            try {
+              const allCalls = assistantMessage.content.filter(
+                (block): block is ToolCall => block.type === 'toolCall',
+              );
+              validateToolBatch(allCalls, manifests, mailStage);
+              validateToolCall(activeManifests(), {
+                callId: toolCall.id,
+                name: toolCall.name,
+                arguments: JSON.stringify(toolCall.arguments),
+              });
+            } catch (error) {
+              recordError(error);
+              return { block: true, terminate: true, reason: fatalError ?? 'Tool policy rejected' };
+            }
             if (toolRounds >= maxToolRounds) {
               limitReached = true;
               return {
@@ -753,7 +832,7 @@ export class PiCoreAgentLoop {
             return undefined;
           },
           finishTurn: (turn) => {
-            if (approvalRejected || fatalError || timedOut || limitReached) {
+            if (approvalRejected || fatalError || timedOut || limitReached || hostSelectionReply) {
               return { action: 'end' };
             }
             if (
@@ -791,9 +870,20 @@ export class PiCoreAgentLoop {
         agent?.abort();
       }
 
+      if (hostSelectionReply && !timedOut && !cancelled && !fatalError) {
+        // This is a deterministic clarification from verified Host directory
+        // metadata. No second model request may run until the user chooses.
+        yield { type: 'text-delta', delta: hostSelectionReply };
+        yield { type: 'finish', reason: 'stop' };
+        return;
+      }
       if (timedOut) {
         yield { type: 'run-paused', reason: 'timeout' };
         return;
+      }
+      if (originalError instanceof ToolGatewayError &&
+        originalError.code === 'TOOL_APPROVAL_UNCERTAIN') {
+        throw originalError;
       }
       if (cancelled && !terminalEmitted) {
         yield {
@@ -815,9 +905,9 @@ export class PiCoreAgentLoop {
       }
       if (fatalError) {
         // Provider and tool failures reject the stream, matching the existing
-        // MobileAgentLoop so a partial answer is not persisted as a completed
+        // the Local Agent so a partial answer is not persisted as a completed
         // turn and the UI reports a failed run.
-        throw new Error(fatalError);
+        throw originalError ?? new Error(fatalError);
       }
       if (!terminalEmitted && lastStopReason === 'toolUse') {
         throw new Error('Pi Agent stopped without completing the tool round');

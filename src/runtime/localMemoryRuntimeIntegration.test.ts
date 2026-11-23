@@ -1,3 +1,10 @@
+// Budget storage is native IO; inject the persisted General settings boundary.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentBudget: { maxToolRounds: 16, maxDurationMinutes: 15 },
+  })),
+}));
+
 import { LocalSessionRepository } from '../local/localSessionRepository';
 import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
@@ -330,13 +337,13 @@ describe('MOB-064 Local Memory runtime integration', () => {
     });
     const session = await runtime.createSession('Agent', config.id);
 
-    const events = await drain(
+    // Pi propagates failed model streams as errors so the partial response
+    // cannot be treated as a completed canonical turn.
+    await expect(drain(
       await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
         agentEnabled: true,
       }),
-    );
-
-    expect(events).toContainEqual({ type: 'error', message: 'provider exploded' });
+    )).rejects.toThrow('provider exploded');
     // A failed run produced no canonical reply, so nothing is consolidated.
     expect((await service.getOverview()).records).toHaveLength(0);
     expect(stats().consolidation).toBe(0);
@@ -630,16 +637,11 @@ describe('MOB-064 Local Memory runtime integration', () => {
     });
     const session = await runtime.createSession('Agent', config.id);
 
-    const events = await drain(
+    await expect(drain(
       await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
         agentEnabled: true,
       }),
-    );
-
-    expect(events).toContainEqual({
-      type: 'error',
-      message: 'provider exploded mid-run',
-    });
+    )).rejects.toThrow('provider exploded mid-run');
     // A partial reply followed by a real error is not a completed turn.
     expect(stats().consolidation).toBe(0);
     expect((await service.getOverview()).records).toHaveLength(0);

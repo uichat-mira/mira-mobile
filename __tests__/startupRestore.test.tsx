@@ -292,6 +292,7 @@ describe('startup session restore', () => {
         textScale: 'standard',
         hapticsEnabled: true,
         hapticsStrength: 60,
+      agentBudget: { maxToolRounds: 16, maxDurationMinutes: 15 },
       },
       localKeyValueStore,
     );
@@ -305,6 +306,7 @@ describe('startup session restore', () => {
         textScale: 'standard',
         hapticsEnabled: true,
         hapticsStrength: 60,
+      agentBudget: { maxToolRounds: 16, maxDurationMinutes: 15 },
       },
       localKeyValueStore,
     );
