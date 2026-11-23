@@ -14,6 +14,12 @@ export const createSessionSurfaceThemeMock = () => ({
       primaryActive: '#009',
       onPrimary: '#fff',
       overlay: 'rgba(0,0,0,0.4)',
+      status: {
+        success: '#5db872',
+        warning: '#d4a017',
+        error: '#c64545',
+        errorBg: '#fce8e8',
+      },
     },
   }),
 });

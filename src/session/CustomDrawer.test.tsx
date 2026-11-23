@@ -4,6 +4,16 @@ import renderer, { act } from 'react-test-renderer';
 
 import { CustomDrawer } from './CustomDrawer';
 
+let mockCloudState: {
+  status: string;
+  account: { id: string; username: string } | null;
+} = { status: 'signed_out', account: null };
+
+jest.mock('../cloud/cloudAccountStore', () => ({
+  useCloudAccountStore: (selector: (state: typeof mockCloudState) => unknown) =>
+    selector(mockCloudState),
+}));
+
 const mockNavigate = jest.fn();
 
 jest.mock('@react-navigation/native', () => ({
@@ -55,6 +65,7 @@ jest.mock('lucide-react-native', () => ({
   Search: () => null,
   Smartphone: () => null,
   SquarePen: () => null,
+  User: () => null,
 }));
 
 jest.mock('../store/threadPinStore', () => {
@@ -97,13 +108,22 @@ const flush = async () => {
   });
 };
 
-const renderDrawer = async (): Promise<ReactTestRenderer> => {
+const renderDrawer = async (
+  onClose: () => void = jest.fn(),
+): Promise<ReactTestRenderer> => {
   let tree!: ReactTestRenderer;
   await act(async () => {
-    tree = renderer.create(<CustomDrawer onClose={jest.fn()} />);
+    tree = renderer.create(<CustomDrawer onClose={onClose} />);
   });
   await flush();
   return tree;
+};
+
+const setCloudAccount = (
+  status: string,
+  account: { id: string; username: string } | null,
+) => {
+  mockCloudState = { status, account };
 };
 
 const collectText = (tree: ReactTestRenderer): string[] =>
@@ -118,6 +138,7 @@ describe('CustomDrawer session collection', () => {
     mockListSessions.mockReset();
     mockCanDeleteSession.mockReset();
     mockCanDeleteSession.mockResolvedValue(true);
+    setCloudAccount('signed_out', null);
   });
 
   it('groups pinned threads above recent threads', async () => {
@@ -150,6 +171,127 @@ describe('CustomDrawer session collection', () => {
 
     const tree = await renderDrawer();
     expect(collectText(tree)).toContain('暂无会话');
+    await act(async () => tree.unmount());
+  });
+});
+
+describe('CustomDrawer Cloud account entry', () => {
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    mockListSessions.mockReset();
+    mockListSessions.mockResolvedValue([]);
+    mockCanDeleteSession.mockReset();
+    mockCanDeleteSession.mockResolvedValue(true);
+    setCloudAccount('signed_out', null);
+  });
+
+  it('replaces the static M placeholder with an explicit signed-out entry', async () => {
+    const tree = await renderDrawer();
+    const texts = collectText(tree);
+
+    expect(texts).toContain('未登录');
+    expect(texts).not.toContain('M');
+    await act(async () => tree.unmount());
+  });
+
+  it('opens the existing CloudAccount screen when the entry is pressed', async () => {
+    setCloudAccount('signed_in', { id: 'account-alice', username: 'alice' });
+    const onClose = jest.fn();
+    const tree = await renderDrawer(onClose);
+
+    const entry = tree.root.findAll(
+      node =>
+        node.props.testID === 'drawer-account-entry' &&
+        typeof node.props.onPress === 'function',
+    )[0];
+    expect(entry.props.accessibilityRole).toBe('button');
+    expect(entry.props.accessibilityLabel).toContain('alice');
+
+    await act(async () => entry.props.onPress());
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('CloudAccount');
+    await act(async () => tree.unmount());
+  });
+
+  it('shows the verified identity and initial when signed in', async () => {
+    setCloudAccount('signed_in', { id: 'account-alice', username: 'alice' });
+    const tree = await renderDrawer();
+    const texts = collectText(tree);
+
+    expect(texts).toContain('alice');
+    expect(texts).toContain('A');
+    await act(async () => tree.unmount());
+  });
+
+  it('keeps the identity but marks a Cloud outage as an interruption', async () => {
+    setCloudAccount('cloud_unavailable', {
+      id: 'account-alice',
+      username: 'alice',
+    });
+    const tree = await renderDrawer();
+    const texts = collectText(tree);
+
+    expect(texts).toContain('alice');
+    expect(texts).toContain('Cloud 连接中断');
+    expect(texts).not.toContain('未登录');
+    await act(async () => tree.unmount());
+  });
+
+  it('drops the previous account when the Cloud session is rejected', async () => {
+    setCloudAccount('session_rejected', {
+      id: 'account-alice',
+      username: 'alice',
+    });
+    const tree = await renderDrawer();
+    const texts = collectText(tree);
+
+    expect(texts).toContain('登录已失效');
+    expect(texts).not.toContain('alice');
+    await act(async () => tree.unmount());
+  });
+
+  it('does not flash a default identity while Cloud state is loading', async () => {
+    setCloudAccount('loading', null);
+    const tree = await renderDrawer();
+    const texts = collectText(tree);
+
+    expect(texts).toContain('检查中');
+    expect(texts).not.toContain('未登录');
+    expect(texts).not.toContain('M');
+    await act(async () => tree.unmount());
+  });
+
+  it('truncates a long username without displacing the chat action', async () => {
+    const username = 'a-very-long-cloud-username-that-needs-ellipsis';
+    setCloudAccount('signed_in', { id: 'account-long', username });
+    const tree = await renderDrawer();
+
+    const name = tree.root.findAll(
+      node => node.props.children === username && node.props.numberOfLines === 1,
+    );
+    expect(name.length).toBeGreaterThan(0);
+    expect(
+      tree.root.findAll(node => node.props.accessibilityLabel === '聊天').length,
+    ).toBeGreaterThan(0);
+    await act(async () => tree.unmount());
+  });
+
+  it('switches the visible identity immediately after an account change', async () => {
+    setCloudAccount('signed_in', { id: 'account-alice', username: 'alice' });
+    const onClose = jest.fn();
+    const tree = await renderDrawer(onClose);
+    expect(collectText(tree)).toContain('alice');
+
+    setCloudAccount('signed_in', { id: 'account-bob', username: 'bob' });
+    await act(async () => {
+      tree.update(<CustomDrawer onClose={onClose} />);
+    });
+
+    const texts = collectText(tree);
+    expect(texts).toContain('bob');
+    expect(texts).not.toContain('alice');
     await act(async () => tree.unmount());
   });
 });

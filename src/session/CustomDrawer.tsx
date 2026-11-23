@@ -23,6 +23,7 @@ import {
   Search,
   Smartphone,
   SquarePen,
+  User as UserIcon,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
@@ -38,10 +39,12 @@ import {
 } from '../store/threadReadStore';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../settings/generalSettings';
 import { SettingsChoiceModal } from '../settings/SettingsChoiceModal';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
 } from './SessionKindIcon';
+import { projectDrawerAccountEntry } from './drawerAccountEntry';
 import { RemoteDiagnosticNotice } from '../connectivity/RemoteDiagnosticNotice';
 import type {
   RemoteConnectionDiagnosticAction,
@@ -90,6 +93,8 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const progressByThreadId = useThreadReadStore((state) => state.progressByThreadId);
   const hydrateReads = useThreadReadStore((state) => state.hydrate);
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
+  const cloudStatus = useCloudAccountStore((state) => state.status);
+  const cloudAccount = useCloudAccountStore((state) => state.account);
   const [creatingChat, setCreatingChat] = useState(false);
   const creatingChatRef = useRef(false);
   const [sourcePickerVisible, setSourcePickerVisible] = useState(false);
@@ -189,6 +194,13 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     onClose();
     navigation.navigate('Plugins');
   };
+
+  const handleOpenCloudAccount = useCallback(() => {
+    onClose();
+    navigation.navigate('CloudAccount');
+  }, [navigation, onClose]);
+
+  const accountEntry = projectDrawerAccountEntry(cloudStatus, cloudAccount);
 
   const handleDiagnosticAction = useCallback(
     (action: RemoteConnectionDiagnosticAction) => {
@@ -485,17 +497,87 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
             {creatingChat ? '新建中…' : '聊天'}
           </Text>
         </Pressable>
-        <View
-          style={[
-            styles.avatar,
-            {
-              backgroundColor: colors.bg.card,
-              borderColor: colors.border.default,
-            },
+        <Pressable
+          testID="drawer-account-entry"
+          accessibilityRole="button"
+          accessibilityLabel={accountEntry.accessibilityLabel}
+          onPress={handleOpenCloudAccount}
+          style={({ pressed }) => [
+            styles.accountEntry,
+            pressed && { backgroundColor: colors.bg.soft },
           ]}
         >
-          <Text style={[styles.avatarLabel, { color: colors.primary }]}>M</Text>
-        </View>
+          <View
+            style={[
+              styles.accountAvatar,
+              {
+                backgroundColor: colors.bg.card,
+                borderColor:
+                  accountEntry.tone === 'error'
+                    ? colors.status.error
+                    : colors.border.default,
+              },
+            ]}
+          >
+            {accountEntry.initial ? (
+              <Text
+                style={[
+                  styles.accountInitial,
+                  {
+                    color:
+                      accountEntry.tone === 'warning'
+                        ? colors.status.warning
+                        : colors.primary,
+                  },
+                ]}
+              >
+                {accountEntry.initial}
+              </Text>
+            ) : (
+              <UserIcon
+                size={18}
+                strokeWidth={1.9}
+                color={
+                  accountEntry.tone === 'error'
+                    ? colors.status.error
+                    : colors.text.soft
+                }
+              />
+            )}
+          </View>
+          <View style={styles.accountText}>
+            <Text
+              style={[
+                styles.accountLabel,
+                {
+                  color:
+                    accountEntry.tone === 'error'
+                      ? colors.status.error
+                      : colors.text.base,
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {accountEntry.label}
+            </Text>
+            {accountEntry.detail ? (
+              <Text
+                style={[
+                  styles.accountDetail,
+                  {
+                    color:
+                      accountEntry.tone === 'warning'
+                        ? colors.status.warning
+                        : colors.text.soft,
+                  },
+                ]}
+                numberOfLines={1}
+              >
+                {accountEntry.detail}
+              </Text>
+            ) : null}
+          </View>
+        </Pressable>
       </View>
       <SettingsChoiceModal
         withinModal
@@ -611,6 +693,7 @@ const styles = StyleSheet.create({
   chatButton: {
     minWidth: 136,
     height: sizing.touchTarget,
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -619,13 +702,27 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   chatButtonLabel: { fontSize: fontSize.bodyMd, fontWeight: '600' },
-  avatar: {
-    width: sizing.touchTarget,
-    height: sizing.touchTarget,
+  accountEntry: {
+    minWidth: 0,
+    minHeight: sizing.touchTarget,
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.md,
+  },
+  accountAvatar: {
+    width: 34,
+    height: 34,
     borderRadius: radius.full,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarLabel: { fontSize: fontSize.button, fontWeight: '700' },
+  accountInitial: { fontSize: fontSize.button, fontWeight: '700' },
+  accountText: { flexShrink: 1, minWidth: 0 },
+  accountLabel: { fontSize: fontSize.caption, fontWeight: '600' },
+  accountDetail: { marginTop: 1, fontSize: fontSize.captionUppercase },
 });
