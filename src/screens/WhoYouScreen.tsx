@@ -21,7 +21,6 @@ import {
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme } from '../theme/ThemeContext';
-import { WhoYouMailReadSection } from './WhoYouMailReadSection';
 import { fontSize, radius, spacing } from '../theme/tokens';
 import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import { CloudActionButton, cloudLayout } from './CloudAccountUi';
@@ -298,10 +297,6 @@ export function WhoYouScreen() {
               </View>
             )}
 
-            {mailboxes.some(mailbox => mailbox.messageCount > 0) ? (
-              <WhoYouMailReadSection key={identity?.accountId} mailboxes={mailboxes} />
-            ) : null}
-
             <View style={styles.actionRow}>
               <CloudActionButton
                 label="刷新邮箱"
@@ -321,7 +316,7 @@ export function WhoYouScreen() {
         ) : null}
 
         <Text style={[styles.footerNote, { color: colors.text.soft }]}>
-          Mira Mobile 只读展示已同步的邮件，未授权不会向模型传递邮件内容。邮件同步、授权续期和解绑均在狐邮网页完成。
+          Mira Mobile 展示狐邮的邮箱连接状态。邮件查询与阅读由获授权的 Agent 工具完成；邮件同步由狐邮服务端负责，授权续期和解绑在狐邮网页完成。
         </Text>
       </ScrollView>
     </SafeAreaView>

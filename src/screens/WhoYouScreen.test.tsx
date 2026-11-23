@@ -1,4 +1,3 @@
-jest.mock('./WhoYouMailReadSection', () => ({ WhoYouMailReadSection: () => null }));
 import React from 'react';
 import { Linking, Text } from 'react-native';
 import type { ReactTestRenderer } from 'react-test-renderer';
@@ -170,6 +169,8 @@ describe('WhoYouScreen', () => {
     expect(strings).toContain('alice@tomlab.cn');
     expect(strings).toContain('授权：自有域');
     expect(strings).toContain('同步：服务端 3 封');
+    expect(strings.some(value => value.includes('搜索已同步邮件'))).toBe(false);
+    expect(actionLabels(tree)).not.toContain('搜索已同步邮件');
   });
 
   it('surfaces reauthorization and disabled mailbox facts without inventing a sync button', async () => {
