@@ -180,8 +180,11 @@ jest.mock('../src/screens/WorkspaceDetailScreen', () => ({
 }));
 jest.mock('../src/screens/HostConfigScreen', () => ({ HostConfigScreen: 'HostConfigScreen' }));
 jest.mock('../src/screens/SettingsScreen', () => ({ SettingsScreen: 'SettingsScreen' }));
-jest.mock('../src/screens/LocalProviderConfigScreen', () => ({
-  LocalProviderConfigScreen: 'LocalProviderConfigScreen',
+jest.mock('../src/screens/LocalProviderListScreen', () => ({
+  LocalProviderListScreen: 'LocalProviderListScreen',
+}));
+jest.mock('../src/screens/LocalProviderEditScreen', () => ({
+  LocalProviderEditScreen: 'LocalProviderEditScreen',
 }));
 jest.mock('../src/screens/SearchScreen', () => ({ SearchScreen: 'SearchScreen' }));
 jest.mock('../src/screens/PersonalizationScreen', () => ({

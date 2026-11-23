@@ -11,6 +11,10 @@ import { PUBLIC_FEEDBACK_EMAIL } from '../data/feedbackContact';
 
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: jest.fn(), goBack: jest.fn(), reset: jest.fn() }),
+  useFocusEffect: (callback: () => void | (() => void)) => {
+    const react = jest.requireActual<typeof import('react')>('react');
+    react.useEffect(callback, [callback]);
+  },
 }));
 
 jest.mock('../provider/providerConfigStore', () => ({
@@ -123,6 +127,11 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     expect(strings.some((value) => value.includes(PUBLIC_FEEDBACK_EMAIL))).toBe(false);
   });
 
+  it('exposes the Who You read-only mailbox entry in 我的 Mira', async () => {
+    const tree = await renderScreen();
+    expect(rowTitles(tree)).toContain('狐邮 Who You');
+  });
+
   it('keeps the shared feedback consumer intact elsewhere in Settings', async () => {
     const tree = await renderScreen();
     const strings = renderedStrings(tree);
@@ -137,8 +146,8 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     const tree = await renderScreen();
     const titles = rowTitles(tree);
 
-    expect(titles.indexOf('本地连接')).toBeGreaterThan(-1);
-    expect(titles.indexOf('远程连接')).toBeGreaterThan(titles.indexOf('本地连接'));
+    expect(titles.indexOf('模型直连')).toBeGreaterThan(-1);
+    expect(titles.indexOf('远程连接')).toBeGreaterThan(titles.indexOf('模型直连'));
     expect(titles.indexOf('个性化')).toBeGreaterThan(titles.indexOf('远程连接'));
   });
 
@@ -157,9 +166,10 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     }
 
     const titles = rowTitles(tree);
-    for (const title of ['本地连接', '远程连接', '记忆', '常规', '通知']) {
+    for (const title of ['模型直连', '远程连接', '记忆', '常规', '通知']) {
       expect(titles).toContain(title);
     }
     expect(strings).toContain('语音');
+    expect(strings).toContain('未配置');
   });
 });

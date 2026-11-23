@@ -30,6 +30,8 @@ const accountStatusText = (status: CloudAccountStatus) => {
   switch (status) {
     case 'cloud_unavailable':
       return '暂时无法连接';
+    case 'device_revoked':
+      return '本机授权已撤销';
     case 'session_rejected':
       return '登录已失效';
     case 'authorizing':
@@ -81,6 +83,16 @@ export function CloudAccountScreen() {
       });
     }, [initialized, refresh]),
   );
+
+  const requestReenrollment = () =>
+    Alert.alert(
+      '重新注册此设备？',
+      '将创建新的云设备身份并重新授权。旧设备和旧授权不会恢复，本地聊天、模型配置及独立连接不受影响。',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '重新注册', onPress: () => signIn(true) },
+      ],
+    );
 
   const requestSignOut = () =>
     Alert.alert(
@@ -237,11 +249,13 @@ export function CloudAccountScreen() {
             <CloudActionButton
               icon={LogIn}
               label={
-                status === 'session_rejected'
-                  ? '重新登录 Mira Cloud'
-                  : '使用浏览器登录 Mira Cloud'
+                status === 'device_revoked'
+                  ? '重新注册此设备'
+                  : status === 'session_rejected'
+                    ? '重新登录 Mira Cloud'
+                    : '使用浏览器登录 Mira Cloud'
               }
-              onPress={() => signIn()}
+              onPress={status === 'device_revoked' ? requestReenrollment : () => signIn()}
               disabled={busy}
             />
           </>

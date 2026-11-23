@@ -377,6 +377,26 @@ describe.each([
     expect(profile.sseRequests).toHaveLength(1);
   });
 
+  it('requests the Desktop default-Agent contract when creating a thread', async () => {
+    await profile.client.createThread(undefined, { agentEnabled: true });
+
+    const create = profile.jsonRequests.find(
+      request => request.method === 'POST' && request.path === '/threads',
+    );
+    expect(create?.body).toEqual({ agentEnabled: true });
+  });
+
+  it('omits agentEnabled when the caller does not ask for Agent mode', async () => {
+    await profile.client.createThread('plain');
+
+    const create = profile.jsonRequests.find(
+      request => request.method === 'POST' && request.path === '/threads',
+    );
+    // Never send an implicit `agentEnabled: false`: the Host decides its own
+    // default and Mobile must not downgrade a thread it did not intend to.
+    expect(create?.body).toEqual({ title: 'plain' });
+  });
+
   it('dispatches an uncertain create at most once and never replays it', async () => {
     profile.failCreate(profile.createUncertainError());
     await expect(profile.client.createThread('once')).rejects.toMatchObject({

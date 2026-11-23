@@ -416,8 +416,11 @@ export class RemoteMiraHostClient {
     return this.business.getMessages(threadId);
   }
 
-  async createThread(title?: string): Promise<RemoteThread> {
-    return this.business.createThread(title);
+  async createThread(
+    title?: string,
+    options?: { agentEnabled?: boolean },
+  ): Promise<RemoteThread> {
+    return this.business.createThread(title, options);
   }
 
   async renameThread(threadId: string, title: string): Promise<RemoteThread> {

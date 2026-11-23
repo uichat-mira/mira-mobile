@@ -40,7 +40,7 @@ const thread = {
   updatedAt: '2026-11-01T00:01:00.000Z', messageCount: 0,
 };
 
-const access = { target, tickets };
+const access = { accountId: 'account-1', target, tickets };
 
 const harness = (scopes?: RemoteDeviceScope[], history: unknown[] = []) => {
   const entry = {

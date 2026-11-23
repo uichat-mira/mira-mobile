@@ -5,35 +5,19 @@ export type SessionOpenTarget =
   | { kind: 'workspace-list' }
   | { kind: 'contract-error'; message: string };
 
-const hasNonEmptyId = (value: string | null | undefined): boolean =>
-  typeof value === 'string' && value.trim().length > 0;
-
 /**
  * Global session entry points open the selected Thread directly. workspaceId is
- * ownership/context metadata, not a navigation parent. The Desktop Host
- * can provision a private Agent workspace when workspaceId is null, so Cloud
- * sessions must not be classified as legacy read-only by this field alone.
+ * ownership/context metadata, not a navigation parent.
  *
- * `workspace-list` stays in the target union temporarily for callers compiled
- * against the older navigation contract, but this resolver no longer emits it.
+ * A Host Agent thread without a public `workspaceId` is a normal current state:
+ * the Host provisions an isolated private Agent workspace for it and keeps that
+ * workspace off the Remote contract. Mobile therefore must not treat a missing
+ * project as a contract error, otherwise default-Agent conversations created on
+ * Desktop become unopenable on Mobile.
+ *
+ * `workspace-list` and `contract-error` stay in the target union so existing
+ * callers keep compiling, but this resolver no longer emits either of them.
  */
 export const resolveSessionOpenTarget = (
-  session: Pick<Session, 'workspaceId' | 'agentEnabled' | 'source'>,
-): SessionOpenTarget => {
-  if (
-    session.agentEnabled === true &&
-    session.source !== 'local-provider' &&
-    !hasNonEmptyId(session.workspaceId)
-  ) {
-    // Cloud Host owns effective private Agent workspaces and execution.
-    if (session.source === 'cloud-host') {
-      return { kind: 'chat' };
-    }
-    return {
-      kind: 'contract-error',
-      message: '该 Agent 会话缺少项目归属，无法在移动端打开。',
-    };
-  }
-
-  return { kind: 'chat' };
-};
+  _session: Pick<Session, 'workspaceId' | 'agentEnabled' | 'source'>,
+): SessionOpenTarget => ({ kind: 'chat' });

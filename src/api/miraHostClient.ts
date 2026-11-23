@@ -146,7 +146,10 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
     return threadToSession(await this.remote.getThread(sessionId));
   }
 
-  async createSession(title?: string): Promise<Session> {
+  async createSession(
+    title?: string,
+    options?: { agentEnabled?: boolean },
+  ): Promise<Session> {
     const manifest = await this.remote.getManifest();
     if (!remoteManifestSupportsThreadCreate(manifest)) {
       throw new RemoteHostError(
@@ -155,7 +158,7 @@ export class PairedRemoteMiraHostClient implements MiraHostApi {
         403,
       );
     }
-    return threadToSession(await this.remote.createThread(title));
+    return threadToSession(await this.remote.createThread(title, options));
   }
 
   async canDeleteSession(): Promise<boolean> {

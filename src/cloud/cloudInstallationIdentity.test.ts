@@ -48,6 +48,25 @@ describe('Mira Cloud installation identity', () => {
     });
   });
 
+  it('persists the revoked marker across identity instances and only replaces it explicitly', async () => {
+    const store = new MemoryCloudInstallationStore();
+    const random = makeRandom();
+    const first = new MiraCloudInstallationIdentity(store, random);
+    const old = await first.getOrCreate();
+    await expect(first.reenroll()).rejects.toBeInstanceOf(CloudInstallationStoreError);
+    await expect(first.markRevoked('another-installation')).rejects.toBeInstanceOf(CloudInstallationStoreError);
+    await first.markRevoked(old);
+    expect(parseStoredCloudInstallation(JSON.stringify(store.peek())).revoked).toBe(true);
+    const restarted = new MiraCloudInstallationIdentity(store, random);
+    expect(await restarted.isRevoked()).toBe(true);
+    expect(await restarted.getOrCreate()).toBe(old);
+    const replacement = await restarted.reenroll();
+    expect(replacement).not.toBe(old);
+    expect(await restarted.isRevoked()).toBe(false);
+    await expect(restarted.reenroll()).rejects.toBeInstanceOf(CloudInstallationStoreError);
+    expect(await restarted.getOrCreate()).toBe(replacement);
+  });
+
   it('rejects a corrupted identity instead of silently creating a duplicate device', async () => {
     const random = makeRandom();
     const randomBytes = jest.spyOn(random, 'randomBytes');

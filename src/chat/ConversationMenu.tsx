@@ -4,8 +4,6 @@ import {
   Archive,
   ChevronRight,
   FolderPlus,
-  House,
-  Paperclip,
   Search,
   Share2,
   Trash2,
@@ -28,12 +26,13 @@ interface ConversationMenuItem {
   addTopSpacing?: boolean;
 }
 
+// Only entries with a real action live here. "已上传文件" and "添加到首页" were
+// placeholders without an implementation, so they are gone rather than rendered
+// as permanently grey rows.
 const menuItems: ConversationMenuItem[] = [
   { id: 'share', label: '分享', icon: Share2 },
   { id: 'project', label: '添加到项目', icon: FolderPlus, hasChevron: true },
-  { id: 'files', label: '已上传文件', icon: Paperclip },
   { id: 'search', label: '在聊天中查找', icon: Search },
-  { id: 'home', label: '添加到首页', icon: House },
   { id: 'archive', label: '归档', icon: Archive },
   {
     id: 'delete',
@@ -56,6 +55,12 @@ interface ConversationMenuProps {
   shareDisabled?: boolean;
   shareDisabledAccessibilityLabel?: string;
   onFindInChat?: () => void;
+  onDelete?: () => void;
+  deleteDisabled?: boolean;
+  deleteDisabledAccessibilityLabel?: string;
+  onAddToProject?: () => void;
+  projectDisabled?: boolean;
+  projectDisabledAccessibilityLabel?: string;
 }
 
 export function ConversationMenu({
@@ -67,12 +72,34 @@ export function ConversationMenu({
   shareDisabled = false,
   shareDisabledAccessibilityLabel,
   onFindInChat,
+  onDelete,
+  deleteDisabled = false,
+  deleteDisabledAccessibilityLabel,
+  onAddToProject,
+  projectDisabled = false,
+  projectDisabledAccessibilityLabel,
 }: ConversationMenuProps) {
   const { colors } = useTheme();
 
   const actionForItem = (id: string) => {
     if (id === 'share') return onShare;
     if (id === 'search') return onFindInChat;
+    if (id === 'delete') return onDelete;
+    if (id === 'project') return onAddToProject;
+    return undefined;
+  };
+
+  const disabledForItem = (id: string) => {
+    if (id === 'share') return shareDisabled;
+    if (id === 'delete') return deleteDisabled;
+    if (id === 'project') return projectDisabled;
+    return false;
+  };
+
+  const disabledLabelForItem = (id: string) => {
+    if (id === 'share') return shareDisabledAccessibilityLabel;
+    if (id === 'delete') return deleteDisabledAccessibilityLabel;
+    if (id === 'project') return projectDisabledAccessibilityLabel;
     return undefined;
   };
 
@@ -110,16 +137,13 @@ export function ConversationMenu({
           </Text>
           {menuItems.map((item) => {
             const action = actionForItem(item.id);
-            const disabled =
-              action === undefined || (item.id === 'share' && shareDisabled);
+            const disabled = action === undefined || disabledForItem(item.id);
             const itemColor = item.destructive
               ? colors.status.error
               : colors.text.ink;
             const Icon = item.icon;
             const accessibilityLabel = disabled
-              ? item.id === 'share' && shareDisabledAccessibilityLabel
-                ? shareDisabledAccessibilityLabel
-                : `${item.label}，暂不可用`
+              ? disabledLabelForItem(item.id) ?? `${item.label}，暂不可用`
               : item.label;
             return (
               <Pressable

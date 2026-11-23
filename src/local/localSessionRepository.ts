@@ -12,6 +12,8 @@ interface StoredLocalSession {
     role: ChatMessage['role'];
     content: string;
     timestamp: string;
+    /** This answer may be shown locally but must not enter later model context. */
+    mailPrivate?: true;
   }>;
 }
 
@@ -54,6 +56,9 @@ const toMessage = (value: StoredLocalSession['messages'][number]): ChatMessage =
   role: value.role,
   content: value.content,
   timestamp: new Date(value.timestamp),
+  ...(value.mailPrivate === true
+    ? { metadata: { localMailPrivate: true } }
+    : {}),
 });
 
 const parseStored = (value: unknown): StoredLocalSession => {
@@ -88,6 +93,7 @@ const parseStored = (value: unknown): StoredLocalSession => {
       role: item.role as ChatMessage['role'],
       content: item.content,
       timestamp: item.timestamp,
+      ...(item.mailPrivate === true ? { mailPrivate: true as const } : {}),
     };
   });
   return {
@@ -210,6 +216,10 @@ export class LocalSessionRepository {
           role: message.role,
           content: message.content,
           timestamp: message.timestamp.toISOString(),
+          ...(message.role === 'assistant' &&
+              message.metadata?.localMailPrivate === true
+            ? { mailPrivate: true as const }
+            : {}),
         }));
       if (nextMessages.length === 0) return;
       values[index] = {

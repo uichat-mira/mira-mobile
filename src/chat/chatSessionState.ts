@@ -80,6 +80,34 @@ export const getChatSendErrorMessage = (
     if (error.code === 'REMOTE_SCOPE_REQUIRED') {
       return '当前配对设备没有工具权限，请重新配对或升级权限';
     }
+    if (
+      error.code === 'CLOUD_TOOL_GRANT_REQUIRED' ||
+      error.code === 'CLOUD_HOST_GRANT_REQUIRED' ||
+      error.code === 'CLOUD_TOOL_ROUTE_UNAVAILABLE'
+    ) {
+      return '所选 Desktop 未授予本机所需的工具权限，本轮已停止。请在桌面端检查 Cloud Host 授权。';
+    }
+    if (
+      error.code === 'CLOUD_RELAY_HOST_OFFLINE' ||
+      error.code === 'CLOUD_RELAY_HOST_NOT_FOUND'
+    ) {
+      return '所选 Mira Desktop 已离线或不再可用，本轮已停止。请确认设备在线后重试。';
+    }
+    if (error.code === 'CLOUD_TOOL_HOST_CHANGED') {
+      return '所选 Desktop Host 在运行中发生变化，本轮已停止。请重新选择设备后再试。';
+    }
+    if (
+      error.code === 'CLOUD_RELAY_SESSION_REJECTED' ||
+      error.code === 'CLOUD_RELAY_SESSION_REQUIRED'
+    ) {
+      return 'Mira Cloud 登录已失效，本轮已停止。请重新登录后再试。';
+    }
+    if (
+      error.code === 'CLOUD_RELAY_TICKET_DENIED' ||
+      error.code === 'CLOUD_RELAY_TICKET_REJECTED'
+    ) {
+      return 'Mira Cloud 拒绝了所选 Desktop 的连接授权，本轮已停止。请检查 Cloud Host 授权。';
+    }
     if (error.code === 'REMOTE_TOOL_ROUTE_UNAVAILABLE') {
       return '当前 Mira Host 还没有提供工具能力';
     }

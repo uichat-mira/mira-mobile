@@ -216,3 +216,25 @@ describe('CompositeToolGatewayClient', () => {
     ).rejects.toMatchObject({ code: 'TOOL_APPROVAL_UNSUPPORTED' });
   });
 });
+
+
+it('resolves a Mobile-owned privacy approval locally, never at the Host', async () => {
+  const local = client({
+    listTools: async () => [{ name: 'whoyou_mail_search', parameters: { type: 'object' } }],
+    resolveApproval: jest.fn(async () => ({
+      status: 'completed' as const, result: { content: 'UNTRUSTED_EMAIL_CONTENT' },
+    })),
+  });
+  const remote = client({
+    resolveApproval: jest.fn(async () => { throw new Error('Host must not receive mail permission'); }),
+  });
+  const gateway = new CompositeToolGatewayClient(local, remote);
+  const result = await gateway.resolveApproval!({
+    invocationId: 'local-1', callId: 'call-1',
+    name: 'whoyou_mail_search', arguments: '{}',
+    message: 'private approval',
+  }, 'approved');
+  expect(result).toMatchObject({ status: 'completed' });
+  expect(local.resolveApproval).toHaveBeenCalledTimes(1);
+  expect(remote.resolveApproval).not.toHaveBeenCalled();
+});

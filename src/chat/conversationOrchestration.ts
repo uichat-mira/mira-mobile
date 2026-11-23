@@ -65,7 +65,13 @@ export type ConversationLifecycleEvent =
   | { type: 'phase'; phase: ConversationStreamPhase }
   | {
       type: 'notice';
-      code: 'tool-channel-unavailable' | 'toolset-degraded';
+      code:
+        | 'tool-channel-unavailable'
+        | 'toolset-degraded'
+        | 'cloud-tools-unavailable'
+        | 'cloud-tools-unauthorized'
+        | 'cloud-tools-session-invalid'
+        | 'cloud-tools-host-ambiguous';
     }
   | { type: 'pause'; reason: ConversationStreamPauseReason }
   | { type: 'canonical-reload'; messages: ChatMessage[] }

@@ -2,12 +2,14 @@ import {
   CloudAuthApi,
   CloudAuthRequestError,
   type CloudDesktopHost,
+  type CloudDesktopHostAvailability,
   type CloudRelayApiLike,
 } from './cloudAuthApi';
 import { resolveCloudRelayBaseUrl, officialCloudRelayEndpoint } from './cloudRelayConfig';
 import {
   cloudSessionStore,
   type CloudSessionStore,
+  type StoredCloudSession,
 } from './cloudSessionStore';
 import {
   closeCloudRelayConnections,
@@ -21,8 +23,29 @@ export interface CloudRelayTarget extends CloudRelayTransportTarget {
 }
 
 export interface CloudRelayAccess {
+  /** Account that owns the Cloud Session and Host grant for this access. */
+  accountId: string;
   target: CloudRelayTarget;
   tickets: CloudRelayTicketProvider;
+}
+
+/**
+ * User-facing projection of a server-owned Host directory entry. Relay rooms and
+ * tickets stay inside CloudRelayEntry; the Local Agent may only see identities
+ * and presence that Cloud Auth actually returned.
+ */
+export interface CloudRelayHostCandidate {
+  hostId: string;
+  deviceId: string;
+  name: string | null;
+  availability: CloudDesktopHostAvailability;
+  clientVersion: string | null;
+  lastAdvertisedAt: string;
+}
+
+export interface CloudRelayHostDirectory {
+  accountId: string;
+  hosts: CloudRelayHostCandidate[];
 }
 
 interface CloudRelaySessionContext {
@@ -187,9 +210,11 @@ export class CloudRelayEntry {
   private readonly api: CloudRelayApiLike;
   private readonly relayEndpoint: string | null;
   private readonly now: () => Date;
-  private lastAccess: { key: string; access: CloudRelayAccess } | null = null;
   private generation = 0;
   private pendingDiscovery: Promise<CloudRelayAccess> | null = null;
+  private sessionKey: string | null = null;
+  private accessesByHost = new Map<string, { key: string; access: CloudRelayAccess }>();
+  private validAccesses = new WeakSet<CloudRelayAccess>();
 
   constructor(options: CloudRelayEntryOptions = {}) {
     this.store = options.sessionStore ?? cloudSessionStore;
@@ -202,19 +227,27 @@ export class CloudRelayEntry {
   reset() {
     this.generation += 1;
     this.pendingDiscovery = null;
-    this.lastAccess = null;
+    this.sessionKey = null;
+    this.accessesByHost.clear();
+    this.validAccesses = new WeakSet();
     closeCloudRelayConnections();
   }
 
+  /**
+   * Every Host access in the current Cloud Session stays independently valid so
+   * a Local Agent probing candidates cannot invalidate an open Cloud Chat on
+   * another Host. Logout, account switch and reset revoke all of them at once.
+   */
   assertCurrentAccess(access: CloudRelayAccess): void {
-    if (this.lastAccess?.access !== access) {
+    if (!this.validAccesses.has(access)) {
       throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session is no longer active');
     }
   }
 
+  /** Cloud Remote Chat keeps its existing deterministic most-recent Host. */
   discover(): Promise<CloudRelayAccess> {
     if (this.pendingDiscovery) return this.pendingDiscovery;
-    const pending = this.discoverOnce();
+    const pending = this.discoverMostRecent();
     this.pendingDiscovery = pending;
     const release = () => {
       if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
@@ -223,9 +256,81 @@ export class CloudRelayEntry {
     return pending;
   }
 
-  private async discoverOnce(): Promise<CloudRelayAccess> {
+  /**
+   * Account Host directory projection used by the Mobile Local Agent. Relay
+   * rooms and tickets are deliberately omitted from the returned candidates.
+   */
+  async listHostCandidates(): Promise<CloudRelayHostDirectory> {
+    const { stored, generation, sessionKey } = await this.loadSession();
+    const hosts = await this.fetchHosts(stored, generation, sessionKey);
+    const deviceNames = await this.fetchDeviceNames(stored, generation, sessionKey);
+    this.assertSessionCurrent(generation, sessionKey);
+    return {
+      accountId: stored.account.id,
+      hosts: hosts.map(host => ({
+        hostId: host.id,
+        deviceId: host.deviceId,
+        // Cloud Host displayName is usually the generic client name. The
+        // device directory carries the user-identifiable machine label.
+        name: deviceNames.get(host.deviceId) ?? host.displayName ?? null,
+        availability: host.availability,
+        clientVersion: host.clientVersion,
+        lastAdvertisedAt: host.lastAdvertisedAt,
+      })),
+    };
+  }
+
+  /**
+   * Resolve exactly one account-owned Host by its server-owned id. A selected
+   * Host never drifts to a different device merely because it is newer.
+   */
+  async discoverHost(hostId: string): Promise<CloudRelayAccess> {
+    const { stored, endpoint, generation, sessionKey } = await this.loadSession();
+    const hosts = await this.fetchHosts(stored, generation, sessionKey);
+    this.assertSessionCurrent(generation, sessionKey);
+    const host = hosts.find(candidate => candidate.id === hostId);
+    if (!host) {
+      throw failure(
+        'CLOUD_RELAY_HOST_NOT_FOUND',
+        'The selected Mira Desktop Host is no longer registered for this Cloud account',
+      );
+    }
+    if (host.availability !== 'available') {
+      throw failure(
+        'CLOUD_RELAY_HOST_OFFLINE',
+        'The selected Mira Desktop Host is currently offline',
+      );
+    }
+    return this.createAccess(stored, endpoint, host);
+  }
+
+  private async discoverMostRecent(): Promise<CloudRelayAccess> {
+    const { stored, endpoint, generation, sessionKey } = await this.loadSession();
+    const hosts = await this.fetchHosts(stored, generation, sessionKey);
+    this.assertSessionCurrent(generation, sessionKey);
+    const host = selectCloudRelayHost(hosts);
+    if (!host) {
+      throw hosts.length === 0
+        ? failure(
+            'CLOUD_RELAY_HOST_NOT_FOUND',
+            'No Desktop Host is registered for this Mira Cloud account',
+          )
+        : failure(
+            'CLOUD_RELAY_HOST_OFFLINE',
+            'The account-owned Mira Desktop Host is currently offline',
+          );
+    }
+    return this.createAccess(stored, endpoint, host);
+  }
+
+  private async loadSession(): Promise<{
+    stored: StoredCloudSession;
+    endpoint: string;
+    generation: number;
+    sessionKey: string;
+  }> {
     const generation = this.generation;
-    let stored;
+    let stored: StoredCloudSession | null;
     try {
       stored = await this.store.load();
     } catch (error) {
@@ -264,39 +369,104 @@ export class CloudRelayEntry {
       );
     }
 
+    this.adoptSession(stored, endpoint);
+    return {
+      stored,
+      endpoint,
+      generation: this.generation,
+      sessionKey: this.sessionKey as string,
+    };
+  }
+
+  private assertSessionCurrent(
+    generation: number,
+    sessionKey: string,
+  ): void {
+    if (
+      generation !== this.generation ||
+      this.sessionKey !== sessionKey
+    ) {
+      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during discovery');
+    }
+  }
+
+  private adoptSession(stored: StoredCloudSession, endpoint: string): void {
+    const key = JSON.stringify([
+      stored.account.id,
+      stored.sessionToken,
+      endpoint,
+    ]);
+    if (this.sessionKey === key) return;
+    this.sessionKey = key;
+    this.accessesByHost.clear();
+    this.validAccesses = new WeakSet();
+    closeCloudRelayConnections();
+  }
+
+  private async fetchHosts(
+    stored: StoredCloudSession,
+    generation: number,
+    sessionKey: string,
+  ): Promise<CloudDesktopHost[]> {
     let hosts: CloudDesktopHost[];
     try {
       hosts = await this.api.listHosts(stored.sessionToken);
     } catch (error) {
       throw discoveryFailure(error);
     }
+    this.assertSessionCurrent(generation, sessionKey);
+    return hosts;
+  }
 
-    if (generation !== this.generation) {
-      throw failure('CLOUD_RELAY_SESSION_REJECTED', 'Cloud Relay session changed during discovery');
+  private async fetchDeviceNames(
+    stored: StoredCloudSession,
+    generation: number,
+    sessionKey: string,
+  ): Promise<Map<string, string>> {
+    if (!this.api.listDevices) return new Map();
+    try {
+      const devices = await this.api.listDevices(stored.sessionToken);
+      this.assertSessionCurrent(generation, sessionKey);
+      return new Map(
+        devices
+          .filter(device => device.platform === 'desktop' && device.deviceName)
+          .map(device => [device.id, device.deviceName as string]),
+      );
+    } catch (error) {
+      if (
+        error instanceof RemoteHostError &&
+        error.code === 'CLOUD_RELAY_SESSION_REJECTED'
+      ) {
+        throw error;
+      }
+      // A missing device-label join must not block real Host discovery.
+      return new Map();
     }
-    const host = selectCloudRelayHost(hosts);
-    if (!host) {
-      throw hosts.length === 0
-        ? failure(
-            'CLOUD_RELAY_HOST_NOT_FOUND',
-            'No Desktop Host is registered for this Mira Cloud account',
-          )
-        : failure(
-            'CLOUD_RELAY_HOST_OFFLINE',
-            'The account-owned Mira Desktop Host is currently offline',
-          );
-    }
+  }
 
-    const key = JSON.stringify([stored.account.id, stored.sessionToken,
-      host.id, host.relayRoom, endpoint]);
-    if (this.lastAccess?.key === key) return this.lastAccess.access;
-    if (this.lastAccess) this.reset();
+  private createAccess(
+    stored: StoredCloudSession,
+    endpoint: string,
+    host: CloudDesktopHost,
+  ): CloudRelayAccess {
+    const key = JSON.stringify([
+      stored.account.id,
+      stored.sessionToken,
+      host.id,
+      host.relayRoom,
+      endpoint,
+    ]);
+    const cached = this.accessesByHost.get(host.id);
+    if (cached?.key === key) return cached.access;
+
     const context: CloudRelaySessionContext = {
       accountId: stored.account.id,
       sessionToken: stored.sessionToken,
       room: host.relayRoom,
     };
-    const access: CloudRelayAccess = {
+    let access: CloudRelayAccess | null = null;
+    access = {
+      accountId: stored.account.id,
       target: {
         endpoint,
         room: host.relayRoom,
@@ -304,9 +474,14 @@ export class CloudRelayEntry {
       },
       // The session token and the resulting ticket stay inside this provider;
       // callers only receive the public transport target.
-      tickets: new ApiCloudRelayTicketSource(this.api, context, () => this.lastAccess?.access === access),
+      tickets: new ApiCloudRelayTicketSource(
+        this.api,
+        context,
+        () => access !== null && this.validAccesses.has(access),
+      ),
     };
-    this.lastAccess = { key, access };
+    this.validAccesses.add(access);
+    this.accessesByHost.set(host.id, { key, access });
     return access;
   }
 }
