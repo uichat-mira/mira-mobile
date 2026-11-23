@@ -73,11 +73,12 @@ export class WhoYouMailService {
     return result;
   }
 
-  search(query = '', cursor?: string, signal?: AbortSignal): Promise<WhoYouMailSearchPage> {
+  search(query = '', cursor?: string, signal?: AbortSignal, limit?: number): Promise<WhoYouMailSearchPage> {
     return this.withSession(session => this.deps.client.searchMail({
       ...session,
       ...(query.trim() ? { query: query.trim() } : {}),
       ...(cursor ? { cursor } : {}),
+      ...(limit !== undefined ? { limit } : {}),
     }), signal);
   }
 

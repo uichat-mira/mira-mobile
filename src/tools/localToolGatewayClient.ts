@@ -10,7 +10,7 @@ import {
   type ToolManifest,
 } from './toolGatewayClient';
 import { weatherToolDefinition } from './localTools/weatherTool';
-import { whoYouMailSearchTool, whoYouMailMessageTool } from './localTools/whoYouMailTools';
+import { whoYouMailSearchTool, whoYouMailMessageTool, normalizeWhoYouMailSearchArgs } from './localTools/whoYouMailTools';
 
 export interface LocalToolContext {
   signal?: AbortSignal;
@@ -33,17 +33,13 @@ const disclosureArguments = (
   args: Record<string, unknown>,
 ): { args: Record<string, unknown>; detail: string } => {
   if (tool === 'whoyou_mail_search') {
-    if (Object.keys(args).some(key => key !== 'query') ||
-        (args.query !== undefined && typeof args.query !== 'string')) {
-      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索参数无效');
-    }
-    const query = typeof args.query === 'string' ? args.query.trim() : '';
-    if (query.length > 200) {
-      throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索词过长');
-    }
+    const { query, limit, cursor } = normalizeWhoYouMailSearchArgs(args);
     const safe = JSON.stringify(query || '最近已同步邮件')
       .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
-    return { args: query ? { query } : {}, detail: `\n搜索词：${safe}` };
+    return {
+      args: { ...(query ? { query } : {}), limit, ...(cursor ? { cursor } : {}) },
+      detail: `\n搜索词：${safe}\n本页上限：${limit} 封${cursor ? '\n继续分页：是' : ''}`,
+    };
   }
   if (tool === 'whoyou_mail_message_get') {
     if (Object.keys(args).some(key => key !== 'messageId') ||
