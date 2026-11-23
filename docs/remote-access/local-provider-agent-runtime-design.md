@@ -4,6 +4,11 @@ Status: Tracked by MOB-037 (DOING, Phase A)
 Date: 2026-09-05
 Scope: `uichat-mira-mobile` client architecture and interaction design
 
+> 历史设计档案：本文记录 2026-09 的决策过程，其中 8 轮 / 5 分钟属于旧版方案，
+> 不再是当前默认值。2026-11-23 的实现请以
+> [Pi Core Local Agent 工程说明](../engineering/pi-core-mobile-bridge.md)
+> 和源码 src/settings/agentExecutionBudget.ts 为准（默认 16 轮 / 15 分钟）。
+
 ## 1. Decision Summary
 
 Mira Mobile will expose two conversation sources behind one stable task-list UI:

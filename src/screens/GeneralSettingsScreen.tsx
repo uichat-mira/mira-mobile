@@ -66,6 +66,9 @@ export function GeneralSettingsScreen() {
   // Last value known to be on disk. A failed write rolls back to this instead of
   // leaving the UI on an optimistic value the user can no longer recover from.
   const persistedRef = useRef<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
+  // A slider's completion event can capture an older render. Keep the freshest
+  // draft synchronously so editing one budget field never resets its sibling.
+  const draftRef = useRef<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
 
   const loadSettings = useCallback(() => {
     let cancelled = false;
@@ -74,6 +77,7 @@ export function GeneralSettingsScreen() {
       .then((loaded) => {
         if (cancelled) return;
         persistedRef.current = loaded;
+        draftRef.current = loaded;
         setSettings(loaded);
         setPersistenceError(null);
         setLoadFailed(false);
@@ -103,6 +107,7 @@ export function GeneralSettingsScreen() {
   }, []);
 
   const applySettings = useCallback((next: GeneralSettings) => {
+    draftRef.current = next;
     setSettings(next);
     setPersistenceError(null);
     setSaving(true);
@@ -112,6 +117,7 @@ export function GeneralSettingsScreen() {
       })
       .catch((error) => {
         // Roll back so the screen keeps showing what is actually persisted.
+        draftRef.current = persistedRef.current;
         setSettings(persistedRef.current);
         setPersistenceError(errorMessage(error));
       })
@@ -227,14 +233,22 @@ export function GeneralSettingsScreen() {
             thumbTintColor={colors.primary}
             disabled={loadFailed || saving}
             accessibilityLabel="智能体工具轮数上限"
-            onValueChange={(value) => setSettings((current) => ({
-              ...current,
-              agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
-            }))}
-            onSlidingComplete={(value) => applySettings({
-              ...settings,
-              agentBudget: { ...settings.agentBudget, maxToolRounds: Math.round(value) },
-            })}
+            onValueChange={(value) => {
+              const current = draftRef.current;
+              const next = {
+                ...current,
+                agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
+              };
+              draftRef.current = next;
+              setSettings(next);
+            }}
+            onSlidingComplete={(value) => {
+              const current = draftRef.current;
+              applySettings({
+                ...current,
+                agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
+              });
+            }}
           />
         </View>
         <View style={[styles.strengthRow, { backgroundColor: colors.bg.card }]}>
@@ -252,14 +266,22 @@ export function GeneralSettingsScreen() {
             thumbTintColor={colors.primary}
             disabled={loadFailed || saving}
             accessibilityLabel="智能体最长运行分钟数"
-            onValueChange={(value) => setSettings((current) => ({
-              ...current,
-              agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
-            }))}
-            onSlidingComplete={(value) => applySettings({
-              ...settings,
-              agentBudget: { ...settings.agentBudget, maxDurationMinutes: Math.round(value) },
-            })}
+            onValueChange={(value) => {
+              const current = draftRef.current;
+              const next = {
+                ...current,
+                agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
+              };
+              draftRef.current = next;
+              setSettings(next);
+            }}
+            onSlidingComplete={(value) => {
+              const current = draftRef.current;
+              applySettings({
+                ...current,
+                agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
+              });
+            }}
           />
         </View>
         <Text style={[styles.help, { color: colors.text.muted }]}>
@@ -316,10 +338,12 @@ export function GeneralSettingsScreen() {
               // Live-update state so the slider thumb follows the finger
               // smoothly. Persistence is debounced until the user releases,
               // otherwise every drag frame would hit storage.
-              setSettings((current) => ({ ...current, hapticsStrength: Math.round(value) }));
+              const next = { ...draftRef.current, hapticsStrength: Math.round(value) };
+              draftRef.current = next;
+              setSettings(next);
             }}
             onSlidingComplete={(value) => {
-              applySettings({ ...settings, hapticsStrength: Math.round(value) });
+              applySettings({ ...draftRef.current, hapticsStrength: Math.round(value) });
             }}
           />
           <Text style={[styles.strengthValue, { color: colors.text.muted }]}>

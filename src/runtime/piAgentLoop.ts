@@ -399,25 +399,10 @@ const createPiStreamFn = (
               arguments: parsed,
               ...(argumentsError ? { argumentsError } : {}),
             };
+            // Do not expose a runnable tool call until the Provider confirms
+            // tool_calls. A malformed stop/error must never leave a phantom
+            // invocation in the chat event stream.
             output.content.push(block);
-            const contentIndex = output.content.length - 1;
-            stream.push({
-              type: 'toolcall_start',
-              contentIndex,
-              partial: output,
-            });
-            stream.push({
-              type: 'toolcall_delta',
-              contentIndex,
-              delta: argumentsError ? '' : JSON.stringify(parsed),
-              partial: output,
-            });
-            stream.push({
-              type: 'toolcall_end',
-              contentIndex,
-              toolCall: block,
-              partial: output,
-            });
             continue;
           }
           if (event.type === 'finish') {
@@ -439,9 +424,26 @@ const createPiStreamFn = (
           output.content = output.content.filter((block) => block.type !== 'toolCall');
         } else {
           // Validate every tool request before Pi executes the first tool.
-          preflightCalls(output.content.filter(
+          const calls = output.content.filter(
             (block): block is ToolCall => block.type === 'toolCall',
-          ));
+          );
+          preflightCalls(calls);
+          for (const call of calls) {
+            const contentIndex = output.content.indexOf(call);
+            stream.push({ type: 'toolcall_start', contentIndex, partial: output });
+            stream.push({
+              type: 'toolcall_delta',
+              contentIndex,
+              delta: 'argumentsError' in call ? '' : JSON.stringify(call.arguments),
+              partial: output,
+            });
+            stream.push({
+              type: 'toolcall_end',
+              contentIndex,
+              toolCall: call,
+              partial: output,
+            });
+          }
         }
         stream.push({ type: 'done', reason: doneReason, message: output });
         stream.end();
@@ -904,9 +906,8 @@ export class PiCoreAgentLoop {
         return;
       }
       if (fatalError) {
-        // Provider and tool failures reject the stream, matching the existing
-        // the Local Agent so a partial answer is not persisted as a completed
-        // turn and the UI reports a failed run.
+        // Reject failed Provider/tool runs so partial answers are never
+        // persisted as successfully completed turns.
         throw originalError ?? new Error(fatalError);
       }
       if (!terminalEmitted && lastStopReason === 'toolUse') {

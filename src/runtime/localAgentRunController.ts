@@ -52,6 +52,19 @@ const resolveToolGateway = (
 ): ToolGatewayClient =>
   typeof source === 'function' ? source(selectionText, previousAssistantText) : source;
 
+/**
+ * A configured Agent limit is a user-selected safety boundary. If its stored
+ * value cannot be read, never silently replace it with a higher default.
+ */
+export class LocalAgentBudgetUnavailableError extends Error {
+  readonly code = 'LOCAL_AGENT_BUDGET_UNAVAILABLE';
+
+  constructor() {
+    super('无法读取智能体执行预算，请打开「设置 → 通用 → 常规」检查设置后重试。');
+    this.name = 'LocalAgentBudgetUnavailableError';
+  }
+}
+
 export class LocalAgentRunController {
   private activeAbortController: AbortController | null = null;
   private activeRunToken: symbol | null = null;
@@ -84,7 +97,12 @@ export class LocalAgentRunController {
       );
       // Re-read on every run so changing General settings takes effect on the
       // next turn without restarting the app or leaking mutable global state.
-      const budget = await this.loadBudget();
+      let budget: AgentExecutionBudget;
+      try {
+        budget = await this.loadBudget();
+      } catch {
+        throw new LocalAgentBudgetUnavailableError();
+      }
       const loop = new PiCoreAgentLoop(gateway);
       const stream = await loop.run(
         input.initialMessages,

@@ -740,3 +740,27 @@ it('fails closed before model invocation when a mail manifest loses its privacy 
     .rejects.toMatchObject({ code: 'MAIL_TOOL_POLICY_INVALID' });
   expect(model).not.toHaveBeenCalled();
 });
+
+
+it('rejects Desktop discovery batched with another tool before any side effects', async () => {
+  const called = jest.fn(async () => ({ content: 'must-not-run' }));
+  const loop = new PiCoreAgentLoop({
+    listTools: async () => [
+      { name: 'mira_desktop_hosts', parameters: { type: 'object' } },
+      { name: 'read_file', parameters: { type: 'object' } },
+    ],
+    callTool: called,
+  });
+  const run = await loop.run(
+    [{ role: 'user', content: 'find host' }],
+    async () => (async function* () {
+      yield { type: 'tool-call' as const, callId: 'one', name: 'mira_desktop_hosts', arguments: '{}' };
+      yield { type: 'tool-call' as const, callId: 'two', name: 'read_file', arguments: '{}' };
+      yield { type: 'finish' as const, reason: 'tool_calls' };
+    })(),
+  );
+  await expect(collect(run)).rejects.toMatchObject({
+    code: 'CLOUD_HOST_DISCOVERY_EXCLUSIVE',
+  });
+  expect(called).not.toHaveBeenCalled();
+});
