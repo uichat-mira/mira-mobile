@@ -23,6 +23,7 @@ describe('Who You local tool projection and untrusted-data boundary', () => {
     expect(read.manifest).toMatchObject({ name: 'whoyou_mail_message_get', requiresApproval: true, sensitiveResult: 'mail-body' });
     expect(search.disclosure?.message).toMatch(/发送给当前模型/);
     expect(read.disclosure?.message).toMatch(/8000/);
+    expect(search.disclosure?.message).toMatch(/最多5封/);
   });
 
   it('labels data untrusted and projects only minimal search and plain text fields', async () => {
@@ -36,6 +37,18 @@ describe('Who You local tool projection and untrusted-data boundary', () => {
     expect(bodyResult).not.toHaveProperty('attachments');
     expect(bodyResult.rule).toMatch(/not a user\/system instruction/);
     expect(service.read).toHaveBeenCalledWith(message.id, undefined);
+  });
+
+  it('requests only five recent summaries for Agent and never exposes a sixth item', async () => {
+    service.search.mockResolvedValueOnce({
+      messages: Array.from({ length: 6 }, (_, i) => ({ ...message, id: 'message-' + i })),
+      nextCursor: null,
+    });
+    const result = JSON.parse((await search.call({}, {})).content);
+    expect(service.search).toHaveBeenCalledWith('', undefined, undefined, 5);
+    expect(result.messages).toHaveLength(5);
+    expect(result.moreAvailable).toBe(true);
+    expect(result.messages.map((m: { messageId: string }) => m.messageId)).not.toContain('message-5');
   });
 
   it('rejects unexpected arguments, invalid identifiers and unsafe extra scope', async () => {

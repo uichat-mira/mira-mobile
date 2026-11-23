@@ -365,6 +365,21 @@ describe('Who You real read tools (MOB-086)', () => {
     expect(JSON.stringify(readCalls)).not.toContain(SESSION);
   });
 
+  it('passes the Agent five-summary limit to the read-only MCP request', async () => {
+    const fetched = workingFetch();
+    const api = client(fetched);
+    await api.searchMail({ sessionToken: SESSION, accountId: 'account-1', limit: 5 });
+    const searchCall = fetched.mock.calls
+      .map((entry: [string, RequestInit?]) => {
+        try { return JSON.parse(String(entry[1]?.body)) as {
+          method?: string;
+          params?: { name?: string; arguments?: { limit?: number } };
+        }; } catch { return null; }
+      })
+      .find(body => body?.method === 'tools/call' && body.params?.name === 'whoyou_mail_search');
+    expect(searchCall?.params?.arguments?.limit).toBe(5);
+  });
+
   it('rejects malformed search results, unsafe body contracts and untrusted ownership', async () => {
     const clientA = client(workingFetch({ searchContent: { messages: [{ id: 'bad' }], nextCursor: null } }));
     await expect(clientA.searchMail({ sessionToken: SESSION, accountId: 'account-1' }))

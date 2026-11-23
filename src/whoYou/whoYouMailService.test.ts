@@ -36,6 +36,18 @@ describe('WhoYouMailService session ownership', () => {
     });
   });
 
+  it('passes a bounded Agent read limit while preserving the manual search default', async () => {
+    const { service, client } = createService();
+    await service.search('', undefined, undefined, 5);
+    expect(client.searchMail).toHaveBeenCalledWith({
+      sessionToken: stored.sessionToken, accountId: account, limit: 5,
+    });
+    await service.search('');
+    expect(client.searchMail).toHaveBeenLastCalledWith({
+      sessionToken: stored.sessionToken, accountId: account,
+    });
+  });
+
   it('propagates the active Agent cancellation signal to MCP reads', async () => {
     const { service, client } = createService();
     const controller = new AbortController();

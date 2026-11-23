@@ -87,7 +87,7 @@ export interface WhoYouReadSession {
 }
 
 export interface WhoYouMailReaderClient {
-  searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage>;
+  searchMail(input: WhoYouReadSession & { query?: string; cursor?: string; limit?: number }): Promise<WhoYouMailSearchPage>;
   readMail(input: WhoYouReadSession & { messageId: string }): Promise<WhoYouMailMessage>;
 }
 
@@ -757,14 +757,17 @@ export class WhoYouMcpClient implements WhoYouMcpClientLike {
     return { identity, mailboxes };
   }
 
-  async searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage> {
+  async searchMail(input: WhoYouReadSession & { query?: string; cursor?: string; limit?: number }): Promise<WhoYouMailSearchPage> {
     const query = input.query?.trim();
     if (query && query.length > 200) throw new WhoYouError('rejected', '搜索关键词过长');
     if (input.cursor && input.cursor.length > 200) throw new WhoYouError('rejected', '分页游标无效');
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50)) {
+      throw new WhoYouError('rejected', '邮件返回数量无效');
+    }
     const { token } = await this.authorize(input);
     const result = await this.callTool(token, MAIL_SEARCH_TOOL, {
       folder: 'inbox',
-      limit: 10,
+      limit: input.limit ?? 10,
       ...(query ? { query } : {}),
       ...(input.cursor ? { cursor: input.cursor } : {}),
     }, input.signal);
