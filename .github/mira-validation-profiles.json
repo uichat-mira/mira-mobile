@@ -8,35 +8,35 @@
           "id": "dependencies",
           "tier": "L1",
           "requirement": "required",
-          "command": "set -e; NODE_BIN=\"$(find /opt/hostedtoolcache/node -path '*/22.*/x64/bin/node' -print | sort -V | tail -n 1)\"; test -n \"$NODE_BIN\"; export PATH=\"$(dirname \"$NODE_BIN\"):$PATH\"; npm ci",
+          "command": "set -e; . .github/scripts/node26-env.sh; npm ci",
           "failure_result": "BLOCKED"
         },
         {
           "id": "typecheck",
           "tier": "L1",
           "requirement": "required",
-          "command": "set -e; NODE_BIN=\"$(find /opt/hostedtoolcache/node -path '*/22.*/x64/bin/node' -print | sort -V | tail -n 1)\"; test -n \"$NODE_BIN\"; export PATH=\"$(dirname \"$NODE_BIN\"):$PATH\"; npm run typecheck",
+          "command": "set -e; . .github/scripts/node26-env.sh; npm run typecheck",
           "failure_result": "REPAIR"
         },
         {
           "id": "lint",
           "tier": "L1",
           "requirement": "required",
-          "command": "set -e; NODE_BIN=\"$(find /opt/hostedtoolcache/node -path '*/22.*/x64/bin/node' -print | sort -V | tail -n 1)\"; test -n \"$NODE_BIN\"; export PATH=\"$(dirname \"$NODE_BIN\"):$PATH\"; npm run lint",
+          "command": "set -e; . .github/scripts/node26-env.sh; npm run lint",
           "failure_result": "REPAIR"
         },
         {
           "id": "cloud-contracts",
           "tier": "L2",
           "requirement": "required",
-          "command": "set -e; NODE_BIN=\"$(find /opt/hostedtoolcache/node -path '*/22.*/x64/bin/node' -print | sort -V | tail -n 1)\"; test -n \"$NODE_BIN\"; export PATH=\"$(dirname \"$NODE_BIN\"):$PATH\"; npm test -- --runInBand src/cloud",
+          "command": "set -e; . .github/scripts/node26-env.sh; npm test -- --runInBand src/cloud",
           "failure_result": "REPAIR"
         },
         {
           "id": "runtime-jest",
           "tier": "L3",
           "requirement": "required",
-          "command": "set -e; NODE_BIN=\"$(find /opt/hostedtoolcache/node -path '*/22.*/x64/bin/node' -print | sort -V | tail -n 1)\"; test -n \"$NODE_BIN\"; export PATH=\"$(dirname \"$NODE_BIN\"):$PATH\"; npm test -- --runInBand",
+          "command": "set -e; . .github/scripts/node26-env.sh; npm test -- --runInBand",
           "failure_result": "REPAIR"
         },
         {

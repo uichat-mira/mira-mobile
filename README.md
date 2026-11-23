@@ -17,7 +17,7 @@ Mira 官方移动端工程，基于 React Native 构建。
 
 ## 环境要求
 
-- Node.js 22.x (>= 22.11.0)
+- Node.js 26.x (>= 26.13.1, LTS)
 - Android SDK 36+ / API 24+
 - JDK 17+
 - iOS 15.0+
