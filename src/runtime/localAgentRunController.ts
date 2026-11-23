@@ -1,5 +1,7 @@
 import type { OpenAiMessage } from '../provider/openAiStandardClient';
 import { MobileAgentLoop } from './mobileAgentLoop';
+import { PiCoreAgentLoop } from './piAgentLoop';
+import type { LocalAgentEngine } from './localAgentEngine';
 import type { LocalProviderExecutor } from './localProviderExecution';
 import type { RuntimeEvent } from './conversationRuntime';
 import type {
@@ -55,7 +57,10 @@ export class LocalAgentRunController {
   private activeRunToken: symbol | null = null;
   private pendingApproval: PendingApproval | null = null;
 
-  constructor(private readonly toolGateway: LocalAgentToolGatewaySource) {}
+  constructor(
+    private readonly toolGateway: LocalAgentToolGatewaySource,
+    private readonly engine: LocalAgentEngine = 'mobile',
+  ) {}
 
   get active(): boolean {
     return this.activeRunToken !== null;
@@ -71,9 +76,15 @@ export class LocalAgentRunController {
     try {
       // A source factory supplies a fresh gateway for each run so Cloud account
       // / Host authority and tool aliases never leak into a later Agent run.
-      const stream = await new MobileAgentLoop(
-        resolveToolGateway(this.toolGateway, input.selectionText, input.previousAssistantText),
-      ).run(
+      const gateway = resolveToolGateway(
+        this.toolGateway,
+        input.selectionText,
+        input.previousAssistantText,
+      );
+      const loop = this.engine === 'pi-core'
+        ? new PiCoreAgentLoop(gateway)
+        : new MobileAgentLoop(gateway);
+      const stream = await loop.run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {

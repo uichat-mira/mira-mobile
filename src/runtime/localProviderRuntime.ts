@@ -28,6 +28,10 @@ import {
   LocalAgentRunController,
   type LocalAgentToolGatewaySource,
 } from './localAgentRunController';
+import {
+  LOCAL_AGENT_ENGINE,
+  type LocalAgentEngine,
+} from './localAgentEngine';
 import { executeLocalConversationTurn } from './localConversationExecution';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
 import {
@@ -115,6 +119,8 @@ export interface LocalProviderRuntimeOptions {
     apiKey: string,
   ) => OpenAiStandardClient;
   toolGateway?: LocalAgentToolGatewaySource;
+  /** Experimental Local Agent engine selection; production default is mobile. */
+  agentLoopEngine?: LocalAgentEngine;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
   stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
@@ -175,7 +181,10 @@ export class LocalProviderRuntime implements ConversationRuntime {
     this.stageSessionReferenceRemoval =
       options.stageSessionReferenceRemoval ?? stageLocalSessionReferenceRemoval;
     this.agentRun = options.toolGateway
-      ? new LocalAgentRunController(options.toolGateway)
+      ? new LocalAgentRunController(
+          options.toolGateway,
+          options.agentLoopEngine ?? LOCAL_AGENT_ENGINE,
+        )
       : null;
     this.supportsAgent = Boolean(options.toolGateway);
   }

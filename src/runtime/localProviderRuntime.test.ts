@@ -8,6 +8,10 @@ import { ProviderConfigStore, type LocalProviderConfig } from '../provider/provi
 import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
 import {
+  ToolApprovalRequiredError,
+  type ToolApprovalRequest,
+} from '../tools/toolGatewayClient';
+import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
 } from '../settings/personalizationSettings';
@@ -16,6 +20,7 @@ import {
   LocalProviderRuntime,
   type LocalProviderRuntimeOptions,
 } from './localProviderRuntime';
+import { LOCAL_AGENT_ENGINE } from './localAgentEngine';
 
 const config: LocalProviderConfig = {
   id: 'provider-a',
@@ -52,6 +57,7 @@ const createConfiguredRuntime = async (options: {
   configStore?: ProviderConfigStore;
   clientFactory?: LocalProviderRuntimeOptions['clientFactory'];
   toolGateway?: LocalProviderRuntimeOptions['toolGateway'];
+  agentLoopEngine?: LocalProviderRuntimeOptions['agentLoopEngine'];
 }) => {
   const providerConfig = options.providerConfig ?? config;
   const configStore =
@@ -69,6 +75,9 @@ const createConfiguredRuntime = async (options: {
     sessionRepository: repository,
     ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
     ...(options.toolGateway ? { toolGateway: options.toolGateway } : {}),
+    ...(options.agentLoopEngine
+      ? { agentLoopEngine: options.agentLoopEngine }
+      : {}),
   });
   return { runtime, repository, configStore, credentialStore };
 };
@@ -251,8 +260,106 @@ describe('LocalProviderRuntime standard protocol routing', () => {
   });
 });
 
-describe('LocalProviderRuntime Responses Agent client reuse', () => {
-  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
+describe('LocalProviderRuntime Pi Core Agent engine (opt-in)', () => {
+  it('keeps ConversationRuntime approval, tool gateway, and assistant persistence around the real Pi loop', async () => {
+    const approval: ToolApprovalRequest = {
+      invocationId: 'pi-inv-1',
+      callId: 'pi-call-1',
+      name: 'terminal_session',
+      arguments: '{"command":"pwd"}',
+      message: 'Run terminal command',
+      scope: 'terminal',
+    };
+    const streamMessages = jest
+      .fn()
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield {
+            type: 'tool-call' as const,
+            callId: 'pi-call-1',
+            name: 'terminal_session',
+            arguments: '{"command":"pwd"}',
+          };
+          yield { type: 'finish' as const, reason: 'tool_calls' };
+        })(),
+      )
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield { type: 'text-delta' as const, delta: 'pi-done' };
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      );
+    const resolveApproval = jest.fn(async () => ({
+      status: 'completed' as const,
+      result: { content: '/workspace' },
+    }));
+    const callTool = jest.fn(async () => {
+      throw new ToolApprovalRequiredError(approval);
+    });
+    const { runtime, repository } = await createConfiguredRuntime({
+      agentLoopEngine: 'pi-core',
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages,
+      } as unknown as OpenAiStandardClient),
+      toolGateway: {
+        listTools: async () => [{
+          name: 'terminal_session',
+          description: 'Run a terminal command',
+          parameters: {
+            type: 'object',
+            properties: { command: { type: 'string' } },
+          },
+          requiresApproval: true,
+        }],
+        callTool,
+        resolveApproval,
+      },
+    });
+    const session = await runtime.createSession('Pi Agent', config.id);
+    const events: unknown[] = [];
+
+    for await (const event of await runtime.sendMessage(
+      session.id,
+      'show cwd',
+      { agentEnabled: true },
+    )) {
+      events.push(event);
+      if (event.type === 'approval-required') {
+        runtime.resolveToolApproval(event.invocationId, 'approved');
+      }
+    }
+
+    expect(streamMessages).toHaveBeenCalledTimes(2);
+    expect(resolveApproval).toHaveBeenCalledWith(
+      approval,
+      'approved',
+      expect.anything(),
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'approval-required',
+        invocationId: 'pi-inv-1',
+      }),
+      expect.objectContaining({
+        type: 'tool-result',
+        callId: 'pi-call-1',
+        content: '/workspace',
+      }),
+      { type: 'text-delta', delta: 'pi-done' },
+    ]));
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'show cwd' }),
+      expect.objectContaining({ role: 'assistant', content: 'pi-done' }),
+    ]);
+  });
+
+  it('keeps the existing MobileAgentLoop as the default engine', () => {
+    expect(LOCAL_AGENT_ENGINE).toBe('mobile');
+  });
+});
+
+describe('LocalProviderRuntime Responses Agent client reuse', () => {  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
     const responsesConfig: LocalProviderConfig = {
       ...config,
       protocol: 'openai-responses',
