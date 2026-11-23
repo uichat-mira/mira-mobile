@@ -86,6 +86,21 @@ const activityLabel: Record<LocalAgentActivityStatus, string> = {
   truncated: '结果已截断',
 };
 
+/**
+ * A terminated Agent run does not prove that an in-flight tool finished or
+ * stopped on the Host. Keep completed tools completed, but never show a stale
+ * "running" label once the turn itself is terminal.
+ */
+export const getLocalAgentActivityLabel = (
+  status: LocalAgentActivityStatus,
+  phase: LocalAgentRunPhase,
+): string =>
+  status === 'running' &&
+  (phase === 'error' || phase === 'paused' ||
+    phase === 'completed' || phase === 'degraded')
+    ? '结果未确认'
+    : activityLabel[status];
+
 const pauseLabel: Record<LocalAgentPauseReason, string> = {
   'app-suspended': 'App 已进入后台。本轮不会伪装成继续运行，可重新发送后再执行。',
   timeout: '本轮运行已超时，可重新发送。',
@@ -159,7 +174,7 @@ export function LocalAgentRunCard({
       {activities.slice(-4).map(activity => (
         <View key={activity.callId} style={styles.activityRow}>
           <Text style={[styles.activityState, { color: colors.text.muted }]}>
-            {activityLabel[activity.status]}
+            {getLocalAgentActivityLabel(activity.status, phase)}
           </Text>
           <View style={styles.activityBody}>
             <Text
