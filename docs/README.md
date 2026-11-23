@@ -1,5 +1,10 @@
 # Mira Mobile 文档
 
+## 0.4.0 产品与能力架构唯一真相
+
+- [Mobile 0.4.0 产品决策与研究唯一真相](mobile-0.4.0-product-decisions-and-research.md) —— 连接/身份决策汇总、Desktop 严选准入、环境（服务）→ 能力 → 工具三层披露、合法工具链与 MCP 标准/研究边界；**未施工的目标不能视为已上线**。
+- [MOB-090：五项已确认产品决策（任务合同）](https://github.com/uichat-mira/mira-mobile/issues/354) —— D1–D5 的原始完整行为及后续验收边界。
+
 ## 当前工程主线
 
 - [Pi Core Local Agent 当前实现与验收边界](engineering/pi-core-mobile-bridge.md)
