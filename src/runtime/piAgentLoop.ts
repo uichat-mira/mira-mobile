@@ -148,12 +148,35 @@ const isDegradableToolChannelError = (error: unknown): boolean =>
   error instanceof ToolGatewayError &&
   error.code === 'TOOL_CHANNEL_UNAVAILABLE';
 
+// Some Host tools dispatch by operation and declare root oneOf object variants.
+// The Local Provider Chat Completions function contract requires an object root;
+// adding the redundant type preserves the JSON Schema accepted argument set.
+const toProviderParameters = (
+  schema: ToolManifest['parameters'],
+): ToolManifest['parameters'] => {
+  const variants = schema.oneOf;
+  if (
+    schema.type !== undefined ||
+    !Array.isArray(variants) ||
+    variants.length === 0 ||
+    !variants.every(
+      (variant: unknown) => variant !== null &&
+        typeof variant === 'object' &&
+        !Array.isArray(variant) &&
+        (variant as Record<string, unknown>).type === 'object',
+    )
+  ) {
+    return schema;
+  }
+  return { ...schema, type: 'object' };
+};
+
 const toTool = (manifest: ToolManifest): OpenAiTool => ({
   type: 'function',
   function: {
     name: manifest.name,
     ...(manifest.description ? { description: manifest.description } : {}),
-    parameters: manifest.parameters,
+    parameters: toProviderParameters(manifest.parameters),
   },
 });
 
