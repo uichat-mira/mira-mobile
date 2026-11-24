@@ -60,6 +60,9 @@ export function ChatComposer(props: Props) {
   const { colors } = useTheme();
   const [focused, setFocused] = useState(false);
   const [popup, setPopup] = useState<Popup | null>(null);
+  // A native IME may dismiss itself while a toolbar menu is open. Keep the
+  // strength anchor visible until the menu is explicitly dismissed.
+  const expanded = focused || popup === 'strength';
   const [composerHeight, setComposerHeight] = useState(60);
   const [availableHeight, setAvailableHeight] = useState(400);
   const [preview, setPreview] = useState<number | null>(null);
@@ -79,9 +82,8 @@ export function ChatComposer(props: Props) {
   useEffect(() => {
     const listener = Keyboard.addListener('keyboardDidHide', () => {
       input.current?.blur();
+      // Keyboard visibility is not a popup dismissal action.
       setFocused(false);
-      setPopup(null);
-      setPreview(null);
     });
     return () => listener.remove();
   }, []);
@@ -187,10 +189,10 @@ export function ChatComposer(props: Props) {
         style={[styles.bar, { backgroundColor: colors.bg.canvas }]}
       >
         <View
-          testID={focused ? 'composer-expanded' : 'composer-compact'}
+          testID={expanded ? 'composer-expanded' : 'composer-compact'}
           style={[
             styles.shell,
-            focused ? styles.expanded : styles.compact,
+            expanded ? styles.expanded : styles.compact,
             {
               backgroundColor: colors.bg.input,
               borderColor: colors.border.default,
@@ -204,10 +206,7 @@ export function ChatComposer(props: Props) {
             value={props.value}
             onChangeText={props.onChangeText}
             onFocus={() => setFocused(true)}
-            onBlur={() => {
-              setFocused(false);
-              close();
-            }}
+            onBlur={() => setFocused(false)}
             placeholder={props.placeholder}
             placeholderTextColor={colors.text.placeholder}
             editable={props.editable}
@@ -216,12 +215,12 @@ export function ChatComposer(props: Props) {
             submitBehavior="newline"
             style={[
               styles.input,
-              focused ? styles.inputExpanded : styles.inputCompact,
+              expanded ? styles.inputExpanded : styles.inputCompact,
               { color: colors.text.ink },
             ]}
           />
           <View style={styles.actions}>
-            {focused && props.strength !== undefined
+            {expanded && props.strength !== undefined
               ? control(
                   `执行强度：${
                     props.strengthReady
