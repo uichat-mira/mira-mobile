@@ -748,6 +748,14 @@ export class PiCoreAgentLoop {
             ...(catalogRevision !== undefined ? { catalogRevision } : {}),
           }, { signal });
           if (signal?.aborted) throw abortError();
+          if (catalogRevision !== undefined &&
+              disclosure.catalogRevision !== undefined &&
+              disclosure.catalogRevision !== catalogRevision) {
+            throw new ToolGatewayError(
+              'TOOL_DISCLOSURE_STALE',
+              'The trusted tool catalog changed during schema disclosure',
+            );
+          }
           validateMailManifests(disclosure.tools);
           const merged = mergeDisclosedTools({
             current: manifests.filter(item => item.name !== TOOL_DISCLOSURE_TOOL),

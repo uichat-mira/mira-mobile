@@ -268,9 +268,12 @@ export const mergeDisclosedTools = (options: {
   );
   for (const tool of incoming) {
     const owner = owners.get(tool.name);
+    // Service-level disclosure may cross semantic capability groups. Only an
+    // explicitly selected capability narrows the allowed tool owner.
     if (!owner ||
         owner.serviceId !== target.serviceId ||
-        owner.capabilityId !== target.capabilityId) {
+        (target.capabilityId !== undefined &&
+          owner.capabilityId !== target.capabilityId)) {
       return invalid(
         'TOOL_DISCLOSURE_DENIED',
         `Disclosure returned a tool outside the selected target: ${tool.name}`,

@@ -116,6 +116,33 @@ describe('tool service catalog', () => {
     }), 'TOOL_DISCLOSURE_DENIED');
   });
 
+  it('allows service-level disclosure to skip capability groups without crossing services', () => {
+    const services = [
+      service({
+        capabilities: [
+          { id: 'search', name: 'Search', toolNames: ['tool_a'] },
+          { id: 'fetch', name: 'Fetch', toolNames: ['tool_b'] },
+        ],
+      }),
+      service({ id: 'svc-b', toolNames: ['foreign_tool'] }),
+    ];
+    const target = resolveToolDisclosureTarget(services, {
+      serviceId: 'svc-a',
+      toolNames: ['tool_b'],
+    });
+    expect(target).toEqual({ serviceId: 'svc-a', toolNames: ['tool_b'] });
+    expect(mergeDisclosedTools({
+      current: [],
+      services,
+      target,
+      incoming: [tool('tool_b')],
+    })).toEqual([tool('tool_b')]);
+    expectErrorCode(() => resolveToolDisclosureTarget(services, {
+      serviceId: 'svc-a',
+      toolNames: ['foreign_tool'],
+    }), 'TOOL_DISCLOSURE_DENIED');
+  });
+
   it('rejects disclosure results outside the requested target and schema swaps', () => {
     const services = [service({
       capabilities: [{ id: 'search', name: 'Search', toolNames: ['tool_a'] }],
