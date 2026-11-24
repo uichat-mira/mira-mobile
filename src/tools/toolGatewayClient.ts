@@ -4,7 +4,10 @@ export interface ToolManifest {
   parameters: Record<string, unknown>;
   destructive?: boolean;
   requiresApproval?: boolean;
-  /** Private data: restrict subsequent tool exposure after it reaches a model. */
+  /**
+   * Private data that requires the existing explicit disclosure approval before
+   * results reach a model. It never filters tools or authorizes later calls.
+   */
   sensitiveResult?: 'mail-search' | 'mail-body';
 }
 

@@ -42,12 +42,9 @@ import {
   validateToolServiceCatalog,
 } from '../tools/toolDisclosure';
 import {
-  allowedMailStageTools,
   hostSelectionPrompt,
-  requiredMailRole,
   validateMailManifests,
   validateToolBatch,
-  type MailStage,
 } from '../tools/agentToolPolicies';
 import { DEFAULT_AGENT_EXECUTION_BUDGET } from '../settings/agentExecutionBudget';
 
@@ -626,9 +623,7 @@ export class PiCoreAgentLoop {
       let lastStopReason: AssistantMessage['stopReason'] | null = null;
       let terminalEmitted = false;
       let agent: Agent | null = null;
-      let mailStage: MailStage = 'none';
       let hostSelectionReply: string | null = null;
-      const activeManifests = () => allowedMailStageTools(manifests, mailStage);
       let unsubscribe = () => {};
 
       const abortRun = () => {
@@ -742,17 +737,9 @@ export class PiCoreAgentLoop {
           }
           const args = parseToolDisclosureArguments(params);
           const target = resolveToolDisclosureTarget(services, args);
-          // A prior mail search may reveal only the schema of the existing
-          // mail-body reader. Catalog disclosure itself is safe, but must not
-          // become a way for untrusted mail to activate other capabilities.
-          if (mailStage !== 'none' &&
-              (mailStage !== 'search' || target.toolNames.some(name =>
-                requiredMailRole(name) !== 'mail-body'))) {
-            throw new ToolGatewayError(
-              'MAIL_TOOL_CHAIN_RESTRICTED',
-              'Mail content may only disclose the trusted mail-body reader',
-            );
-          }
+          // Schema visibility is a model decision over the trusted catalog.
+          // Disclosure never grants execution authority or approves a call;
+          // the gateway revalidates and the service approval still applies.
           const disclosure = await disclose.call(gateway, {
             serviceId: target.serviceId,
             ...(target.capabilityId ? { capabilityId: target.capabilityId } : {}),
@@ -830,7 +817,7 @@ export class PiCoreAgentLoop {
           // A trusted gateway result may add schemas only through this internal
           // field. Plain ToolCallResult.content never changes the tool set.
           manifests = buildRuntimeManifests(refreshedTools);
-          agent!.state.tools = buildAgentTools(activeManifests());
+          agent!.state.tools = buildAgentTools(manifests);
         }
         if (result.hostSelectionRequired) {
           const candidates = result.hostCandidates ?? hostCandidates;
@@ -845,10 +832,9 @@ export class PiCoreAgentLoop {
           hostSelectionReply = hostSelectionPrompt(candidates);
         }
         const limited = limitToolResult(result.content, maxToolResultBytes);
-        if (manifest.sensitiveResult) {
-          mailStage = manifest.sensitiveResult === 'mail-search' ? 'search' : 'body';
-          agent!.state.tools = buildAgentTools(activeManifests());
-        }
+        // The model owns semantic decisions over tool results. `sensitiveResult`
+        // only identifies the existing explicit disclosure/privacy contract;
+        // it never narrows the authorized tool set for later model rounds.
         return {
           content: [{ type: 'text', text: limited }],
           details: { truncated: limited !== result.content },
@@ -866,7 +852,7 @@ export class PiCoreAgentLoop {
       }));
 
       const preflightCalls = (calls: readonly ToolCall[]): void => {
-        validateToolBatch(calls, manifests, mailStage);
+        validateToolBatch(calls);
         if (notices.some((item) =>
           item.type === 'notice' && item.code === 'tool-channel-unavailable'
         ) && calls.length > 0) {
@@ -878,7 +864,7 @@ export class PiCoreAgentLoop {
       };
       const streamFn = createPiStreamFn(
         modelCall,
-        () => activeManifests().map(toTool),
+        () => manifests.map(toTool),
         preflightCalls,
         recordError,
       );
@@ -962,20 +948,20 @@ export class PiCoreAgentLoop {
             messages: toAgentMessages(serviceContext
               ? [{ role: 'system' as const, content: serviceContext }, ...initialMessages]
               : initialMessages),
-            tools: buildAgentTools(activeManifests()),
+            tools: buildAgentTools(manifests),
           },
           streamFn,
           toolExecution: 'sequential',
           prepareNextTurnWithContext: async ({ context }) => ({
-            context: { ...context, tools: buildAgentTools(activeManifests()) },
+            context: { ...context, tools: buildAgentTools(manifests) },
           }),
           beforeToolCall: async ({ assistantMessage, toolCall }) => {
             try {
               const allCalls = assistantMessage.content.filter(
                 (block): block is ToolCall => block.type === 'toolCall',
               );
-              validateToolBatch(allCalls, manifests, mailStage);
-              validateToolCall(activeManifests(), {
+              validateToolBatch(allCalls);
+              validateToolCall(manifests, {
                 callId: toolCall.id,
                 name: toolCall.name,
                 arguments: JSON.stringify(toolCall.arguments),

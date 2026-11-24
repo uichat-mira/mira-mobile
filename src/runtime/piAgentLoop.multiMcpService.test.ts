@@ -37,6 +37,7 @@ interface FixtureService {
   tools: McpToolDescriptor[];
   capabilities: FixtureCapability[];
   grantScopes: string[];
+  resultFor?: (name: string) => string;
 }
 
 const schema = (properties: Record<string, unknown> = {}) => ({
@@ -89,12 +90,14 @@ interface FixtureRuntime {
   endpoint: string;
   fetch: jest.Mock;
   calls: string[];
+  callArguments: Array<Record<string, unknown>>;
   assertCurrent: () => void;
 }
 
 const startFixture = (fixture: FixtureService): FixtureRuntime => {
   const endpoint = `https://${fixture.id}.fixture.example.test/mcp`;
   const calls: string[] = [];
+  const callArguments: Array<Record<string, unknown>> = [];
   const resourceUri = `mira://service/${fixture.id}/capabilities`;
   const fetchImpl = jest.fn(async (url: string, init?: RequestInit): Promise<Response> => {
     if (url !== endpoint) throw new Error('unexpected URL ' + url);
@@ -131,8 +134,12 @@ const startFixture = (fixture: FixtureService): FixtureRuntime => {
     if (body.method === 'tools/call') {
       const name = body.params?.name ?? '';
       calls.push(name);
+      callArguments.push(body.params?.arguments ?? {});
       return rpc(body.id, {
-        content: [{ type: 'text', text: `${fixture.id}:result:${name}` }],
+        content: [{
+          type: 'text',
+          text: fixture.resultFor?.(name) ?? `${fixture.id}:result:${name}`,
+        }],
         structuredContent: {
           service: fixture.id,
           tool: name,
@@ -147,6 +154,7 @@ const startFixture = (fixture: FixtureService): FixtureRuntime => {
     endpoint,
     fetch: fetchImpl,
     calls,
+    callArguments,
     assertCurrent: () => undefined,
   };
 };
@@ -280,7 +288,10 @@ const whoYouFixture: FixtureService = {
     {
       name: 'whoyou_mail_search',
       description: 'Search protected mail',
-      inputSchema: schema({ query: { type: 'string' } }),
+      inputSchema: schema({
+        query: { type: 'string' },
+        cursor: { type: 'string' },
+      }),
     },
     {
       name: 'whoyou_mail_message_get',
@@ -484,6 +495,193 @@ describe('Pi Core over two independent MCP service bindings', () => {
     expect(discovery.services?.find((service) => service.id === 'neutral-lab')
       ?.capabilities?.map((capability) => capability.id))
       .toEqual(['neutral.read', 'neutral.write']);
+  });
+
+  it('lets mail data drive authorized cross-service calls and repeated searches in one run', async () => {
+    const whoYou = startFixture({
+      ...whoYouFixture,
+      resultFor: (name) => name === 'whoyou_mail_search'
+        ? JSON.stringify({ messages: [{ messageId: 'msg-42' }], nextCursor: 'cursor-2' })
+        : name === 'whoyou_mail_message_get'
+          ? JSON.stringify({ messageId: 'msg-42', body: 'fixture body' })
+          : `who-you:result:${name}`,
+    });
+    const neutral = startFixture({
+      ...neutralFixture,
+      resultFor: (name) => name === 'neutral_lookup'
+        ? 'workspace://fixture/item-42'
+        : `neutral-lab:result:${name}`,
+    });
+    const whoYouSnapshot = await snapshotFor({
+      runtime: whoYou,
+      policy: {
+        grantedScopes: whoYouFixture.grantScopes,
+        requiredScopes: ['whoyou.read'],
+        permittedAccess: ['read'],
+        permittedToolNames: ['whoyou_mail_search', 'whoyou_mail_message_get'],
+        initialToolNames: ['whoyou_mail_search', 'whoyou_mail_message_get'],
+        sensitiveResultFor: (name) => name === 'whoyou_mail_search'
+          ? 'mail-search'
+          : name === 'whoyou_mail_message_get' ? 'mail-body' : undefined,
+      },
+      protectedTools: new Set(['whoyou_mail_search', 'whoyou_mail_message_get']),
+    });
+    const neutralSnapshot = await snapshotFor({
+      runtime: neutral,
+      policy: {
+        grantedScopes: neutralFixture.grantScopes,
+        permittedAccess: ['read', 'write'],
+        permittedToolNames: ['neutral_lookup', 'neutral_note_write'],
+        initialToolNames: ['neutral_lookup'],
+      },
+    });
+    const gateway = new LocalAgentToolGateway({
+      local: localGateway(),
+      mcp: [
+        new McpServiceBinding({
+          serviceTypeId: 'who-you',
+          discovery: {
+            serviceTypeId: 'who-you',
+            discover: async () => whoYouSnapshot,
+          },
+          requiresCloudAccount: true,
+        }),
+        new McpServiceBinding({
+          serviceTypeId: 'neutral-lab',
+          discovery: {
+            serviceTypeId: 'neutral-lab',
+            discover: async () => neutralSnapshot,
+          },
+        }),
+      ],
+      cloudContext: () => ({
+        accountId: 'account-a',
+        explicitlySignedOut: false,
+        desktopMode: 'none',
+      }),
+    });
+
+    const offered: string[][] = [];
+    let nextCursor: string | undefined;
+    let lookupResult = '';
+    const lastToolResult = (messages: readonly OpenAiMessage[]): string =>
+      [...messages].reverse().find(message => message.role === 'tool')?.content ?? '';
+    const modelCall = jest.fn(async (
+      messages: readonly OpenAiMessage[],
+      tools: readonly OpenAiTool[],
+    ) => {
+      offered.push(tools.map((tool) => tool.function.name));
+      const previous = lastToolResult(messages);
+      if (offered.length === 1) {
+        return asyncStream([
+          toolCall('mail-search-1', 'whoyou_mail_search', { query: 'mira' }),
+          toolCalls(),
+        ]);
+      }
+      if (offered.length === 2) {
+        const page = JSON.parse(previous) as {
+          messages: Array<{ messageId: string }>;
+          nextCursor: string;
+        };
+        nextCursor = page.nextCursor;
+        return asyncStream([
+          toolCall('mail-body', 'whoyou_mail_message_get', {
+            messageId: page.messages[0].messageId,
+          }),
+          toolCalls(),
+        ]);
+      }
+      if (offered.length === 3) {
+        const body = JSON.parse(previous) as { body: string };
+        return asyncStream([
+          toolCall('neutral-lookup', 'neutral_lookup', { query: body.body }),
+          toolCalls(),
+        ]);
+      }
+      if (offered.length === 4) {
+        lookupResult = previous;
+        return asyncStream([
+          toolCall('disclose-neutral-write', TOOL_DISCLOSURE_TOOL, {
+            serviceId: 'neutral-lab',
+            toolNames: ['neutral_note_write'],
+          }),
+          toolCalls(),
+        ]);
+      }
+      if (offered.length === 5) {
+        return asyncStream([
+          toolCall('neutral-write', 'neutral_note_write', { value: lookupResult }),
+          toolCalls(),
+        ]);
+      }
+      if (offered.length === 6) {
+        return asyncStream([
+          toolCall('mail-search-2', 'whoyou_mail_search', {
+            query: 'mira again',
+            ...(nextCursor ? { cursor: nextCursor } : {}),
+          }),
+          toolCalls(),
+        ]);
+      }
+      return asyncStream([text('mail and lab complete'), stop()]);
+    });
+    const requestApproval = jest.fn(async () => 'approved' as const);
+
+    const events = await drain(await new PiCoreAgentLoop(gateway).run(
+      [{ role: 'user', content: 'search mail, read it and use the lab service' }],
+      modelCall,
+      { requestApproval },
+    ));
+
+    // The authorized tool set never shrinks after a mail result; only the
+    // model-requested schema disclosure adds the deferred write tool.
+    expect(offered[0]).toEqual(expect.arrayContaining([
+      'local_weather_current',
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'neutral_lookup',
+      TOOL_DISCLOSURE_TOOL,
+    ]));
+    expect(offered[0]).not.toContain('neutral_note_write');
+    expect(offered[2]).toEqual(expect.arrayContaining([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'neutral_lookup',
+    ]));
+    expect(offered[2]).not.toContain('neutral_note_write');
+    expect(offered[3]).toEqual(expect.arrayContaining([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'neutral_lookup',
+    ]));
+    expect(offered[4]).toEqual(expect.arrayContaining([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'neutral_lookup',
+      'neutral_note_write',
+    ]));
+    expect(offered[6]).toEqual(expect.arrayContaining([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'neutral_lookup',
+      'neutral_note_write',
+    ]));
+
+    expect(whoYou.calls).toEqual([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'whoyou_mail_search',
+    ]);
+    expect(neutral.calls).toEqual(['neutral_lookup', 'neutral_note_write']);
+    expect(whoYou.callArguments[1]).toEqual({ messageId: 'msg-42' });
+    expect(neutral.callArguments[0]).toEqual({ query: 'fixture body' });
+    expect(neutral.callArguments[1]).toEqual({ value: 'workspace://fixture/item-42' });
+    expect(whoYou.callArguments[2]).toEqual({ query: 'mira again', cursor: 'cursor-2' });
+    expect(requestApproval).toHaveBeenCalledTimes(3);
+    expect(events.filter((event) => event.type === 'approval-required')).toHaveLength(3);
+    expect(events.filter((event) => event.type === 'tool-result')).toHaveLength(6);
+    expect(events).toContainEqual(text('mail and lab complete'));
+    expect(events.at(-1)).toMatchObject({ type: 'finish', reason: 'stop' });
   });
 
   it('keeps ordinary local chat working when one binding cannot be discovered', async () => {

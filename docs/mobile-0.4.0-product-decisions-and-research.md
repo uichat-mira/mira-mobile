@@ -57,8 +57,11 @@
 
 - **已确认的产品原则**：网页、搜索结果、邮件、文档等第三方数据可以成为 Agent 后续工具调用的**事实输入**。不得一概以「网络来的数据不可信」为理由阻断正常浏览、搜索→打开、邮件读取→整理→保存等合法工作流。
 - **仍需保持的安全区别**：外部数据不能仅凭正文里的命令提升为用户/系统指令，也不能自动扩张 Host Grant、账号授权、收件人或外传范围。实际副作用、敏感数据发往外部 Provider、跨服务传输等仍要符合相应授权/用户批准与执行策略。
-- **当前实现存在明确冲突**：Mobile 的 src/tools/agentToolPolicies.ts 中 MailStage 在邮件搜索后只开放邮件正文、读正文后禁止继续 Tool，并在批调用中禁止邮件工具与其他操作组合；src/runtime/piAgentLoop.ts 会执行这些检查。MOB-086 与当前工程说明也记录了原先更严格的邮件隐私边界。
-- 本轮产品决策**不等于授权立即删除所有邮件防护**；需要单独校正隐私/数据去向/显式审批合同，证明合法链路可通、恶意注入与越权链路仍阻断。不得靠删测试或一键放开权限来制造绿灯。
+- **2026-11-24 MOB-100 已移除冲突实现**：src/tools/agentToolPolicies.ts 的 MailStage、`MAIL_TOOL_CHAIN_RESTRICTED` 及 src/runtime/piAgentLoop.ts 中按前序邮件结果缩减工具集、禁止跨能力披露的检查已从活动执行路径删除，不再以新状态机、白名单或意图分类器替代。已授权工具不会因前序结果被禁用；工具结果只是模型可用的数据。
+- **保留的边界**：`sensitiveResult` 仅承载现有狐邮向 Local Provider 的逐次披露同意与接收方提示，不参与工具选择；身份/服务绑定、授权范围、撤权、schema/目录校验、具体服务审批、审批拒绝、取消与预算仍按既有合同执行。外部数据中的指令不能提升权限或扩大外传范围。
+- **未来审批设计意图（本期不实现）**：可由 MCP Server 声明工具评级，Gateway 按评级和用户忽略设置确定性地放行或弹窗；本期不新增评级、字段、设置或弹窗。
+- **残余风险（记录，不虚报解决）**：狐邮披露同意只覆盖将数据交给当前模型；后续调用若把该内容发往其他服务，仍须由目标服务现有 exact-call 审批/授权合同覆盖。Mobile 不新增载荷语义分类器；若某服务缺少参数级审批，该缺口由 #337 与该服务权威解决。
+- 早期产品决策**不等于**无合同地删除邮件防护；MOB-100 通过删除语义阻断、保留明确审批/隐私合同并更新测试来落地，没有靠删测试或一键放开权限制造绿灯。
 
 ### D10：保留已有 Host 发现价值，不把其当成全部能力发现
 
@@ -85,9 +88,9 @@
 - src/runtime/piAgentLoop.ts 已以 Pi Core 1.6 为本机 Local Provider 的正式编排路径，原 Loop 已退役；当前 Tool Gateway 提供本机+Who-You MCP+Desktop Remote Host 等来源。
 - src/tools/localToolGatewayClient.ts 仍在 App 内直接注册 local_weather_current、whoyou_mail_search、whoyou_mail_message_get 三个 Tool；前者直接访问 Open-Meteo，后两者经狐邮的 Streamable HTTP MCP Client。
 - src/tools/localAgentToolGateway.ts 的 Cloud Local Agent 起始工具包含本机工具和 mira_desktop_hosts；发现授权 Desktop 后通过 refreshedTools 替换模型工具集合。src/tools/remoteToolGatewayClient.ts、cloudToolHostClient.ts 通过既有 /remote/v1/tools 和远端 invocation/approval/cancel，而不是直接将 Desktop MCP Server 透传给手机。
-- src/tools/agentToolPolicies.ts 的邮件链限制仍在执行；D9 是产品目标而不是当前执行行为。
+- **MOB-100 / 语义工具链阻断移除（2026-11-24）**：src/tools/agentToolPolicies.ts 的 MailStage/邮件调用链限制和 src/runtime/piAgentLoop.ts 的结果驱动工具集缩减/跨能力披露阻断已删除。授权工具在前序结果后保持可见，邮件结果可用于后续合法调用参数；`sensitiveResult` 仅保留披露审批与接收方提示。身份/绑定/撤权/schema/审批/取消/预算仍按现有合同。**旧拦截已不在活动路径；自动化只证明源码行为，不代表 0.4.0 真机 T4。**
 - **MOB-094 / PR #370 基座切片（2026-11-24）**：`src/tools/toolDisclosure.ts` / `toolGatewayClient.ts` 与 Pi Core 新增受信任的服务目录、可选语义能力、`mira_tools_disclose` 按需获取真实 Schema、运行中动态工具集及版本核对。已知有效工具可直接调用，无固定发现层数或回合；现有 Local Tool Gateway/Host 仍为协议中立基线。**该基座切片本身未实现 Who-You Resource 的真实 MCP 消费、Desktop 标准 MCP Server、Relay MCP 转发或 B3 多服务真机验收；Who-You 消费由下一条 MOB-096 切片另行补充。** 本项的真实交付与验收状态以 PR #370、Issue #369 和相应代码/运行证据为准，不能把代码合并等同于真机与跨服务完成。
-- **MOB-096 / 首个 OPS-046 消费切片（2026-11-24）**：`src/mcp/mcpProtocolClient.ts` 提供通用 MCP `initialize` / 分页 `tools/list` / 可选 `resources/*` / `tools/call`；`src/mcp/whoYouMcpService.ts` 复用既有 RFC 9728、短期 `whoyou.read` 凭证与身份校验，读取可选 `mira://service/who-you/capabilities` v1，并由 `src/mcp/mcpServiceCapabilities.ts` 投影为 MOB-094 服务/能力/Schema。**只暴露既有 MailStage 审批覆盖的 `whoyou_mail_search` 与 `whoyou_mail_message_get`**；Resource 缺省、未知版本、跨服务或不一致映射降级为真实 `tools/list` 扁平目录；write/send/destructive 仍不可调用。真实 MCP 的两项许可只读 Tool 经每 run 专用一次性邮件审批后，交由已鉴权的 MCP Client 调用并裁剪为原 Mobile 不可信邮件结果；保留现有静态 UI Reader 路径。收件箱每次最多 10 封、纯文本正文的 Mobile 本地隐私限制显式拒绝超限参数；审批前后验证 Cloud 账号、同账号会话令牌及凭证有效期，不新增影子 Tool Registry。**当前证据为协议 fixture 与 Pi/Gateway 集成测试，不等于 OPS-046 已部署生产、真实账号 T4 或跨端联调完成。**
+- **MOB-096 / 首个 OPS-046 消费切片（2026-11-24）**：`src/mcp/mcpProtocolClient.ts` 提供通用 MCP `initialize` / 分页 `tools/list` / 可选 `resources/*` / `tools/call`；`src/mcp/whoYouMcpService.ts` 复用既有 RFC 9728、短期 `whoyou.read` 凭证与身份校验，读取可选 `mira://service/who-you/capabilities` v1，并由 `src/mcp/mcpServiceCapabilities.ts` 投影为 MOB-094 服务/能力/Schema。**只暴露既有狐邮邮件披露审批覆盖的 `whoyou_mail_search` 与 `whoyou_mail_message_get`**；Resource 缺省、未知版本、跨服务或不一致映射降级为真实 `tools/list` 扁平目录；write/send/destructive 仍不可调用。真实 MCP 的两项许可只读 Tool 经每 run 专用一次性邮件审批后，交由已鉴权的 MCP Client 调用并裁剪为原 Mobile 不可信邮件结果；保留现有静态 UI Reader 路径。收件箱每次最多 10 封、纯文本正文的 Mobile 本地隐私限制显式拒绝超限参数；审批前后验证 Cloud 账号、同账号会话令牌及凭证有效期，不新增影子 Tool Registry。**当前证据为协议 fixture 与 Pi/Gateway 集成测试，不等于 OPS-046 已部署生产、真实账号 T4 或跨端联调完成。**
 - **MOB-097 / 多服务绑定基线（2026-11-24）**：`src/mcp/mcpServiceBinding.ts` 将动态 MCP 来源收敛为可并存的独立服务 binding，每个 binding 自带稳定服务类型、授权/凭证校验、执行适配器、generation 与有界元数据复用；`LocalAgentToolGateway` 只做通用组合、确定性的工具名冲突拒绝、按工具/服务路由，并在单个 binding 丢失授权时隔离失败而不影响兄弟服务或本机普通聊天。`src/mcp/mcpServiceCapabilities.ts` 不再硬编码只读：能力分组由显式 `permittedAccess` 与 `permittedToolNames` 策略决定，允许真实非只读能力被分组但不会因此获得未许可 Tool。Desktop 的服务类型统一为 `mira-desktop`，Direct/Cloud 只改变内部实例与连接 generation；同模式重连、断线或账号变化会让既有 Desktop Tool 绑定失效。**验证使用两个独立 JSON-RPC MCP fixture 与真实 Pi Core/Gateway 路由；Desktop 标准 MCP Server、Relay MCP 传输和真实第三方 MCP 联调仍未交付，不能据此宣称跨端 MCP 已上线。**
 - **MOB-098 / Desktop MCP 跨端接线（2026-11-24）**：在 Desktop dev 已交付受控 POST /mcp（AGT-071 / PR #498）与 Mobile 多服务 binding（MOB-097 / PR #380）的真实基线上，Mobile 当前活动 Desktop 现以统一服务类型 mira-desktop 接入标准 MCP：Direct 通过既有设备凭据向当前 Host 的 /mcp 发 JSON-RPC，Cloud 通过官方 Relay 向选定 Host 的 /mcp 转发；tools/list / tools/call 不再以 /remote/v1/tools / tool-invocations/stream 作为 Local Agent 主链。需要用户确认的调用仍复用既有 Remote V1 exact-call 审批/取消权威。Direct/Cloud 的 binding 按账号、Host 与 connection generation 隔离并短期复用元数据；同一 generation 可复用，切换/重配后强制失效。Who-You 与 Desktop 可同时进入同一 Pi Core 服务目录，任一服务失败不应拖垮另一服务或本机工具。旧 mobileToolGatewayClient 聚合入口已退役；底层 Remote V1 Tool adapter 暂保留作真机验收前的可回滚实现，不再由 Local Agent 生产入口引用。**当前证据包含协议/transport/联合 Gateway 测试与全仓自动化；真实 iPhone/Android + Desktop + 生产 Who-You 的 T4 仍需维护者真机验收，不能把自动测试写成真机完成。**
 
@@ -133,7 +136,7 @@
 
 - **现状 vs D1–D5**：#354 已列出扫码旧 Relay fallback、连接入口、账号/退出状态、WebFetch 等实现偏差。本文不复制状态台账，按 #354 及后续独立实施卡执行。
 - **现状 vs D6–D8/D11**：Desktop 现有 UI 筛选、Harness agent_intent 出口与 Mobile 扁平 Schema 尚未统一。既定目标现已改为 Desktop 受控 MCP Server + 可选能力 Resource；现有 Remote V1 Tool API 仍在运行，不能因本次文档裁决将其当作已经迁移或擅自删去。
-- **现状 vs D9**：MOB-086/当前邮件策略限制后续工具链，与新确认的合法连续调用目标存在产品合同差异。实施前需要明确数据去向与批准规则，更新对应 Issue/验收，不可以仅改文案或删除阻断。
+- **现状 vs D9**：MOB-100 已按实施合同移除 MailStage 与结果驱动工具链阻断，保留 `sensitiveResult` 的披露审批、接收方提示和既有身份/授权/审批合同。合法连续调用现为活动实现；真实邮件与隐私验收仍由 #337，真机 T4 仍由维护者在代码审查合入后统一开展。
 - **来源 vs 状态**：每次发现 Desktop、Who-You、MCP 上游规范变动，先检查相关分支/官方原文，再修订本页；Issue 负责实施合同、代码负责真实行为、外部研究不冒充已实现。
 - **范围**：本次仅归档维护者裁决、研究和既有交付事实；不新增施工 Issue、不授权跨仓执行链重写、权限放宽、改 App 包或环境发布。既有施工仍按各 Issue 合同推进，协议方向冲突处须先回填归属 Issue。
 
