@@ -71,7 +71,8 @@ export type ConversationLifecycleEvent =
         | 'cloud-tools-unavailable'
         | 'cloud-tools-unauthorized'
         | 'cloud-tools-session-invalid'
-        | 'cloud-tools-host-ambiguous';
+        | 'cloud-tools-host-ambiguous'
+        | 'mcp-service-degraded';
     }
   | { type: 'pause'; reason: ConversationStreamPauseReason }
   | { type: 'canonical-reload'; messages: ChatMessage[] }
