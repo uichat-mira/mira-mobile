@@ -14,13 +14,18 @@ import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import {
+  createDesktopMcpBindingFactory,
   LocalAgentToolGateway,
   type CloudToolAccountContext,
+  type DesktopMcpBindingFactory,
 } from './localAgentToolGateway';
+import { CloudToolHostClient } from './cloudToolHostClient';
+import { RemoteToolGatewayClient } from './remoteToolGatewayClient';
 import {
   DESKTOP_HOST_DISCOVERY_TOOL,
   TOOL_DISCLOSURE_TOOL,
   ToolApprovalRequiredError,
+  ToolGatewayError,
   type ToolApprovalRequest,
   type ToolApprovalResolution,
   type ToolGatewayClient,
@@ -28,7 +33,10 @@ import {
   type ToolServiceDescriptor,
 } from './toolGatewayClient';
 import type { WhoYouMcpServiceDiscovery } from '../mcp/whoYouMcpService';
-import type { McpServiceDiscovery } from '../mcp/mcpServiceBinding';
+import {
+  McpServiceBinding,
+  type McpServiceDiscovery,
+} from '../mcp/mcpServiceBinding';
 import { WhoYouError } from '../whoYou/whoYouError';
 
 const localTool: ToolManifest = {
@@ -243,6 +251,90 @@ const cloudContext = (
   value: CloudToolAccountContext,
 ): (() => CloudToolAccountContext) => () => value;
 
+const testDesktopMcpFactory = (
+  fixture: ReturnType<typeof discoveryFixture>,
+  paired: ToolGatewayClient,
+  current: () => CloudToolAccountContext,
+): DesktopMcpBindingFactory => ({
+  direct: generation => new McpServiceBinding({
+    serviceTypeId: 'mira-desktop',
+    discovery: {
+      serviceTypeId: 'mira-desktop',
+      async discover() {
+        const tools = await paired.listTools();
+        return {
+          service: {
+            id: 'mira-desktop',
+            name: 'Mira Desktop',
+            description: 'Desktop test MCP',
+            toolNames: tools.map(tool => tool.name),
+          },
+          tools,
+          catalogRevision: 'desktop-direct-' + generation,
+          degradation: 'none',
+          bindingKey: 'direct:' + generation,
+          initialToolNames: tools.map(tool => tool.name),
+          executionGateway: paired,
+          assertCurrent: () => {
+            const context = current();
+            if (context.desktopMode !== 'direct' ||
+                (context.desktopGeneration ?? 0) !== generation) {
+              throw new ToolGatewayError(
+                'DESKTOP_CONNECTION_INACTIVE',
+                'Direct Desktop binding changed',
+              );
+            }
+          },
+        };
+      },
+    },
+  }),
+  cloud: input => new McpServiceBinding({
+    serviceTypeId: 'mira-desktop',
+    requiresCloudAccount: true,
+    discovery: {
+      serviceTypeId: 'mira-desktop',
+      async discover() {
+        const remote = new RemoteToolGatewayClient(new CloudToolHostClient(
+          input.accountId,
+          input.hostId,
+          fixture.entry,
+          fixture.json as unknown as typeof requestCloudRelayJson,
+          fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+          () => true,
+        ));
+        const tools = await remote.listTools();
+        return {
+          service: {
+            id: 'mira-desktop',
+            name: 'Mira Desktop',
+            description: 'Desktop test MCP',
+            toolNames: tools.map(tool => tool.name),
+          },
+          tools,
+          catalogRevision: 'desktop-cloud-' + input.hostId + '-' + input.generation,
+          degradation: 'none',
+          bindingKey: 'cloud:' + input.accountId + ':' + input.hostId + ':' + input.generation,
+          initialToolNames: tools.map(tool => tool.name),
+          executionGateway: remote,
+          assertCurrent: () => {
+            const context = current();
+            if (context.desktopMode !== 'cloud' ||
+                context.accountId !== input.accountId ||
+                (context.desktopGeneration ?? 0) !== input.generation) {
+              throw new RemoteHostError(
+                'CLOUD_TOOL_HOST_CHANGED',
+                'Cloud Desktop binding changed',
+                403,
+              );
+            }
+          },
+        };
+      },
+    },
+  }),
+});
+
 const gateway = (
   fixture: ReturnType<typeof discoveryFixture>,
   options: {
@@ -253,22 +345,26 @@ const gateway = (
     previousAssistantText?: string;
     mcp?: McpServiceDiscovery | readonly McpServiceDiscovery[] | null;
   } = {},
-) => new LocalAgentToolGateway({
-  local: options.local ?? localGateway(),
-  paired: options.paired ?? pairedGateway(),
-  entry: fixture.entry,
-  cloudContext: cloudContext(options.context ?? {
+) => {
+  const paired = options.paired ?? pairedGateway();
+  const context = cloudContext(options.context ?? {
     accountId: 'account-a',
     explicitlySignedOut: false,
     desktopMode: 'cloud',
-  }),
-  json: fixture.json as unknown as typeof requestCloudRelayJson,
-  sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+  });
+  return new LocalAgentToolGateway({
+    local: options.local ?? localGateway(),
+    entry: fixture.entry,
+    cloudContext: context,
+    json: fixture.json as unknown as typeof requestCloudRelayJson,
+    sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+    desktopMcp: testDesktopMcpFactory(fixture, paired, context),
   ...(options.selectionText ? { selectionText: options.selectionText } : {}),
   ...(options.previousAssistantText
     ? { previousAssistantText: options.previousAssistantText } : {}),
   ...(options.mcp !== undefined ? { mcp: options.mcp } : {}),
-});
+  });
+};
 
 const asyncStream = <T>(events: T[]): AsyncIterable<T> =>
   (async function* () {
@@ -304,6 +400,51 @@ const previousHostPrompt = (...setups: HostSetup[]): string => [
   '请直接回复设备名称或 Host ID；确认后我会在下一轮使用该设备的工具。',
 ].join('\n');
 
+
+describe('Desktop MCP binding metadata reuse', () => {
+  it('reuses discovery within one connection generation and refreshes after re-pair', async () => {
+    const discover = jest.fn(async () => ({
+      service: {
+        id: 'mira-desktop',
+        name: 'Mira Desktop',
+        toolNames: ['desktop_read'],
+      },
+      tools: [{
+        name: 'desktop_read',
+        description: 'Read from Desktop',
+        parameters: { type: 'object' },
+      }],
+      catalogRevision: 'desktop-cache-rev',
+      bindingKey: 'direct-fixture',
+      initialToolNames: [],
+      executionGateway: localGateway(),
+      assertCurrent: () => undefined,
+    }));
+    const factory = createDesktopMcpBindingFactory({
+      directDiscovery: () => ({
+        serviceTypeId: 'mira-desktop',
+        discover,
+      }),
+    });
+
+    const first = factory.direct(3);
+    const second = factory.direct(3);
+    expect(second).toBe(first);
+    await first.discover({ accountId: null });
+    await second.discover({ accountId: null });
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(first.discoveryMetrics).toEqual({
+      discoveryCount: 1,
+      cacheHits: 1,
+    });
+
+    const repaired = factory.direct(4);
+    expect(repaired).not.toBe(first);
+    await repaired.discover({ accountId: null });
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('LocalAgentToolGateway', () => {
   it('uses the existing Local + paired Host toolset when Direct is active and Cloud is signed out', async () => {
     const fixture = discoveryFixture();
@@ -317,11 +458,14 @@ describe('LocalAgentToolGateway', () => {
       },
     });
 
-    await expect(selected.listTools()).resolves.toEqual([{
+    await expect(selected.listTools()).resolves.toEqual([
+      localTool,
+      {
       name: 'paired_tool',
       description: 'Paired Host tool',
       parameters: { type: 'object' },
-    }]);
+    },
+    ]);
     expect(paired.listTools).toHaveBeenCalledTimes(1);
     expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });
@@ -338,11 +482,14 @@ describe('LocalAgentToolGateway', () => {
       },
     });
 
-    await expect(selected.listTools()).resolves.toEqual([{
+    await expect(selected.listTools()).resolves.toEqual([
+      localTool,
+      {
       name: 'paired_tool',
       description: 'Paired Host tool',
       parameters: { type: 'object' },
-    }]);
+    },
+    ]);
     expect(paired.listTools).toHaveBeenCalledTimes(1);
     expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });
@@ -356,11 +503,11 @@ describe('LocalAgentToolGateway', () => {
     };
     const selected = new LocalAgentToolGateway({
       local: localGateway(),
-      paired: pairedGateway(),
       entry: fixture.entry,
       cloudContext: () => context,
       json: fixture.json as unknown as typeof requestCloudRelayJson,
       sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+      desktopMcp: testDesktopMcpFactory(fixture, pairedGateway(), () => context),
     });
     expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
       .toContain(sharedToolName);
@@ -368,7 +515,7 @@ describe('LocalAgentToolGateway', () => {
     context = { ...context, desktopMode: 'direct' };
     await expect(selected.callTool({
       callId: 'call-after-switch', name: sharedToolName, arguments: '{}',
-    })).rejects.toMatchObject({ code: 'DESKTOP_CONNECTION_INACTIVE' });
+    })).rejects.toMatchObject({ code: 'CLOUD_TOOL_HOST_CHANGED' });
     expect(fixture.json).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -402,11 +549,9 @@ describe('LocalAgentToolGateway', () => {
       useCloudAccountStore.setState({ status, account: null });
       useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
       try {
-        const paired = pairedGateway();
         const fixture = discoveryFixture();
         const selected = new LocalAgentToolGateway({
           local: localGateway(),
-          paired,
           entry: fixture.entry,
           json: fixture.json as unknown as typeof requestCloudRelayJson,
           sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
@@ -415,7 +560,6 @@ describe('LocalAgentToolGateway', () => {
           tools: [localTool],
           notices: [{ code: 'cloud-tools-session-invalid' }],
         });
-        expect(paired.listTools).not.toHaveBeenCalled();
         expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
       } finally {
         useCloudAccountStore.setState(original);
@@ -644,17 +788,22 @@ describe('Cloud Local Agent authority changes', () => {
       desktopMode: 'direct',
       desktopGeneration: 1,
     };
+    const paired = pairedGateway();
     const selected = new LocalAgentToolGateway({
       local: localGateway(),
-      paired: pairedGateway(),
       entry: fixture.entry,
       cloudContext: () => context,
       json: fixture.json as unknown as typeof requestCloudRelayJson,
       sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+      desktopMcp: testDesktopMcpFactory(fixture, paired, () => context),
       mcp: null,
     });
     const direct = await selected.discoverTools();
     expect(direct.services).toEqual([
+      expect.objectContaining({
+        id: 'mira-mobile-local',
+        toolNames: [localTool.name],
+      }),
       expect.objectContaining({
         id: 'mira-desktop',
         toolNames: ['paired_tool'],
@@ -706,13 +855,14 @@ describe('Cloud Local Agent authority changes', () => {
     let context: CloudToolAccountContext = {
       accountId: 'account-a', explicitlySignedOut: false, desktopMode: 'cloud',
     };
+    const paired = pairedGateway();
     const selected = new LocalAgentToolGateway({
       local: localGateway(),
-      paired: pairedGateway(),
       entry: fixture.entry,
       cloudContext: () => context,
       json: fixture.json as unknown as typeof requestCloudRelayJson,
       sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+      desktopMcp: testDesktopMcpFactory(fixture, paired, () => context),
     });
     expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
       .toContain(sharedToolName);
@@ -1249,7 +1399,9 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
         local, mcp, context: { accountId: 'account-a', explicitlySignedOut: false, desktopMode },
         paired: {
           ...pairedGateway(),
-          listTools: jest.fn(async () => [localTool, ...mcpTools, { name: 'paired_tool', description: 'Desktop tool', parameters: { type: 'object' } }]),
+          listTools: jest.fn(async () => [
+            { name: 'paired_tool', description: 'Desktop tool', parameters: { type: 'object' } },
+          ]),
         },
       });
       const discovery = await selected.discoverTools();

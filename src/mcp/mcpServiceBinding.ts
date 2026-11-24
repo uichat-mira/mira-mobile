@@ -80,7 +80,13 @@ export type McpServiceBindingOutcome =
       snapshot: McpServiceSnapshot;
       fromCache: boolean;
     }
-  | { status: 'degraded'; serviceTypeId: string; notice: ToolDiscoveryNoticeCode | null };
+  | {
+      status: 'degraded';
+      serviceTypeId: string;
+      notice: ToolDiscoveryNoticeCode | null;
+      /** Internal cause for an owning adapter that needs precise UX/error mapping. */
+      error?: unknown;
+    };
 
 /**
  * Metadata reuse is bounded. A valid snapshot can serve repeated runs inside
@@ -191,11 +197,16 @@ export class McpServiceBinding {
           snapshot: this.cached.snapshot,
           fromCache: true,
         };
-      } catch {
+      } catch (error) {
         // A cached credential that no longer validates is not authority. Drop
         // only this binding and fall back to its adapter's normal degradation.
         this.invalidate();
-        return { status: 'degraded', serviceTypeId: this.serviceTypeId, notice: null };
+        return {
+          status: 'degraded',
+          serviceTypeId: this.serviceTypeId,
+          notice: null,
+          error,
+        };
       }
     }
 
@@ -245,6 +256,7 @@ export class McpServiceBinding {
         status: 'degraded',
         serviceTypeId: this.serviceTypeId,
         notice: isKnownBindingError(error) ? notice : 'mcp-service-degraded',
+        error,
       };
     }
   }
