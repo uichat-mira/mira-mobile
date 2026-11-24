@@ -15,15 +15,17 @@ import {
 import { RemoteHostError } from '../api/remoteHttp';
 import { defaultMcpServiceBindings } from '../mcp/defaultMcpServiceBindings';
 import {
+  createCloudDesktopMcpDiscovery,
+  createDirectDesktopMcpDiscovery,
+  DESKTOP_MCP_SERVICE_ID,
+} from '../mcp/desktopMcpService';
+import {
   McpServiceBinding,
   type McpServiceBindingOutcome,
   type McpServiceDiscovery,
 } from '../mcp/mcpServiceBinding';
-import { CloudToolHostClient } from './cloudToolHostClient';
-import { CompositeToolGatewayClient } from './compositeToolGatewayClient';
+import { McpProtocolError } from '../mcp/mcpProtocolClient';
 import { localToolGatewayClient } from './localToolGatewayClient';
-import { mobileToolGatewayClient } from './mobileToolGatewayClient';
-import { RemoteToolGatewayClient } from './remoteToolGatewayClient';
 import {
   ToolGatewayError,
   DESKTOP_HOST_DISCOVERY_TOOL,
@@ -63,6 +65,23 @@ type CloudToolEntry = Pick<
   'listHostCandidates' | 'discoverHost' | 'assertCurrentAccess'
 >;
 
+export interface DesktopMcpDiscoveryFactory {
+  direct(generation: number): McpServiceDiscovery;
+  cloud(input: {
+    accountId: string;
+    hostId: string;
+    generation: number;
+    entry: CloudToolEntry;
+    json: typeof requestCloudRelayJson;
+    sse: typeof openCloudRelayPostSse;
+  }): McpServiceDiscovery;
+}
+
+const defaultDesktopMcpDiscoveryFactory: DesktopMcpDiscoveryFactory = {
+  direct: generation => createDirectDesktopMcpDiscovery(generation),
+  cloud: input => createCloudDesktopMcpDiscovery(input),
+};
+
 export interface LocalAgentToolGatewayOptions {
   local?: ToolGatewayClient;
   /** Existing Local + Legacy paired Host toolset, used only when signed out. */
@@ -71,6 +90,8 @@ export interface LocalAgentToolGatewayOptions {
   cloudContext?: () => CloudToolAccountContext;
   json?: typeof requestCloudRelayJson;
   sse?: typeof openCloudRelayPostSse;
+  /** Desktop MCP is transport-bound here; Pi Core stays service-generic. */
+  desktopMcp?: DesktopMcpDiscoveryFactory;
   /**
    * The current user turn only. It lets the Mobile side bind an explicitly
    * named Host; absence is never an instruction to pick a recent one.
@@ -153,24 +174,6 @@ const localService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
     tools,
   );
 
-const pairedService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
-  serviceFor(
-    // Desktop is one service type regardless of Direct/Cloud transport. The
-    // concrete Host/device/account/generation stays an internal binding detail.
-    'mira-desktop',
-    'Mira Desktop',
-    '当前启用的桌面连接所提供的工具；连接方式不改变服务身份。',
-    tools,
-  );
-
-const desktopService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
-  serviceFor(
-    'mira-desktop',
-    'Mira Desktop',
-    '当前 Cloud 账号下已授权 Desktop 的 Remote V1 工具；没有额外语义能力声明。',
-    tools,
-  );
-
 // Numbered selection only refers to a list in the immediately previous genuine
 // assistant response. Resolve its displayed Host ID against today's account
 // directory, never by a freshly sorted index or by a stored tool credential.
@@ -244,6 +247,18 @@ const probeFailure = (
   return null;
 };
 
+const desktopMcpProbeFailure = (
+  error: unknown,
+): 'unauthorized' | 'unavailable' | null => {
+  if (error instanceof McpProtocolError) {
+    if (error.kind === 'unauthorized') return 'unauthorized';
+    if (error.kind === 'network' || error.kind === 'unavailable') {
+      return 'unavailable';
+    }
+  }
+  return probeFailure(error);
+};
+
 const currentCloudContext = (): CloudToolAccountContext => {
   const state = useCloudAccountStore.getState();
   const desktop = useDesktopConnectionStore.getState();
@@ -306,13 +321,6 @@ const cloudNoticeFor = (
   return null;
 };
 
-const discoveryOf = async (
-  gateway: ToolGatewayClient,
-): Promise<ToolDiscoveryResult> => {
-  if (gateway.discoverTools) return gateway.discoverTools();
-  return { tools: await gateway.listTools(), notices: [] };
-};
-
 const normalizeMcpBindings = (
   input:
     | McpServiceDiscovery
@@ -343,11 +351,11 @@ const normalizeMcpBindings = (
  */
 export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly local: ToolGatewayClient;
-  private readonly paired: ToolGatewayClient;
   private readonly entry: CloudToolEntry;
   private readonly cloudContext: () => CloudToolAccountContext;
   private readonly json: typeof requestCloudRelayJson;
   private readonly sse: typeof openCloudRelayPostSse;
+  private readonly desktopMcp: DesktopMcpDiscoveryFactory;
   private readonly selectionText: string;
   private readonly previousAssistantText: string;
   private readonly mcp: readonly McpServiceBinding[];
@@ -367,11 +375,11 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
 
   constructor(options: LocalAgentToolGatewayOptions = {}) {
     this.local = options.local ?? localToolGatewayClient;
-    this.paired = options.paired ?? mobileToolGatewayClient;
     this.entry = options.entry ?? cloudRelayEntry;
     this.cloudContext = options.cloudContext ?? currentCloudContext;
     this.json = options.json ?? requestCloudRelayJson;
     this.sse = options.sse ?? openCloudRelayPostSse;
+    this.desktopMcp = options.desktopMcp ?? defaultDesktopMcpDiscoveryFactory;
     this.selectionText = normalizeMatchText(options.selectionText ?? '');
     this.previousAssistantText = options.previousAssistantText ?? '';
     this.mcp = normalizeMcpBindings(
@@ -622,26 +630,22 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     }
 
     if (context.desktopMode === 'direct') {
-      // Direct pairing is independent from Cloud login. A signed-in Cloud
-      // account must not reroute Desktop tools through Cloud Relay.
+      // Direct and Cloud are transports for one Desktop MCP service. Keep the
+      // transport binding here; Pi Core and disclosure remain service-generic.
       this.desktopTransportMode = 'direct';
       this.desktopGeneration = context.desktopGeneration ?? 0;
-      this.active = this.paired;
-      const discovery = await discoveryOf(this.paired);
-      const localNames = new Set(
-        (await this.local.listTools()).map(tool => tool.name),
+      this.desktopToolNames = new Set();
+      this.active = this.local;
+      const localTools = await this.local.listTools();
+      const desktopBinding = new McpServiceBinding({
+        serviceTypeId: DESKTOP_MCP_SERVICE_ID,
+        discovery: this.desktopMcp.direct(this.desktopGeneration),
+      });
+      return this.withIndependentMcp(
+        { tools: localTools, notices: [] },
+        [localService(localTools)],
+        [desktopBinding],
       );
-      this.desktopToolNames = new Set(
-        discovery.tools
-          .map(tool => tool.name)
-          .filter(name => !localNames.has(name)),
-      );
-      const localTools = discovery.tools.filter(tool => localNames.has(tool.name));
-      const desktopTools = discovery.tools.filter(tool => !localNames.has(tool.name));
-      return this.withIndependentMcp(discovery, [
-        ...(localTools.length ? [localService(localTools)] : []),
-        ...(desktopTools.length ? [pairedService(desktopTools)] : []),
-      ]);
     }
 
     this.desktopTransportMode = 'cloud';
@@ -707,9 +711,10 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private async withIndependentMcp(
     discovery: ToolDiscoveryResult,
     services: readonly ToolServiceDescriptor[],
+    additionalBindings: readonly McpServiceBinding[] = [],
   ): Promise<ToolDiscoveryResult> {
     const context = this.cloudContext();
-    const eligible = this.mcp.filter((binding) => {
+    const eligible = [...this.mcp, ...additionalBindings].filter((binding) => {
       if (!binding.requiresCloudAccount) return true;
       return Boolean(context.accountId) &&
         !context.explicitlySignedOut &&
@@ -732,10 +737,16 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     }
 
     const current = this.cloudContext();
-    if (current.accountId !== context.accountId ||
+    const hasCloudBoundService = eligible.some(
+      binding => binding.requiresCloudAccount,
+    );
+    if (
+      hasCloudBoundService &&
+      (current.accountId !== context.accountId ||
         current.explicitlySignedOut ||
         (current.cloudSessionInvalid ?? false) !==
-          (context.cloudSessionInvalid ?? false)) {
+          (context.cloudSessionInvalid ?? false))
+    ) {
       this.clearMcp();
       throw hostChanged();
     }
@@ -955,14 +966,21 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     candidate: CloudRelayHostCandidate,
   ): Promise<ProbedHost> {
     try {
-      const tools = await this.remoteGateway(accountId, candidate.hostId).listTools();
+      const snapshot = await this.desktopMcp.cloud({
+        accountId,
+        hostId: candidate.hostId,
+        generation: this.desktopGeneration,
+        entry: this.entry,
+        json: this.json,
+        sse: this.sse,
+      }).discover({ accountId });
       return {
         status: 'usable',
         candidate,
-        toolNames: tools.map(tool => tool.name),
+        toolNames: snapshot.tools.map(tool => tool.name),
       };
     } catch (error) {
-      const status = probeFailure(error);
+      const status = desktopMcpProbeFailure(error);
       if (!status) throw error;
       return { status, candidate };
     }
@@ -1004,49 +1022,35 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     accountId: string,
     hostId: string,
   ): Promise<ToolDiscoveryResult> {
-    const access = await this.entry.discoverHost(hostId);
-    if (access.accountId !== accountId || access.target.hostId !== hostId) {
+    const current = this.cloudContext();
+    if (
+      current.desktopMode !== 'cloud' ||
+      current.accountId !== accountId ||
+      current.explicitlySignedOut
+    ) {
       throw hostChanged();
     }
-    this.entry.assertCurrentAccess(access);
-    // Desktop binding replaces only Desktop transport authority; unrelated MCP
-    // services retain their account-owned binding.
-    const localTools = await this.local.listTools();
-    const composite = new CompositeToolGatewayClient(
-      this.local,
-      this.remoteGateway(accountId, hostId),
-    );
-    const discovery = await composite.discoverTools();
-    this.active = composite;
-    const localNames = new Set(localTools.map(tool => tool.name));
-    const remoteTools = discovery.tools.filter(tool => !localNames.has(tool.name));
     this.desktopTransportMode = 'cloud';
-    this.desktopGeneration = this.cloudContext().desktopGeneration ?? 0;
-    this.desktopToolNames = new Set(remoteTools.map(tool => tool.name));
-    return this.withIndependentMcp(discovery, [
-      localService(localTools),
-      ...(remoteTools.length > 0 ? [desktopService(remoteTools)] : []),
-    ]);
-  }
-
-  private remoteGateway(accountId: string, hostId: string): RemoteToolGatewayClient {
-    return new RemoteToolGatewayClient(
-      new CloudToolHostClient(
+    this.desktopGeneration = current.desktopGeneration ?? 0;
+    this.desktopToolNames = new Set();
+    this.active = this.local;
+    const localTools = await this.local.listTools();
+    const desktopBinding = new McpServiceBinding({
+      serviceTypeId: DESKTOP_MCP_SERVICE_ID,
+      discovery: this.desktopMcp.cloud({
         accountId,
         hostId,
-        this.entry,
-        this.json,
-        this.sse,
-        changedAccountId => {
-          const current = this.cloudContext();
-          return (
-            current.desktopMode === 'cloud' &&
-            !current.explicitlySignedOut &&
-            current.accountId === changedAccountId &&
-            (current.desktopGeneration ?? 0) === this.desktopGeneration
-          );
-        },
-      ),
+        generation: this.desktopGeneration,
+        entry: this.entry,
+        json: this.json,
+        sse: this.sse,
+      }),
+      requiresCloudAccount: true,
+    });
+    return this.withIndependentMcp(
+      { tools: localTools, notices: [] },
+      [localService(localTools)],
+      [desktopBinding],
     );
   }
 
