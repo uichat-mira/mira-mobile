@@ -43,7 +43,8 @@ export type LocalAgentNoticeCode =
   | 'cloud-tools-unavailable'
   | 'cloud-tools-unauthorized'
   | 'cloud-tools-session-invalid'
-  | 'cloud-tools-host-ambiguous';
+  | 'cloud-tools-host-ambiguous'
+  | 'mcp-service-degraded';
 
 export interface LocalAgentApprovalView {
   invocationId: string;
@@ -121,6 +122,8 @@ const noticeLabel: Record<LocalAgentNoticeCode, string> = {
     'Mira Cloud 登录已失效或本机设备授权已撤销；本轮只使用手机内置工具，请重新登录或注册设备。',
   'cloud-tools-host-ambiguous':
     '同一 Mira Cloud 账号有多台可用 Desktop Host；请从本轮消息中的设备列表选择一台后再发送。',
+  'mcp-service-degraded':
+    '云端 MCP 服务的可选能力声明不可用或与真实工具清单不一致；本轮已按真实 tools/list 降级，只保留已授权的只读工具。',
 };
 
 const preview = (value: string) => {

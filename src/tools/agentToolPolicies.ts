@@ -30,7 +30,8 @@ export const allowedMailStageTools = (
   stage: MailStage,
 ): readonly ToolManifest[] =>
   stage === 'none' ? manifests
-    : stage === 'search' ? manifests.filter((item) => item.sensitiveResult === 'mail-body')
+    : stage === 'search' ? manifests.filter((item) =>
+        item.sensitiveResult === 'mail-body' || item.name === TOOL_DISCLOSURE_TOOL)
       : [];
 
 /**

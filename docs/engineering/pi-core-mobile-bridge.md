@@ -58,11 +58,67 @@ There is no independent or hidden second budget in Pi.
   catalog in the same run, or call an already available tool directly. There is
   no fixed three-step discovery count. The gateway still owns every schema and
   rechecks authority/approval on actual calls; plain tool result text cannot add
-  tools. This is the protocol-neutral Mobile foundation, not an OPS-046 or
-  third-party MCP manifest implementation.
+  tools. This is the protocol-neutral Mobile foundation; the MOB-096 section
+  below adds the first real OPS-046 consumer.
 - An uncertain Host approval resolution is an error, not ordinary cancellation.
 - Tool result size bounds, app suspension, run cancellation and execution
   deadlines are enforced by Pi just as before.
+
+### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
+
+This is the first real OPS-046 consumer, still limited to the read-only mail
+tools already covered by the MOB-086 MailStage approval.
+
+- `src/mcp/mcpProtocolClient.ts` is a protocol-neutral Streamable HTTP MCP
+  client. It performs `initialize`, paginated `tools/list`, optional
+  `resources/list` / `resources/read` and `tools/call` against one
+  caller-authorized endpoint. It rejects target changes, unmatched JSON-RPC
+  ids, duplicate tool/resource names, oversized schemas and unsupported
+  protocol versions. The bearer only travels in the Authorization header.
+- `src/mcp/whoYouMcpService.ts` reuses the existing RFC 9728 resource check,
+  short-lived `whoyou.read` Cloud Auth credential, `whoyou_whoami` identity
+  confirmation and `tools/list`. It then reads the optional
+  `mira://service/who-you/capabilities` v1 resource. Only the real
+  `whoyou_mail_search` and `whoyou_mail_message_get` definitions may enter the
+  Mobile catalog; every other read/write/send/destructive tool stays
+  unavailable despite being listed by the service.
+- `src/mcp/mcpServiceCapabilities.ts` keeps `tools/list` as the only schema and
+  tool authority. The v1 resource may add semantic `read` capabilities whose
+  declared scopes were actually granted, but their tool lists are reduced to the
+  locally permitted real tools. Missing, unknown, malformed or cross-service
+  declarations fall back to a flat real-tool catalog instead of invented
+  groups. The catalog revision covers real schemas and capability mapping.
+- The `McpServiceToolGateway` exposes deferred authoritative `tools/list`
+  schemas through `mira_tools_disclose`. The two approved read tools execute
+  via the authenticated MCP session behind a per-run `LocalToolGatewayClient`
+  one-shot consent adapter. Search honors real MCP filters within the Mobile
+  inbox/10-message scope; body reads permit plain text only. Existing bounded
+  untrusted-data result projections are reused, with no unapproved mail sent
+  to Pi. The Cloud account, exact session-token identity and read credential
+  are revalidated before and after approval or execution. A direct search
+  may subsequently disclose only the trusted mail-body reader, never
+  unrelated tools under the MailStage restrictions.
+- A signed-in Local Agent run now starts with the real weather tool, the
+  existing `whoyou_mail_search` entry and the disclosure entry.
+  `who-you.mail.read` is disclosed on demand to reveal the remaining real
+  schemas (for example message-body retrieval), then tools can be called and
+  reused without another discovery round. If the network,
+  Cloud session or MCP service is unavailable, the compiled-in static read tools
+  remain visible. An account change, expired credential, catalog revision change
+  or `401` prevents further use of the old binding.
+- This does **not** prove the OPS-046 resource is deployed in production, that a
+  real mailbox/account passed T4, or that write/send/delete are integrated.
+  Verification below uses protocol fixtures with only the external
+  network/credential boundary faked.
+- Focused regression coverage lives in `src/mcp/mcpProtocolClient.test.ts`,
+  `src/mcp/mcpServiceCapabilities.test.ts`,
+  `src/mcp/whoYouMcpService.test.ts`,
+  `src/runtime/piAgentLoop.mcpService.test.ts` and the trusted-MCP section of
+  `src/tools/localAgentToolGateway.test.ts`. The last two execute the real Pi
+  Agent, the real Mobile Tool Gateway and the MCP adapter; only the external
+  model stream, Cloud credential issuer and MCP HTTP fixture are substituted.
+
+
 
 ### Host discovery and Provider compatibility (2026-11-23)
 
