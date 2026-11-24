@@ -101,7 +101,7 @@ tools already covered by the existing MOB-086 mail disclosure approval.
   subsequently drive the body reader, another authorized service or a repeated
   search in the same run; disclosure and every call still revalidate identity,
   authorization and the owning service's approval.
-- A signed-in Local Agent run now starts with the real weather tool, the
+- A signed-in Local Agent run now starts with the real `web` tool, the
   existing `whoyou_mail_search` entry and the disclosure entry.
   `who-you.mail.read` is disclosed on demand to reveal the remaining real
   schemas (for example message-body retrieval), then tools can be called and
@@ -149,6 +149,50 @@ allowlist or intent classifier.
   service without argument-level approval remains a service/approval-contract
   gap for #337 and the owning service to resolve.
 
+### Local `web(url)` transport (MOB-101, 2026-11-24)
+
+- The compiled-in Local Agent catalog registers exactly one general web tool,
+  `web({url})`. The previous `local_weather_current` tool and its Open-Meteo
+  path are removed. Search is ordinary web navigation: the model constructs a
+  search-engine URL, reads the returned page, and follows public links.
+- HTML parsing uses linkedom 0.16.11 (ISC), Mozilla Readability 0.6.0
+  (Apache-2.0) and Turndown 7.2.5 (MIT). Readability is preferred for articles;
+  a generic DOM path keeps search results, directory pages and link lists usable
+  when Readability does not apply. Links are resolved against the actual final
+  URL and filtered through the same public-URL policy. No site-specific
+  selectors, search provider, second model or content summarization service is
+  involved.
+- React Native `fetch` cannot inspect every redirect, enforce a byte budget
+  while reading a decoded body, or cancel the underlying transfer. The tool
+  therefore uses the `MiraWebFetcher` native module on Android (OkHttp) and iOS
+  (NSURLSession). It performs GET only, sends no cookies, credentials or Mira
+  identity, loads no images/videos/fonts, has a 1 MiB decoded-body cap enforced
+  during reads, a 16 KiB model-result cap, a 30-second overall deadline across
+  redirects and reading, one concurrent request, and explicit cancellation.
+- Android resolves every connection through a public-only OkHttp `Dns` and uses
+  those returned addresses, which closes the validate-then-connect gap. iOS
+  validates every resolved address before and during redirects, but
+  NSURLSession re-resolves internally, so a DNS answer changing between
+  validation and connect remains a residual TOCTOU/rebinding risk. This is
+  an unresolved MOB-101 implementation blocker, not evidence of the required
+  actual-connection boundary. iOS App
+  Transport Security still blocks cleartext HTTP pages; the tool reports the
+  platform failure rather than weakening ATS.
+- Expected web-read failures are represented as failed tool results in the
+  same Pi Core run; the model can try another URL without losing context.
+  Approval, authorization, cancellation and unrelated fatal errors retain their
+  existing behavior.
+- Response parsing is synchronous and bounded by the 1 MiB transport cap. The
+  30-second network timeout cannot interrupt that parsing phase; the limitation
+  is explicit rather than presented as cancellation.
+- Regression coverage lives in `src/web/*.test.ts`,
+  `src/tools/localTools/webTool*.test.ts` and
+  `android/app/src/test/.../MiraPublicAddressTest.kt`. The Pi Core test executes
+  the real loop and Local Tool Gateway with a fake transport, proving search URL
+  → source URL → third URL navigation. Android Kotlin compilation + unit tests
+  and an Android Metro bundle + Hermes bytecode compile were executed; real
+  device network/memory/cancel acceptance remains T4.
+
 ### Host discovery and Provider compatibility (2026-11-23)
 
 - `mira_desktop_hosts` is a discovery entry, not an unconditional grant to
@@ -177,16 +221,19 @@ regressions from the former loop. Tests execute the real Pi Agent while faking
 only Provider/Host external IO when appropriate; Cloud adapter fixture tests
 exercise the actual client boundary.
 
-The earlier isolated Metro/Hermes bridge was checked. On 2026-11-23, a
-signed **0.3.36 Build 38 iPhone 17 Pro / iOS 26.5 simulator** with candidate
-JavaScript completed real `local_weather_current` (Open-Meteo result → model
-reply) and `mira_desktop_hosts → news_search → model reply` (real empty cache
-result). See [MOB-089](https://github.com/uichat-mira/mira-mobile/issues/349)
+The earlier isolated Metro/Hermes bridge was checked on 2026-11-23 with a
+signed **0.3.36 Build 38 iPhone 17 Pro / iOS 26.5 simulator** and candidate
+JavaScript. That check completed a real `local_weather_current` call
+(Open-Meteo result → model reply) and `mira_desktop_hosts → news_search → model
+reply` (real empty cache result). That weather tool has since been removed, so
+the check is **not** evidence for the new `web(url)` tool or its native
+transport. See [MOB-089](https://github.com/uichat-mira/mira-mobile/issues/349)
 and [PR #358](https://github.com/uichat-mira/mira-mobile/pull/358).
 These results do **not** prove a newly built post-merge installation, Android
-device behavior, live `web_search`, or full Who-You consent/reading acceptance.
+device behavior, live `web_search`, real search-engine page access or full
+Who-You consent/reading acceptance.
 
-Remaining Android true-device and cross-service acceptance includes:
+Remaining true-device and cross-service acceptance includes:
 1. Local Provider plain text and conversation persistence.
 2. One approved Desktop tool call with model continuation.
 3. Multiple Desktop Hosts: visible choice without guessing.
@@ -194,6 +241,10 @@ Remaining Android true-device and cross-service acceptance includes:
    follow-up authorized calls without embedded instructions granting access.
 5. Reject, timeout, approval uncertainty, app/background cancellation.
 6. Update budget in General and verify next-turn enforcement.
+7. `web(url)`: a model-constructed real search-engine URL and follow-up reads,
+   a weather task without a supplied URL, 30 consecutive reads with Android/iOS
+   memory trend and cancellation checks, and public-address/redirect rejection
+   on both platforms. Automated results do not replace this device evidence.
 
 Do not equate JS/Jest green with device execution. Promote to test/prod only
 with explicit release authority. Recovery is by reverting the cutover commit,

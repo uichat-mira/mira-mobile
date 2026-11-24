@@ -40,7 +40,7 @@ test('Pi Core sends object-only root oneOf as an object in actual continuation w
     oneOf: [objectVariant('get'), { type: 'string' }],
   };
   const mixed = manifest('unsupported_mixed_schema', mixedOneOf);
-  const local = manifest('local_weather_current');
+  const local = manifest('web');
   const discovery: ToolManifest = {
     name: 'mira_desktop_hosts',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -112,7 +112,7 @@ test('Pi Core sends object-only root oneOf as an object in actual continuation w
     messages?: WireMessage[];
   };
   expect(first.tools?.map(item => item.function.name))
-    .toEqual(['local_weather_current', 'mira_desktop_hosts']);
+    .toEqual(['web', 'mira_desktop_hosts']);
   expect(second.tools).toHaveLength(6);
   for (const tool of remote) {
     const wireSchema = second.tools?.find(item => item.function.name === tool.name)?.function.parameters;

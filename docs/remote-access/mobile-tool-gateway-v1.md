@@ -33,7 +33,7 @@ Local Provider on Mobile
 - 仅当 Remote Host 未配对、暂时不可达或返回 5xx 时，本地工具继续可用，并通过 `toolset-degraded` notice 显式告知用户工具集不完整；
 - 权限范围缺失（`REMOTE_SCOPE_REQUIRED`）、认证失败、工具别名冲突或协议解析错误必须上抛，按真实失败呈现配对 / 排查提示，不能折叠成“暂时不可用”。
 
-当前内置：`local_weather_current`，只把用户提供的城市名发送给 Open-Meteo，不申请定位权限，也不使用 API Key。
+当前内置：`web(url)`，读取公开 HTTP(S) 网页并按需返回正文/链接，不申请定位权限，也不使用 API Key；旧的 `local_weather_current` 专用天气接口已移除。网页读取遵守公开地址边界（拒绝 localhost、私网、链路本地、Tailnet 等非公开目标及重定向），单次下载上限 1 MiB、结果上限 16 KiB、超时 30 秒，并支持取消。普通搜索由模型自行构造搜索引擎 URL，Mobile 不内置搜索供应商或站点专用解析。
 
 ## 2. 身份与凭据
 

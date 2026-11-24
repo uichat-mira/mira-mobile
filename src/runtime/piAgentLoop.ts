@@ -23,6 +23,7 @@ import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient
 import type { RuntimeEvent } from './conversationRuntime';
 import {
   ToolApprovalRequiredError,
+  RecoverableToolCallError,
   ToolGatewayError,
   TOOL_DISCLOSURE_TOOL,
   type ToolApprovalDecision,
@@ -620,6 +621,7 @@ export class PiCoreAgentLoop {
       };
       let limitReached = false;
       let toolRounds = 0;
+      const recoverableFailures = new Map<string, RecoverableToolCallError>();
       let lastStopReason: AssistantMessage['stopReason'] | null = null;
       let terminalEmitted = false;
       let agent: Agent | null = null;
@@ -717,6 +719,10 @@ export class PiCoreAgentLoop {
               throw new PiApprovalRejectedError();
             }
             return resolution.result;
+          }
+          if (error instanceof RecoverableToolCallError) {
+            recoverableFailures.set(request.callId, error);
+            throw error;
           }
           recordError(error);
           throw error;
@@ -895,6 +901,18 @@ export class PiCoreAgentLoop {
         if (event.type === 'tool_execution_end') {
           if (approvalRejected || limitReached) return;
           if (event.isError) {
+            const failure = recoverableFailures.get(event.toolCallId);
+            if (failure) {
+              recoverableFailures.delete(event.toolCallId);
+              queue.push({
+                type: 'tool-result',
+                callId: event.toolCallId,
+                name: event.toolName,
+                content: `${failure.code}: ${failure.message}`,
+                failed: true,
+              });
+              return;
+            }
             if (!fatalError) {
               fatalError =
                 resultText(event.result) || `Tool failed: ${event.toolName}`;

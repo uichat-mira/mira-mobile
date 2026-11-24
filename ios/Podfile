@@ -27,6 +27,7 @@ target 'UIChatMira' do
 
   pod 'MiraAudioRecorder', :path => './MiraAudioRecorder'
   pod 'MiraSecureCredentialStore', :path => './MiraSecureCredentialStore'
+  pod 'MiraWebFetcher', :path => './MiraWebFetcher'
 
   use_react_native!(
     :path => config[:reactNativePath],
