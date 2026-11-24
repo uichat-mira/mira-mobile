@@ -8,9 +8,6 @@ export type RootStackParamList = {
     | {
         version?: string;
         host?: string;
-        relay?: string;
-        relayId?: string;
-        relayToken?: string;
         challenge?: string;
         code?: string;
       }

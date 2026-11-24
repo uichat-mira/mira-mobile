@@ -16,7 +16,6 @@ export const useAppLifecycle = (): void => {
     const controller = createAppLifecycleController(AppState.currentState, {
       setLocalExecutionSuspended: (suspended) =>
         runtimeRegistry.local.setExecutionSuspended(suspended),
-      refreshRelayConnection: () => remoteMiraHostClient.refreshRelayConnection(),
       getConnectionStatus: () => useHostStore.getState().connectionStatus,
       setConnectionStatus: (status) =>
         useHostStore.getState().setConnectionStatus(status),

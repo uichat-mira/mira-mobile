@@ -2,7 +2,6 @@ import type { ConnectionStatus } from '../types';
 
 export interface AppLifecycleDeps {
   setLocalExecutionSuspended(suspended: boolean): void;
-  refreshRelayConnection(): void;
   getConnectionStatus(): ConnectionStatus;
   setConnectionStatus(status: ConnectionStatus): void;
   restoreConnection(): Promise<unknown | null>;
@@ -50,7 +49,6 @@ export const createAppLifecycleController = (
       }
 
       if (nextState === 'active' && previousState !== 'active') {
-        deps.refreshRelayConnection();
 
         const shouldRestore =
           deps.getConnectionStatus() === 'connected' || retryInterruptedResume;

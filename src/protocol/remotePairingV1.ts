@@ -1,14 +1,5 @@
 import { normalizeHostUrl } from './remoteHostV1';
 
-export interface RemoteRelayHint {
-  endpoint: string;
-  relayId: string;
-}
-
-export interface RemoteRelayEndpoint extends RemoteRelayHint {
-  token: string;
-}
-
 /**
  * QR / paste / deep-link pairing is a Tailscale Direct entry. Relay fields
  * that older Desktop builds put in the URI are ignored, so a Relay token can
@@ -20,31 +11,6 @@ export interface PairingDescriptorV1 {
   challengeId: string;
   code: string;
 }
-
-export const normalizeRelayEndpoint = (value: string): string => {
-  const trimmed = value.trim().replace(/\/+$/, '');
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error('Mira Relay address is not a valid URL');
-  }
-
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error('Mira Relay URL must not contain credentials, query, or hash');
-  }
-  if (parsed.pathname !== '/' && parsed.pathname !== '') {
-    throw new Error('Mira Relay URL must be a base URL');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new Error('Mira Relay must use HTTPS');
-  }
-  if (!parsed.hostname) {
-    throw new Error('Mira Relay URL must include a hostname');
-  }
-
-  return `${parsed.protocol}//${parsed.host}`;
-};
 
 /**
  * New QR/paste/deep-link pairing accepts only Tailscale Direct origins.
