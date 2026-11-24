@@ -249,8 +249,8 @@ const snapshotFor = async (options: {
 };
 
 const localTool: ToolManifest = {
-  name: 'local_weather_current',
-  description: 'Local weather',
+  name: 'web',
+  description: 'Web page',
   parameters: { type: 'object' },
 };
 
@@ -447,7 +447,7 @@ describe('Pi Core over two independent MCP service bindings', () => {
     ));
 
     expect(offered[0]).toEqual(expect.arrayContaining([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       TOOL_DISCLOSURE_TOOL,
     ]));

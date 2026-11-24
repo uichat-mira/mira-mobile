@@ -518,9 +518,9 @@ describe('PiCoreAgentLoop', () => {
 
   it('emits discovery notices for a partially available toolset', async () => {
     const gateway: ToolGatewayClient = {
-      listTools: async () => [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+      listTools: async () => [{ name: 'web', parameters: { type: 'object' } }],
       discoverTools: async () => ({
-        tools: [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+        tools: [{ name: 'web', parameters: { type: 'object' } }],
         notices: [{ code: 'toolset-degraded' }],
       }),
       callTool: async () => ({ content: 'unused' }),
@@ -529,7 +529,7 @@ describe('PiCoreAgentLoop', () => {
 
     const events = await collect(
       await loop.run(
-        [{ role: 'user', content: '天气如何' }],
+        [{ role: 'user', content: '网页如何' }],
         async () =>
           (async function* () {
             yield { type: 'text-delta' as const, delta: '晴' };

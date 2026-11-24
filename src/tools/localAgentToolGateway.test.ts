@@ -40,8 +40,8 @@ import {
 import { WhoYouError } from '../whoYou/whoYouError';
 
 const localTool: ToolManifest = {
-  name: 'local_weather_current',
-  description: 'Local weather',
+  name: 'web',
+  description: 'Web page',
   parameters: { type: 'object' },
 };
 
@@ -974,20 +974,20 @@ describe('Cloud Local Agent joint entry', () => {
       event.delta.includes('请回复要使用哪一台'))).toBe(false);
     expect(fixture.sse).not.toHaveBeenCalled();
 
-    const weather = jest.fn()
+    const webCall = jest.fn()
       .mockResolvedValueOnce(modelStream([
-        { type: 'tool-call', callId: 'weather-call',
+        { type: 'tool-call', callId: 'web-call',
           name: localTool.name, arguments: '{}' },
         { type: 'finish', reason: 'tool_calls' },
       ]))
       .mockResolvedValueOnce(modelStream([
-        { type: 'text-delta', delta: '当前天气已查询' },
+        { type: 'text-delta', delta: '网页已读取' },
         { type: 'finish', reason: 'stop' },
       ]));
-    const weatherEvents = await drain(await new PiCoreAgentLoop(gateway(fixture)).run(
-      [{ role: 'user', content: '查天气' }], weather,
+    const webEvents = await drain(await new PiCoreAgentLoop(gateway(fixture)).run(
+      [{ role: 'user', content: '读网页' }], webCall,
     ));
-    expect(weatherEvents).toEqual(expect.arrayContaining([
+    expect(webEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'tool-result',
         name: localTool.name, content: 'local-result' }),
     ]));
@@ -995,7 +995,7 @@ describe('Cloud Local Agent joint entry', () => {
   });
 
   it.each(['RELAY_NO_RESPONSE_STATUS', 'RELAY_CLOUD_GRANT_REQUIRED'] as const)(
-    'keeps hello and local weather working when one Desktop would reject %s',
+    'keeps hello and local web working when one Desktop would reject %s',
     async code => {
       const fixture = discoveryFixture({
         hosts: [{ host: hostA, error: new RemoteHostError(code, 'Host failed') }],
@@ -1021,7 +1021,7 @@ describe('Cloud Local Agent joint entry', () => {
       expect(fixture.json).not.toHaveBeenCalled();
 
       const localResult = await selected.callTool({
-        callId: 'weather', name: localTool.name, arguments: '{}',
+        callId: 'web', name: localTool.name, arguments: '{}',
       });
       expect(localResult.content).toBe('local-result');
       expect(fixture.json).not.toHaveBeenCalled();
@@ -1471,11 +1471,11 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
     // Static mail schemas are replaced by the deferred MCP service; no shadow
     // duplicate remains visible in the local service.
     expect(discovered?.tools.map((tool) => tool.name)).toEqual([
-      'local_weather_current',
+      'web',
       DESKTOP_HOST_DISCOVERY_TOOL,
     ]);
     expect(discovered?.services?.[0].toolNames).toEqual([
-      'local_weather_current',
+      'web',
       DESKTOP_HOST_DISCOVERY_TOOL,
     ]);
     expect(discovered?.services?.[1]).toEqual(mcpService);
@@ -1529,7 +1529,7 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
     const discovered = await selected.discoverTools?.();
     expect(discovered?.notices).toEqual([]);
     expect(discovered?.tools.map((tool) => tool.name)).toEqual([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       'whoyou_mail_message_get',
       DESKTOP_HOST_DISCOVERY_TOOL,
@@ -1559,7 +1559,7 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
       ] }),
     ]);
     expect(discovered.tools.map((tool) => tool.name)).toEqual([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       DESKTOP_HOST_DISCOVERY_TOOL,
     ]);
