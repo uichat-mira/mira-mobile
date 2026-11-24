@@ -159,7 +159,8 @@ const setupGateway = async (visibleTools?: 'all') => {
     toolDescriptors,
     capabilityResource: JSON.parse(contents[0].text),
     grantedScopes: ['fixture.read'],
-    requiredScope: 'fixture.read',
+    requiredScopes: ['fixture.read'],
+    permittedAccess: ['read'],
     permittedToolNames: [
       'fixture_read_a',
       'fixture_read_b',

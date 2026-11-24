@@ -71,7 +71,8 @@ const project = (overrides: Partial<Parameters<typeof projectMcpService>[0]> = {
     toolDescriptors: tools,
     capabilityResource: resource,
     grantedScopes: ['fixture.read'],
-    requiredScope: 'fixture.read',
+    requiredScopes: ['fixture.read'],
+    permittedAccess: ['read'],
     permittedToolNames: [
       'fixture_read_a',
       'fixture_read_b',
@@ -116,6 +117,33 @@ describe('OPS-046 v1 service capability projection', () => {
       .not.toContain('fixture_ghost');
     // The unclassified real tool stays visible instead of disappearing.
     expect(projection.degradation).toBe('unclassified-tools');
+  });
+
+  it('projects an explicitly permitted non-read capability without granting extra rights', () => {
+    const projection = project({
+      grantedScopes: ['fixture.read', 'fixture.write'],
+      permittedAccess: ['read', 'write'],
+      // Only one real write tool is locally permitted. Declaring the write
+      // capability must not make any other write tool callable.
+      permittedToolNames: ['fixture_read_a', 'fixture_write_c'],
+    });
+    expect(projection.tools.map((tool) => tool.name)).toEqual([
+      'fixture_read_a',
+      'fixture_write_c',
+    ]);
+    expect(projection.service.capabilities).toEqual([
+      expect.objectContaining({
+        id: 'fixture.read',
+        toolNames: ['fixture_read_a'],
+      }),
+      expect.objectContaining({
+        id: 'fixture.write',
+        toolNames: ['fixture_write_c'],
+      }),
+    ]);
+    // A permitted access mode is still not a grant of an unpermitted tool.
+    expect(projection.tools.map((tool) => tool.name))
+      .not.toContain('fixture_scoped_d');
   });
 
   it('falls back flat when the optional resource is absent or unsupported', () => {
