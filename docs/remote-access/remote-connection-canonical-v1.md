@@ -24,6 +24,7 @@ Mobile 只允许**一个**活动的 Desktop 远程连接，取值为 `none` / `d
 - 已保存的历史会话保留原始 source/owner；非活动来源的新消息、Agent 操作和 Desktop 工具调用会被拒绝，而不是静默换传输。
 - 新建远程会话跟随活动模式：Direct → paired `createSession`；Cloud → Cloud business `createThread`（携带发起时的精确 Cloud account 与 Host 归属）；`none` → 先呈现连接选择，不创建假会话。模式/账号在创建期间变化时，不导航过期结果。
 - 连接 UI 始终同时展示两种 Desktop 连接；一种活动时另一种置灰并说明原因，并提供显式断开路径。Cloud 账号登录/退出与 Desktop 传输保持分离，使用 Direct 不要求退出 Cloud。
+- 设置页底部只保留一个按情境变化的退出操作：活动 Direct 显示「退出登录（Tailscale）」，确认后只释放当前传输并回到扫码配对入口，不撤销长期配对授权或云身份；无活动 Tailscale 但存在可信 Mira ID（含离线保留或活动 Cloud Relay）时显示「退出登录（Mira ID）」，复用既有云账号退出并回到 Mira Cloud 账户页；两者皆无时不显示。确认后若活动模式或账号已变化，不执行旧动作。
 - 扫码/粘贴/`mira://pair` 深链在存在活动连接时直接阻断，不解析、不探测、不消耗 claim。
 - Desktop 依据自身登录态拒绝 Direct 准入（DSK-018）时，Mobile 将其视为当前 Direct 路径不可用，不因此自动改用 Cloud。
 
