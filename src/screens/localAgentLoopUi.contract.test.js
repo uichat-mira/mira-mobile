@@ -15,15 +15,12 @@ const cardSource = readFileSync(
 );
 
 describe('MOB-042 local Agent Loop UI contract', () => {
-  it('keeps the transitional Agent entry on the single thread strength state', () => {
+  it('routes the composer through the single thread strength state', () => {
     expect(chatSource).toMatch(/runtime\s*\.\s*getEffectiveAgentStrength\(sessionId\)/);
-    expect(chatSource).toMatch(
-      /runtime\s*\.\s*setAgentStrength\(sessionId,\s*next\)/,
-    );
-    expect(chatSource).not.toMatch(/getAgentEnabled|setAgentEnabled/);
+    expect(chatSource).toContain('useComposerControls(runtime, sessionId)');
+    expect(chatSource).toContain('controls.chooseStrength(value)');
+    expect(chatSource).not.toMatch(/getAgentEnabled|setAgentEnabled|Agent 已开启/);
     expect(chatSource).toContain('agentEnabled: useLocalAgent');
-    expect(chatSource).toContain('Agent 已开启');
-    expect(chatSource).toContain('<Bot');
   });
 
   it('renders protocol-neutral tool lifecycle states without exposing raw arguments', () => {
