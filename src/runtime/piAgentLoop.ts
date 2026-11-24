@@ -44,6 +44,7 @@ import {
 import {
   allowedMailStageTools,
   hostSelectionPrompt,
+  requiredMailRole,
   validateMailManifests,
   validateToolBatch,
   type MailStage,
@@ -741,6 +742,17 @@ export class PiCoreAgentLoop {
           }
           const args = parseToolDisclosureArguments(params);
           const target = resolveToolDisclosureTarget(services, args);
+          // A prior mail search may reveal only the schema of the existing
+          // mail-body reader. Catalog disclosure itself is safe, but must not
+          // become a way for untrusted mail to activate other capabilities.
+          if (mailStage !== 'none' &&
+              (mailStage !== 'search' || target.toolNames.some(name =>
+                requiredMailRole(name) !== 'mail-body'))) {
+            throw new ToolGatewayError(
+              'MAIL_TOOL_CHAIN_RESTRICTED',
+              'Mail content may only disclose the trusted mail-body reader',
+            );
+          }
           const disclosure = await disclose.call(gateway, {
             serviceId: target.serviceId,
             ...(target.capabilityId ? { capabilityId: target.capabilityId } : {}),

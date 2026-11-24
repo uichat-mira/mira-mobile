@@ -578,7 +578,8 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       if (snapshot.tools.length === 0) {
         return { status: 'degraded', notice: 'mcp-service-degraded' };
       }
-      const resolveLocalApproval = this.local.resolveApproval?.bind(this.local);
+      const executor = snapshot.executionGateway ?? this.local;
+      const resolveLocalApproval = executor.resolveApproval?.bind(executor);
       const initialNames = new Set(snapshot.initialToolNames ?? []);
       const gateway = new McpServiceToolGateway({
         snapshot: {
@@ -594,7 +595,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
           assertCurrent: snapshot.assertCurrent,
         },
         executeTool: (request, options) =>
-          this.local.callTool(request, options),
+          executor.callTool(request, options),
         ...(resolveLocalApproval
           ? { resolveToolApproval: resolveLocalApproval }
           : {}),

@@ -88,11 +88,16 @@ tools already covered by the MOB-086 MailStage approval.
   locally permitted real tools. Missing, unknown, malformed or cross-service
   declarations fall back to a flat real-tool catalog instead of invented
   groups. The catalog revision covers real schemas and capability mapping.
-- `McpServiceToolGateway` exposes the deferred schemas through the existing
-  `mira_tools_disclose` path and rechecks the account/credential binding before
-  every disclosure or call. The existing `LocalToolGatewayClient` remains the
-  execution and approval owner for the two mail tools, so search/body consent,
-  trusted `messageId` handling and untrusted-email markers are unchanged.
+- The `McpServiceToolGateway` exposes deferred authoritative `tools/list`
+  schemas through `mira_tools_disclose`. The two approved read tools execute
+  via the authenticated MCP session behind a per-run `LocalToolGatewayClient`
+  one-shot consent adapter. Search honors real MCP filters within the Mobile
+  inbox/10-message scope; body reads permit plain text only. Existing bounded
+  untrusted-data result projections are reused, with no unapproved mail sent
+  to Pi. The Cloud account, exact session-token identity and read credential
+  are revalidated before and after approval or execution. A direct search
+  may subsequently disclose only the trusted mail-body reader, never
+  unrelated tools under the MailStage restrictions.
 - A signed-in Local Agent run now starts with the real weather tool, the
   existing `whoyou_mail_search` entry and the disclosure entry.
   `who-you.mail.read` is disclosed on demand to reveal the remaining real

@@ -1244,18 +1244,18 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
       offered.push(tools.map((tool) => tool.function.name));
       if (offered.length === 1) {
         return asyncStream([
-          { type: 'tool-call' as const, callId: 'disclose', name: TOOL_DISCLOSURE_TOOL,
-            arguments: JSON.stringify({
-              serviceId: 'who-you',
-              capabilityId: 'who-you.mail.read',
-            }) },
+          { type: 'tool-call' as const, callId: 'search', name: 'whoyou_mail_search',
+            arguments: JSON.stringify({ query: 'mira' }) },
           { type: 'finish' as const, reason: 'tool_calls' },
         ]);
       }
       if (offered.length === 2) {
         return asyncStream([
-          { type: 'tool-call' as const, callId: 'search', name: 'whoyou_mail_search',
-            arguments: JSON.stringify({ query: 'mira' }) },
+          { type: 'tool-call' as const, callId: 'disclose', name: TOOL_DISCLOSURE_TOOL,
+            arguments: JSON.stringify({
+              serviceId: 'who-you',
+              toolNames: ['whoyou_mail_message_get'],
+            }) },
           { type: 'finish' as const, reason: 'tool_calls' },
         ]);
       }
@@ -1284,11 +1284,9 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
       TOOL_DISCLOSURE_TOOL,
     ]));
     expect(offered[0]).not.toContain('whoyou_mail_message_get');
-    expect(offered[1]).toEqual(expect.arrayContaining([
-      'whoyou_mail_search',
-      'whoyou_mail_message_get',
-    ]));
-    // After the search result only the body tool remains visible (MOB-086).
+    // Direct search must allow a *subsequent* schema disclosure for the sole
+    // safe next step, not demand disclosure before calling the known tool.
+    expect(offered[1]).toEqual([TOOL_DISCLOSURE_TOOL]);
     expect(offered[2]).toEqual(['whoyou_mail_message_get']);
     expect(events.filter((event) => event.type === 'approval-required'))
       .toHaveLength(2);

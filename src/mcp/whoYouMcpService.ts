@@ -15,7 +15,8 @@ import {
   type IssuedWhoYouReadCredential,
 } from '../whoYou/whoYouCredential';
 import { WhoYouError } from '../whoYou/whoYouError';
-import type { ToolManifest, ToolServiceDescriptor } from '../tools/toolGatewayClient';
+import type { ToolGatewayClient, ToolManifest, ToolServiceDescriptor } from '../tools/toolGatewayClient';
+import { createWhoYouMcpReadExecutor } from './whoYouMcpReadTools';
 import {
   McpProtocolClient,
   McpProtocolError,
@@ -53,7 +54,9 @@ export interface WhoYouMcpServiceSnapshot {
   initialToolNames: readonly string[];
   /** Short-lived read credential expiry; checked again before every call. */
   expiresAt: number;
-  assertCurrent(): void;
+  assertCurrent(): void | Promise<void>;
+  /** A per-discovery, short-lived MCP read executor with Mobile mail consent. */
+  executionGateway?: ToolGatewayClient;
 }
 
 export interface DiscoverWhoYouMcpServiceOptions {
@@ -208,7 +211,7 @@ export const discoverWhoYouMcpService = async (
       serviceId: WHO_YOU_MCP_SERVICE_ID,
       serviceName: '狐邮 Who You',
       serviceDescription:
-        'Mira Cloud 账号下已授权的狐邮只读邮件服务；本轮只暴露已受 MailStage 审批保护的读取工具。',
+        'Mira Cloud 账号下已授权的狐邮只读邮件服务；Mobile 本轮仅能搜索收件箱最多10封邮件、读取纯文本正文，并须逐次审批。',
       toolDescriptors,
       capabilityResource,
       grantedScopes: credential.claims.scopes,
@@ -230,14 +233,17 @@ export const discoverWhoYouMcpService = async (
 
   const expiresAt = Date.parse(credential.expiresAt);
   const accountId = options.accountId;
+  const sessionToken = options.sessionToken;
+  const executionGateway = createWhoYouMcpReadExecutor(client, projection.tools);
   return {
     ...projection,
     accountId,
+    executionGateway,
     // Keep the existing search entry visible; body retrieval and any other
     // read tool remain deferred until the model selects the declared capability.
     initialToolNames: ['whoyou_mail_search'],
     expiresAt,
-    assertCurrent: () => {
+    assertCurrent: async () => {
       const cloud = useCloudAccountStore.getState();
       if (cloud.status !== 'signed_in' || cloud.account?.id !== accountId) {
         throw new McpProtocolError(
@@ -251,6 +257,18 @@ export const discoverWhoYouMcpService = async (
           'unauthorized',
           'The Who You read credential expired',
           'WHOYOU_CREDENTIAL_EXPIRED',
+        );
+      }
+      // Same-account sign-out/sign-in must never resurrect a prior approval.
+      // Cloud account ID alone is not a session identity.
+      const stored = await cloudSessionStore.load();
+      if (!stored || stored.account.id !== accountId ||
+          stored.sessionToken !== sessionToken ||
+          !(Date.parse(stored.expiresAt) > Date.now())) {
+        throw new McpProtocolError(
+          'unauthorized',
+          'The Mira Cloud session changed during the MCP service run',
+          'WHOYOU_SESSION_CHANGED',
         );
       }
     },

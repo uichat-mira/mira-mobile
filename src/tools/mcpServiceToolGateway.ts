@@ -29,7 +29,7 @@ export interface McpServiceSnapshot {
   visibleTools?: readonly ToolManifest[];
   degradation?: McpServiceDegradation;
   /** Revalidates the account/credential/identity binding before any use. */
-  assertCurrent?: () => void;
+  assertCurrent?: () => void | Promise<void>;
 }
 
 export interface McpServiceToolGatewayOptions {
@@ -137,17 +137,17 @@ export class McpServiceToolGateway implements ToolGatewayClient {
     return this.callableNames;
   }
 
-  private assertCurrent(): void {
-    this.snapshot.assertCurrent?.();
+  private async assertCurrent(): Promise<void> {
+    await this.snapshot.assertCurrent?.();
   }
 
   async listTools(): Promise<readonly ToolManifest[]> {
-    this.assertCurrent();
+    await this.assertCurrent();
     return this.snapshot.visibleTools ?? this.snapshot.tools;
   }
 
   async discoverTools(): Promise<ToolDiscoveryResult> {
-    this.assertCurrent();
+    await this.assertCurrent();
     const degraded = this.snapshot.degradation !== undefined &&
       this.snapshot.degradation !== 'none' &&
       this.snapshot.degradation !== 'no-resource';
@@ -164,7 +164,7 @@ export class McpServiceToolGateway implements ToolGatewayClient {
     options?: { signal?: AbortSignal },
   ): Promise<ToolDisclosureResult> {
     try {
-      this.assertCurrent();
+      await this.assertCurrent();
       if (options?.signal?.aborted) {
         throw new ToolGatewayError('TOOL_CANCELLED', 'MCP disclosure was cancelled');
       }
@@ -197,7 +197,7 @@ export class McpServiceToolGateway implements ToolGatewayClient {
     options?: { signal?: AbortSignal },
   ): Promise<ToolCallResult> {
     try {
-      this.assertCurrent();
+      await this.assertCurrent();
       if (!this.callableNames.has(request.name)) {
         throw new ToolGatewayError(
           'TOOL_NOT_DECLARED',
@@ -205,10 +205,12 @@ export class McpServiceToolGateway implements ToolGatewayClient {
         );
       }
       const args = parseArguments(request.arguments);
-      return await this.executeTool(
+      const result = await this.executeTool(
         { ...request, arguments: JSON.stringify(args) },
         options,
       );
+      await this.assertCurrent();
+      return result;
     } catch (error) {
       return asGatewayError(error);
     }
@@ -219,18 +221,28 @@ export class McpServiceToolGateway implements ToolGatewayClient {
     decision: ToolApprovalDecision,
     options?: { signal?: AbortSignal },
   ): Promise<ToolApprovalResolution> {
-    if (!this.resolveToolApproval) {
-      throw new ToolGatewayError(
-        'TOOL_APPROVAL_UNSUPPORTED',
-        'The MCP service gateway does not own this approval',
-      );
+    try {
+      await this.assertCurrent();
+      if (options?.signal?.aborted) {
+        throw new ToolGatewayError('TOOL_CANCELLED', 'MCP approval was cancelled');
+      }
+      if (!this.resolveToolApproval) {
+        throw new ToolGatewayError(
+          'TOOL_APPROVAL_UNSUPPORTED',
+          'The MCP service gateway does not own this approval',
+        );
+      }
+      if (!this.callableNames.has(approval.name)) {
+        throw new ToolGatewayError(
+          'TOOL_APPROVAL_STALE',
+          'This approval does not belong to the MCP service binding',
+        );
+      }
+      const result = await this.resolveToolApproval(approval, decision, options);
+      await this.assertCurrent();
+      return result;
+    } catch (error) {
+      return asGatewayError(error);
     }
-    if (!this.callableNames.has(approval.name)) {
-      throw new ToolGatewayError(
-        'TOOL_APPROVAL_STALE',
-        'This approval does not belong to the MCP service binding',
-      );
-    }
-    return this.resolveToolApproval(approval, decision, options);
   }
 }

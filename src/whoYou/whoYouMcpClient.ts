@@ -327,7 +327,7 @@ export const discoverWhoYouResource = async (input: {
   }, input.timeoutMs, input.signal);
 };
 
-const parseToolStructuredContent = (result: unknown): Record<string, unknown> => {
+export const parseToolStructuredContent = (result: unknown): Record<string, unknown> => {
   if (!isRecord(result)) throw invalidResponse();
   if (result.isError !== undefined && typeof result.isError !== 'boolean') {
     throw invalidResponse();
@@ -426,7 +426,7 @@ const parseMailSummary = (value: unknown): WhoYouMailSummary => {
   };
 };
 
-const parseMailSearch = (value: Record<string, unknown>): WhoYouMailSearchPage => {
+export const parseMailSearch = (value: Record<string, unknown>): WhoYouMailSearchPage => {
   if (!Array.isArray(value.messages) || value.messages.length > 50 ||
       (value.nextCursor !== null &&
        (typeof value.nextCursor !== 'string' || value.nextCursor.length > 200))) {
@@ -438,7 +438,7 @@ const parseMailSearch = (value: Record<string, unknown>): WhoYouMailSearchPage =
   };
 };
 
-const parseMailMessage = (value: Record<string, unknown>): WhoYouMailMessage => {
+export const parseMailMessage = (value: Record<string, unknown>): WhoYouMailMessage => {
   const summary = parseMailSummary(value);
   if (value.untrusted !== true || value.bodyKind !== 'text' ||
       typeof value.body !== 'string' || typeof value.truncated !== 'boolean') {

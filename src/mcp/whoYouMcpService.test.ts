@@ -1,3 +1,5 @@
+import { cloudSessionStore } from '../cloud/cloudSessionStore';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import type { IssuedWhoYouReadCredential } from '../whoYou/whoYouCredential';
 import {
   WHO_YOU_MCP_RESOURCE_URI,
@@ -281,4 +283,40 @@ describe('Who You trusted MCP service discovery', () => {
       toolNames: ['whoyou_mail_search'],
     }]);
   });
+  it('rejects an old session after a same-account re-login or account change', async () => {
+    const previous = useCloudAccountStore.getState();
+    const storeSession = {
+      schemaVersion: 1 as const,
+      account: { id: ACCOUNT, username: 'fixture' },
+      sessionToken: SESSION,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      savedAt: '2026-11-24T00:00:00.000Z',
+    };
+    const load = jest.spyOn(cloudSessionStore, 'load').mockResolvedValue(storeSession);
+    const snapshot = await discover(fixtureFetch());
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: storeSession.account,
+    });
+    try {
+      await expect(snapshot.assertCurrent()).resolves.toBeUndefined();
+      load.mockResolvedValue({ ...storeSession, sessionToken: 'new-session-same-account' });
+      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
+        code: 'WHOYOU_SESSION_CHANGED',
+      });
+      load.mockResolvedValue({ ...storeSession, expiresAt: '2020-01-01T00:00:00.000Z' });
+      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
+        code: 'WHOYOU_SESSION_CHANGED',
+      });
+      load.mockResolvedValue(storeSession);
+      useCloudAccountStore.setState({ account: { id: 'account-2', username: 'other' } });
+      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
+        code: 'WHOYOU_ACCOUNT_CHANGED',
+      });
+    } finally {
+      load.mockRestore();
+      useCloudAccountStore.setState(previous);
+    }
+  });
+
 });
