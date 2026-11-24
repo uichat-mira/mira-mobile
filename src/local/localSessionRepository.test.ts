@@ -257,4 +257,61 @@ describe('LocalSessionRepository', () => {
 
     await expect(repository.rename('missing', 'Nope')).rejects.toThrow('not found');
   });
+
+  it('rebinds provider ownership without touching history, identity, or Agent mode', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const session = await repository.create('provider-a', 'Keep my history');
+    const other = await repository.create('provider-a', 'Other thread');
+    const message = {
+      id: 'user-1',
+      role: 'user' as const,
+      content: 'hello',
+      timestamp: new Date('2026-09-05T00:00:00Z'),
+    };
+    await repository.appendMessages(session.id, [message]);
+    await repository.setAgentEnabled(session.id, true);
+    const before = await repository.get(session.id);
+
+    await repository.setProviderId(session.id, 'provider-b');
+
+    await expect(repository.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(repository.get(session.id)).resolves.toEqual(before);
+    await expect(repository.getMessages(session.id)).resolves.toEqual([message]);
+    await expect(repository.getAgentEnabled(session.id)).resolves.toBe(true);
+    await expect(repository.getProviderId(other.id)).resolves.toBe('provider-a');
+    await expect(repository.list('provider-a')).resolves.toMatchObject([
+      { id: other.id, title: 'Other thread' },
+    ]);
+    await expect(repository.list('provider-b')).resolves.toMatchObject([
+      { id: session.id, title: 'Keep my history' },
+    ]);
+
+    const restarted = new LocalSessionRepository(storage);
+    await expect(restarted.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(restarted.getMessages(session.id)).resolves.toEqual([message]);
+  });
+
+  it('preserves a concurrent Agent-mode write when selection rebinds provider ownership', async () => {
+    const repository = new LocalSessionRepository(
+      new DelayedLocalKeyValueStore(),
+    );
+    const session = await repository.create('provider-a', 'Concurrent');
+
+    await Promise.all([
+      repository.setAgentEnabled(session.id, true),
+      repository.setProviderId(session.id, 'provider-b'),
+    ]);
+
+    await expect(repository.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(repository.getAgentEnabled(session.id)).resolves.toBe(true);
+  });
+
+  it('rejects rebinding an unknown session', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+
+    await expect(
+      repository.setProviderId('missing', 'provider-b'),
+    ).rejects.toThrow('not found');
+  });
 });

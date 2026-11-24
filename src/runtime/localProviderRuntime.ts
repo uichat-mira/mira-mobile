@@ -34,6 +34,11 @@ import {
   stageLocalSessionReferenceRemoval,
   type StagedLocalSessionReferenceRemoval,
 } from '../session/localSessionReferenceCleanup';
+import {
+  buildLocalProviderModelOptions,
+  LocalProviderModelSelectionError,
+  type LocalProviderModelOption,
+} from './localProviderModelSelection';
 
 export interface LocalProviderDeletionImpact {
   providerId: string;
@@ -101,6 +106,7 @@ export type StageLocalSessionReferenceRemoval = (
 
 interface ActiveProviderSend {
   providerId: string;
+  sessionId: string;
   cancelled: boolean;
   cancelProviderRun: (() => void) | null;
   close: (() => Promise<void>) | null;
@@ -155,6 +161,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
   private readonly pendingProviderSends = new Set<ActiveProviderSend>();
+  private readonly sessionOperationQueues = new Map<string, Promise<void>>();
   private currentProviderSend: ActiveProviderSend | null = null;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
@@ -232,9 +239,57 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
+  private acquireProviderMutations(providerIds: readonly string[]): () => void {
+    const releases: Array<() => void> = [];
+    try {
+      for (const providerId of [...new Set(providerIds)].sort()) {
+        releases.push(this.acquireProviderMutation(providerId));
+      }
+    } catch (error) {
+      releases.forEach((release) => release());
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releases.forEach((release) => release());
+    };
+  }
+
+  /**
+   * Serializes send preflight with model selection for the same conversation.
+   * The actual stream keeps running after preflight; selection then sees the
+   * registered send and refuses to change the provider under an active run.
+   */
+  private enqueueSessionOperation<T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous =
+      this.sessionOperationQueues.get(sessionId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.sessionOperationQueues.set(sessionId, tail);
+    tail
+      .then(() => {
+        if (this.sessionOperationQueues.get(sessionId) === tail) {
+          this.sessionOperationQueues.delete(sessionId);
+        }
+      })
+      .catch(() => undefined);
+    return result;
+  }
+
   private hasProviderSend(providerId: string): boolean {
     return [...this.activeProviderSends].some(
       (send) => send.providerId === providerId,
+    );
+  }
+
+  private hasSessionSend(sessionId: string): boolean {
+    return [...this.activeProviderSends, ...this.pendingProviderSends].some(
+      (send) => send.sessionId === sessionId,
     );
   }
 
@@ -250,9 +305,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
-  private prepareProviderSend(providerId: string): ActiveProviderSend {
+  private prepareProviderSend(
+    providerId: string,
+    sessionId: string,
+  ): ActiveProviderSend {
     const send: ActiveProviderSend = {
       providerId: this.requireProviderId(providerId),
+      sessionId,
       cancelled: false,
       cancelProviderRun: null,
       close: null,
@@ -517,7 +576,17 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return this.sessionRepository.getMessages(sessionId);
   }
 
-  async sendMessage(
+  sendMessage(
+    sessionId: string,
+    input: string,
+    options?: { agentEnabled?: boolean; messageId?: string },
+  ): Promise<AsyncIterable<RuntimeEvent>> {
+    return this.enqueueSessionOperation(sessionId, () =>
+      this.prepareMessageSend(sessionId, input, options),
+    );
+  }
+
+  private async prepareMessageSend(
     sessionId: string,
     input: string,
     options?: { agentEnabled?: boolean; messageId?: string },
@@ -546,7 +615,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
 
     const runtime = this;
-    const preparedSend = this.prepareProviderSend(providerId);
+    const preparedSend = this.prepareProviderSend(providerId, sessionId);
     let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
 
     generator = (async function* () {
@@ -656,6 +725,93 @@ export class LocalProviderRuntime implements ConversationRuntime {
     } finally {
       release();
     }
+  }
+
+  async listLocalProviderModels(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption[]> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const configs = await this.configStore.load();
+    return buildLocalProviderModelOptions(configs, providerId);
+  }
+
+  async getSelectedLocalProviderModel(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption | null> {
+    const options = await this.listLocalProviderModels(sessionId);
+    return options.find((option) => option.selected) ?? null;
+  }
+
+  /**
+   * Switches this conversation to another already-configured Provider/model.
+   *
+   * The session's `providerId` is the single source of truth, so the next send
+   * (ordinary chat or Pi Core Agent) resolves endpoint, model and credential
+   * from the selected configuration. An active or prepared run is never
+   * re-identified; the selection is explicitly refused until it finishes.
+   */
+  async selectLocalProviderModel(
+    sessionId: string,
+    providerId: string,
+  ): Promise<LocalProviderModelOption> {
+    const targetProviderId = this.requireProviderId(providerId);
+    return this.enqueueSessionOperation(sessionId, async () => {
+      const currentProviderId =
+        await this.sessionRepository.getProviderId(sessionId);
+      const release = this.acquireProviderMutations([
+        currentProviderId,
+        targetProviderId,
+      ]);
+      try {
+        if (this.hasSessionSend(sessionId)) {
+          throw new LocalProviderModelSelectionError(
+            'run-active',
+            targetProviderId,
+          );
+        }
+
+        const configs = await this.configStore.load();
+        const target = configs.find(
+          (config) => config.id === targetProviderId,
+        );
+        if (!target) {
+          throw new LocalProviderModelSelectionError(
+            'provider-missing',
+            targetProviderId,
+          );
+        }
+        if (target.requiresStandardProtocolReview) {
+          throw new LocalProviderModelSelectionError(
+            'provider-unavailable',
+            targetProviderId,
+          );
+        }
+        const apiKey = await this.credentialStore.load(target.id);
+        if (!apiKey) {
+          throw new LocalProviderModelSelectionError(
+            'credential-missing',
+            targetProviderId,
+          );
+        }
+
+        if (currentProviderId !== target.id) {
+          await this.sessionRepository.setProviderId(sessionId, target.id);
+        }
+        const selected = buildLocalProviderModelOptions(
+          configs,
+          target.id,
+        ).find((option) => option.providerId === target.id);
+        if (!selected) {
+          throw new LocalProviderModelSelectionError(
+            'provider-missing',
+            targetProviderId,
+          );
+        }
+        return selected;
+      } finally {
+        release();
+      }
+    });
   }
 
   resolveToolApproval(

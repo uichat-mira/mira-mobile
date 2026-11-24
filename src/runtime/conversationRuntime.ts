@@ -1,5 +1,6 @@
 import type { ChatMessage, Session } from '../types';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
+import type { LocalProviderModelOption } from './localProviderModelSelection';
 
 export type RuntimeKind = 'remote-host' | 'local-provider';
 
@@ -77,6 +78,22 @@ export interface ConversationRuntime {
   cancelActiveRun(): void;
   getAgentEnabled?(sessionId: string): Promise<boolean>;
   setAgentEnabled?(sessionId: string, enabled: boolean): Promise<void>;
+  /**
+   * Local Provider model selection for the conversation composer. Options come
+   * only from the user's configured Providers; `selected` reflects the
+   * persisted session selection. Selecting persists the Provider/model pair for
+   * the next send without recreating the conversation.
+   */
+  listLocalProviderModels?(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption[]>;
+  getSelectedLocalProviderModel?(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption | null>;
+  selectLocalProviderModel?(
+    sessionId: string,
+    providerId: string,
+  ): Promise<LocalProviderModelOption>;
   resolveToolApproval?(
     invocationId: string,
     decision: ToolApprovalDecision,

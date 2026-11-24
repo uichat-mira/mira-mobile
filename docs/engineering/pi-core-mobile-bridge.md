@@ -66,6 +66,26 @@ There is no independent or hidden second budget in Pi.
 - Tool result size bounds, app suspension, run cancellation and execution
   deadlines are enforced by Pi just as before.
 
+### Conversation model switching (MOB-103)
+
+- The composer's selectable list is exactly the user's existing
+  `ProviderConfigStore` entries. Each Local Provider configuration already binds
+  one model; no model marketplace, discovery, or parallel model-selection store
+  is introduced.
+- Selecting another entry persists on the session's existing `providerId`.
+  History, session id, title, Agent mode, execution strength and other threads
+  are unchanged, and no credential is copied. Restarting re-reads the same
+  selection.
+- Ownership follows the selection because `providerId` remains the single
+  authority: deleting the newly selected Provider cascades the conversation,
+  while deleting the previously selected Provider no longer does.
+- The next ordinary chat or Pi Core send re-resolves endpoint, model and
+  credential from the selected configuration at send time. An active or prepared
+  run is never re-identified; selection is refused until it finishes.
+- Missing configuration, a review-required legacy configuration and a missing
+  credential surface as `LocalProviderModelSelectionError` reasons. The runtime
+  never silently falls back to another Provider.
+
 ### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
 
 This is the first real OPS-046 consumer, still limited to the read-only mail
