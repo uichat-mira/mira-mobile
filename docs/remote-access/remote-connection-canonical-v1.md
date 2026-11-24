@@ -14,7 +14,7 @@ Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope�
 
 自 MOB-092（2026-11-23）起，**扫码 / 粘贴 / `mira://pair` 深链这一新设备配对入口只面向 Tailscale Direct**：
 
-- 配对 URI 必须携带可解析、满足既有安全要求的 `host`（Tailscale Direct HTTPS endpoint）；
+- 配对 URI 必须携带可解析、满足既有安全要求的 `host`（Tailscale Direct HTTPS endpoint）；新配对入口识别 `*.ts.net` Tailscale Serve 域名及 `100.64.0.0/10` Tailnet IPv4 origin；拒绝普通公网 HTTPS、额外路径或 URL 参数。其他 Tailnet 广告格式需实际验证后再扩展；
 - `relay`、`relayId`、`relayToken` 属于历史 Desktop 生产者字段；即使出现也只被忽略，不能参与 claim、poll 或新凭据的 Transport 选择；
 - Relay-only 链接、缺少 Host 或 Host 无效时不发起 claim，并提示重新生成包含 Tailscale Direct 地址的二维码。
 
@@ -28,7 +28,9 @@ Cloud Relay 不依赖扫码。它通过 Mira Cloud 账号、Host 授权和既有
 扫码 / 粘贴 / mira://pair 深链
   -> 解析必须包含有效 host（Tailscale Direct）
   -> Direct /health preflight
+  -> Direct /app/meta 识别 Mira Host 身份
       -> 成功：只通过 Direct 提交一次 claim
+      -> /health 成功但不是 Mira Host：拒绝配对，不提交 claim
       -> Direct 网络不可达：显示 Tailscale 直连失败，不提交 claim
       -> Host 无效/不满足 HTTPS 要求：显示链接错误，不提交 claim
   -> claim 后只通过同一 Direct transport poll

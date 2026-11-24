@@ -75,6 +75,9 @@ const describePairingLinkError = (error: unknown): string => {
   ) {
     return '配对链接中的 Mira Host 地址无效或不符合安全要求，请让 Mira Desktop 重新生成二维码。';
   }
+  if (message.includes('Tailscale Direct Host must')) {
+    return '配对地址必须是 Tailscale 直连地址（*.ts.net 或 Tailscale 100.x），不能包含额外路径或参数。';
+  }
   return message || '无法读取桌面配对链接';
 };
 

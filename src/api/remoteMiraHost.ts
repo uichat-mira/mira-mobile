@@ -26,9 +26,11 @@ import {
 } from '../protocol/remoteHostV1';
 import {
   parsePairingUriV1,
+  normalizeTailscalePairingHostUrl,
   type PairingDescriptorV1,
   type RemoteRelayEndpoint,
 } from '../protocol/remotePairingV1';
+import { parseTailscaleMiraHostIdentity } from '../connectivity/miraHostIdentity';
 import {
   deviceCredentialStore,
   type DeviceCredentialStore,
@@ -929,14 +931,31 @@ export class RemoteMiraHostClient {
       );
     }
 
+    // Programmatic callers must obey the same direct-only origin boundary
+    // as QR/paste/deep links, not merely the parser UI.
+    const directHostUrl = normalizeTailscalePairingHostUrl(descriptor.hostUrl);
     try {
       await this.jsonTransport({
-        hostUrl: descriptor.hostUrl,
+        hostUrl: directHostUrl,
         path: '/health',
         allowInsecureDevelopment: __DEV__,
         raw: true,
         parse: value => value,
       });
+
+      const identity = await this.jsonTransport({
+        hostUrl: directHostUrl,
+        path: '/app/meta',
+        allowInsecureDevelopment: __DEV__,
+        raw: true,
+        parse: value => parseTailscaleMiraHostIdentity(value),
+      });
+      if (!identity) {
+        throw new RemoteHostError(
+          'PAIRING_DIRECT_NOT_MIRA_HOST',
+          'The Tailscale Direct endpoint did not identify as a Mira Desktop Host',
+        );
+      }
     } catch (error) {
       if (isDirectNetworkError(error)) {
         throw new RemoteHostError(

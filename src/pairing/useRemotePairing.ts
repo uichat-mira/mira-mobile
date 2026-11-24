@@ -45,6 +45,8 @@ const pairingStartErrorMessage = (error: unknown): string => {
         return '配对链接缺少 Tailscale Direct 地址，请在 Mira Desktop 重新生成包含直连地址的二维码。';
       case 'PAIRING_DIRECT_UNREACHABLE':
         return '无法通过 Tailscale 直连 Mira Desktop。请确认手机已加入同一 Tailscale 网络且 Mira Desktop 正在运行，然后重试。';
+      case 'PAIRING_DIRECT_NOT_MIRA_HOST':
+        return 'Tailscale 地址已连接，但目标不是 Mira Desktop。请在桌面端重新生成正确的配对二维码。';
       default:
         break;
     }

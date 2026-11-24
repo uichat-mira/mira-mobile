@@ -83,6 +83,34 @@ describe('parsePairingUriV1', () => {
     ).toThrow('Mira Host address is not a valid URL');
   });
 
+  it('accepts a Tailscale IPv4 endpoint when the Tailnet exposes one', () => {
+    expect(parsePairingUriV1(
+      'mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=https%3A%2F%2F100.101.10.20',
+    ).hostUrl).toBe('https://100.101.10.20');
+  });
+
+  it('rejects a public HTTPS service and out-of-Tailnet IPv4 before pairing', () => {
+    for (const target of ['https://public.example.org', 'https://100.128.0.1', 'https://ts.net']) {
+      expect(() => parsePairingUriV1(
+        'mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=' +
+          encodeURIComponent(target),
+      )).toThrow('Tailscale Direct Host');
+    }
+  });
+
+  it('rejects a Tailscale Host URL with a path, query, or fragment', () => {
+    for (const target of [
+      'https://desktop.example.ts.net/other',
+      'https://desktop.example.ts.net/?next=evil',
+      'https://desktop.example.ts.net/#private',
+    ]) {
+      expect(() => parsePairingUriV1(
+        'mira://pair?version=1&challenge=challenge-1&code=ABCD2345&host=' +
+          encodeURIComponent(target),
+      )).toThrow('Tailscale Direct Host must be a base URL');
+    }
+  });
+
   it('rejects ordinary HTTP(S) URLs as pairing input', () => {
     expect(() =>
       parsePairingUriV1('https://desktop.example.ts.net/remote/pairing'),

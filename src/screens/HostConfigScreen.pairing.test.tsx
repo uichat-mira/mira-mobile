@@ -162,6 +162,9 @@ const successfulDirectTransport = async <T,>(
   if (request.path === '/health') {
     return request.parse({ status: 'ok' });
   }
+  if (request.path === '/app/meta') {
+    return request.parse({ name: 'Mira Host', displayName: 'Mira Desktop', version: '0.4.0' });
+  }
   if (request.path === '/remote/pairing/claim') {
     return request.parse(claimResponse);
   }
@@ -260,8 +263,9 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     await flush();
 
     const directPaths = spies.direct.mock.calls.map(call => call[0].path);
-    expect(directPaths.slice(0, 2)).toEqual([
+    expect(directPaths.slice(0, 3)).toEqual([
       '/health',
+      '/app/meta',
       '/remote/pairing/claim',
     ]);
     expect(
@@ -270,7 +274,7 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     expect(directPaths).toContain(
       '/remote/pairing/claims/claim-1/poll',
     );
-    expect(spies.direct.mock.calls[1][0].body).toMatchObject({
+    expect(spies.direct.mock.calls[2][0].body).toMatchObject({
       transport: 'direct',
     });
     expect(spies.relay).not.toHaveBeenCalled();
@@ -346,6 +350,9 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
       if (request.path === '/health') {
         return request.parse({ status: 'ok' });
       }
+      if (request.path === '/app/meta') {
+        return request.parse({ name: 'Mira Host', displayName: 'Mira Desktop', version: '0.4.0' });
+      }
       throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     });
     const tree = await renderScreen();
@@ -362,6 +369,7 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     expect(findPressable(tree, '重试配对')).toBeUndefined();
     expect(spies.direct.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
+      '/app/meta',
       '/remote/pairing/claim',
     ]);
     expect(spies.relay).not.toHaveBeenCalled();

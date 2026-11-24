@@ -100,6 +100,12 @@ const claimPayload = {
   expiresAt: '2026-08-02T00:05:00.000Z',
 };
 
+const miraHostMeta = {
+  name: 'Mira Host',
+  displayName: 'Mira Desktop',
+  version: '0.4.0',
+};
+
 describe('RemoteMiraHostClient pairing credential retention', () => {
   it('persists the one-time credential before manifest verification', async () => {
     const store = new MemoryDeviceCredentialStore();
@@ -168,9 +174,9 @@ describe('RemoteMiraHostClient transport selection', () => {
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
-      return request.path === '/health'
-        ? request.parse({ status: 'ok' })
-        : request.parse(claimPayload);
+      if (request.path === '/health') return request.parse({ status: 'ok' });
+      if (request.path === '/app/meta') return request.parse(miraHostMeta);
+      return request.parse(claimPayload);
     };
     const relayJsonMock = jest.fn();
     const relayJson: RelayJsonTransport = async () => {
@@ -187,9 +193,10 @@ describe('RemoteMiraHostClient transport selection', () => {
     ).resolves.toMatchObject({ ...claimPayload, transport: 'direct' });
     expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
+      '/app/meta',
       '/remote/pairing/claim',
     ]);
-    expect(directMock.mock.calls[1][0].body).toMatchObject({ transport: 'direct' });
+    expect(directMock.mock.calls[2][0].body).toMatchObject({ transport: 'direct' });
     expect(relayJsonMock).not.toHaveBeenCalled();
   });
 
@@ -223,6 +230,7 @@ describe('RemoteMiraHostClient transport selection', () => {
     const direct: JsonTransport = async request => {
       directMock(request);
       if (request.path === '/health') return request.parse({ status: 'ok' });
+      if (request.path === '/app/meta') return request.parse(miraHostMeta);
       throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     };
     const relayJsonMock = jest.fn();
@@ -240,9 +248,49 @@ describe('RemoteMiraHostClient transport selection', () => {
     ).rejects.toMatchObject({ code: 'PAIRING_CLAIM_UNCERTAIN' });
     expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
+      '/app/meta',
       '/remote/pairing/claim',
     ]);
     expect(relayJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a publicly reachable HTTPS host before any preflight or claim', async () => {
+    const directSpy = jest.fn();
+    const direct: JsonTransport = async request => {
+      directSpy(request);
+      return request.parse({ status: 'ok' });
+    };
+    const client = new RemoteMiraHostClient(
+      new MemoryDeviceCredentialStore(),
+      direct,
+    );
+    await expect(client.claimPairing(
+      { ...pairingDescriptor, hostUrl: 'https://public.example.org' },
+      { name: 'Android phone' },
+    )).rejects.toThrow('Tailscale Direct Host');
+    expect(directSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fake /health 200 service without a valid Mira Host identity', async () => {
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      if (request.path === '/health') return request.parse({ status: 'ok' });
+      if (request.path === '/app/meta') {
+        return request.parse({ name: 'Another service', displayName: 'Public server', version: '1' });
+      }
+      throw new Error('Unexpected pairing claim');
+    };
+    const client = new RemoteMiraHostClient(
+      new MemoryDeviceCredentialStore(),
+      direct,
+    );
+    await expect(client.claimPairing(pairingDescriptor, {
+      name: 'Android phone',
+    })).rejects.toMatchObject({ code: 'PAIRING_DIRECT_NOT_MIRA_HOST' });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/health', '/app/meta',
+    ]);
   });
 
   it('polls a claimed pairing only over its Direct transport', async () => {
