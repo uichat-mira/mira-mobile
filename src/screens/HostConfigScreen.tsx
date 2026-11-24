@@ -44,8 +44,8 @@ const buildPairingUriFromRoute = (
   params: RootStackParamList['HostConfig'],
 ): string | null => {
   if (!params) return null;
-  const { version, host, relay, relayId, relayToken, challenge, code } = params;
-  if (!version && !host && !relay && !relayId && !relayToken && !challenge && !code) {
+  const { version, host, challenge, code } = params;
+  if (!version && !host && !challenge && !code) {
     return null;
   }
   if (!version || !challenge || !code) {
@@ -54,11 +54,6 @@ const buildPairingUriFromRoute = (
 
   const query = new URLSearchParams({ version, challenge, code });
   if (host) query.set('host', host);
-  // Historical deep links may still carry Relay metadata. Keep it encodable so
-  // the parser can apply the same Direct-only policy as scan and paste input.
-  if (relay) query.set('relay', relay);
-  if (relayId) query.set('relayId', relayId);
-  if (relayToken) query.set('relayToken', relayToken);
   return `mira://pair?${query.toString()}`;
 };
 

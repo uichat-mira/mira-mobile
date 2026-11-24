@@ -35,18 +35,6 @@ export interface RemoteConnectionDiagnostic {
   debugStatus?: number;
 }
 
-export interface RemoteTransportAttemptDiagnostic {
-  transport: 'direct' | 'relay';
-  code: string;
-  status?: number;
-  hostResponded: boolean;
-  authoritativeHostOffline: boolean;
-}
-
-interface RemoteFailureDetails {
-  transportAttempts?: RemoteTransportAttemptDiagnostic[];
-}
-
 interface DiagnosticEnvironment {
   getNetworkState?: () => Promise<SystemNetworkState | null>;
 }
@@ -73,34 +61,8 @@ const isCloudAuthorizationFailure = (error: RemoteHostError) =>
   cloudAuthorizationCodes.has(error.code) ||
   error.code.startsWith('CLOUD_RELAY_');
 
-const transportAttemptsFrom = (
-  error: RemoteHostError,
-): RemoteTransportAttemptDiagnostic[] => {
-  const details = error.details as RemoteFailureDetails | undefined;
-  if (!Array.isArray(details?.transportAttempts)) return [];
-  return details.transportAttempts.filter(
-    attempt =>
-      attempt != null &&
-      (attempt.transport === 'direct' || attempt.transport === 'relay') &&
-      typeof attempt.code === 'string' &&
-      typeof attempt.hostResponded === 'boolean' &&
-      typeof attempt.authoritativeHostOffline === 'boolean',
-  );
-};
-
-const hasAuthoritativeHostOfflineEvidence = (error: RemoteHostError) => {
-  if (
-    error.code === 'RELAY_HOST_OFFLINE' ||
-    error.code === 'CLOUD_RELAY_HOST_OFFLINE'
-  ) {
-    return true;
-  }
-  const attempts = transportAttemptsFrom(error);
-  return (
-    attempts.some(attempt => attempt.authoritativeHostOffline) &&
-    !attempts.some(attempt => attempt.hostResponded)
-  );
-};
+const hasAuthoritativeHostOfflineEvidence = (error: RemoteHostError) =>
+  error.code === 'RELAY_HOST_OFFLINE' || error.code === 'CLOUD_RELAY_HOST_OFFLINE';
 
 const isTransportFailure = (error: RemoteHostError) =>
   transportFailureCodes.has(error.code) || error.code.startsWith('RELAY_');

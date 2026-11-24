@@ -4,13 +4,13 @@
 
 适用分支：`dev`
 
-最近修订：2026-11-23（MOB-092：新配对入口 Tailscale Direct-only）
+最近修订：2026-11-24（MOB-092：退役旧配对 Relay）
 
 本文定义 Mira Mobile 首次配对、配对后远程连接与 Remote capability discovery 的权威行为。其他移动端远程连接文档必须引用本文；如有冲突，以本文为准。
 
 ## 1. Transport 边界
 
-Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope。Relay 与 Tailscale Direct 都只是 Transport，不负责业务授权、scope 判定、Agent、Provider 或消息事实。
+Tailscale Direct 配对使用 `mira_device_*` 设备凭据和 scope；官方 Cloud Relay 使用独立的云身份、Client ticket 与 Host Grant。两者不互为备用通道。
 
 自 MOB-092（2026-11-23）起，**扫码 / 粘贴 / `mira://pair` 深链这一新设备配对入口只面向 Tailscale Direct**：
 
@@ -20,7 +20,7 @@ Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope�
 
 Cloud Relay 不依赖扫码。它通过 Mira Cloud 账号、Host 授权和既有 Cloud Relay 合同进入，由 [MOB-080 #274](https://github.com/uichat-mira/mira-mobile/issues/274) 等合同负责；本入口不得以 Relay 代替 Direct 完成配对。
 
-本卡不改变**已经配对**的旧设备凭据、Cloud Relay、远程会话或 Agent path；这些继续按各自合同工作。活动 Tailscale / Cloud Relay 互斥与来源路由属于 A2，不在本文新入口语义内。
+2026-11-24 维护者裁决：旧配对的 Relay 兼容彻底退役。保留既有 Direct 身份，移除旧 Relay endpoint/token 与自动回退；Cloud Relay 和业务会话合同保持独立。活动 Tailscale / Cloud Relay 互斥与来源路由属于 A2，不在本文新入口语义内。
 
 ## 2. 新设备首次配对：Tailscale Direct-only
 
@@ -45,7 +45,7 @@ Relay-only / 缺少 host：
 
 `claim` 是一次性副作用。claim 发出后，即使响应超时、断网或状态不确定，也不得跨 Transport 自动重发，也不得改走 Relay；用户应回到 Desktop 确认是否已收到申请。
 
-历史实现曾使用 Relay-first、Direct fallback。该行为仅保留给本卡之前已经形成的历史实现/已配对兼容路径，不再是新扫码入口的执行策略。
+历史 Relay-first / Direct fallback 已退役，不再有执行入口。
 
 ## 3. claim 通道字段
 
@@ -59,17 +59,9 @@ Mobile 在 `/remote/pairing/claim` body 中发送：
 
 ## 4. 配对后日常请求
 
-本卡不改变已经保存的 paired credential 的既有传输策略，也不静默撤销历史 Relay 可达性。既有实现继续使用 Direct-first：
+所有 paired Remote Host 请求（JSON、SSE、角色、工作区、工具及恢复连接）只走保存的 Direct Host。Direct 不可达即明确报错；不会改走 Relay。一次性请求结果不确定时仍不得自动重放。
 
-```text
-Direct 可用 -> Direct
-Direct 网络/传输失败 -> Relay（仅当该凭据仍保存 Relay endpoint）
-401/403、业务 HTTP 错误、协议解析错误 -> 不跨 Transport fallback
-```
-
-新扫码配对成功保存的凭据只带 Tailscale Direct Host，不包含二维码中的历史 Relay token，因此不会因扫码自动获得 Relay 回退。Cloud Relay 经 Cloud 身份/Host 授权路径进入，不由本入口创建。
-
-Transport 切换不能删除、重建或改变已经批准的 `mira_device_*` 身份。
+升级时安全存储将旧记录规范化：有 Direct Host 的记录保留 device credential、device ID、scope 和保存时间，擦除旧 Relay endpoint/token；仅 Relay 的记录删除本地配对凭据，用户须重新完成 Tailscale 配对。不会删除 Local Provider 或 Cloud Session，不调用 Cloud Relay，也不撤销服务端的 Host 授权。
 
 ## 5. Mobile 界面流程与文案
 
@@ -154,7 +146,7 @@ Mobile 判断某项远程能力可用时，必须同时满足：
 
 ### 7.2 Canonical Chat 追加合同（DSK-013 / MOB-082）
 
-此合同适用于 **Cloud Auth + Relay** 与 **paired Remote Host（Direct / Relay）**，
+此合同适用于 **Cloud Auth + Relay** 与 **paired Remote Host（Direct）**，
 只统一业务接口，不统一身份凭据或 Transport。
 
 - 远程会话发送走 `POST /proxy/chat/default`，必须只携带**本轮一条 User 消息**、
@@ -183,8 +175,7 @@ MOB-024 增加当前能力：
   this as a transport keepalive and app lifecycle defect, not a pairing defect.
 - Desktop keeps its host WebSocket alive with native WebSocket control pings;
   the Relay V1 business frame contract is unchanged.
-- Mobile must drop stale Relay sockets when the app returns to the foreground.
-  The next request is then allowed to create a fresh Relay connection.
+- Historical paired Relay resume refresh is retired; Cloud Relay owns its own socket lifecycle.
 - Background JavaScript timers are not a reliable keepalive mechanism. Active
   requests and streams fail fast on close and are not silently replayed.
 
@@ -212,7 +203,7 @@ Workspace create / update / delete
 - Relay-only / 缺少 `host` / 无效 Host：准确报错且不产生 claim 副作用；
 - Direct 不可达：无 claim；claim 已发出但响应不确定：保持 uncertain，不向 Relay 重发；
 - 新配对成功保存的凭据带 Direct Host、不带二维码 Relay token，设备身份/manifest 校验继续执行；
-- 旧已配对凭据仍按既有 Direct-first / Relay fallback 工作，不因本卡被删凭据或强改传输；
+- 旧混合凭据清除 Relay 字段并保留 Direct 身份；仅 Relay 凭据本地清除、需重新配对；Direct 断线不回退；
 - Cloud Relay、远程会话与 Agent path 不因本卡被静默撤权或全局禁止；
 - capability discovery 以实时 manifest + device scope 为准，不以旧固定 route 表为准；
 - 已持有 `messages:write` 且 Host manifest 声明 `POST /threads` 的现有设备，无需重新配对即可创建 canonical Thread；

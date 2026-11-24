@@ -26,7 +26,6 @@ const createHarness = (
 ) => {
   let connectionStatus: ConnectionStatus = 'connected';
   const setLocalExecutionSuspended = jest.fn();
-  const refreshRelayConnection = jest.fn();
   const setConnectionStatus = jest.fn((status: ConnectionStatus) => {
     connectionStatus = status;
   });
@@ -34,7 +33,6 @@ const createHarness = (
 
   const controller = createAppLifecycleController('active', {
     setLocalExecutionSuspended,
-    refreshRelayConnection,
     getConnectionStatus: () => connectionStatus,
     setConnectionStatus,
     restoreConnection: restore,
@@ -43,7 +41,6 @@ const createHarness = (
   return {
     controller,
     setLocalExecutionSuspended,
-    refreshRelayConnection,
     setConnectionStatus,
     restore,
     getConnectionStatus: () => connectionStatus,
@@ -59,7 +56,6 @@ describe('app lifecycle owner', () => {
 
     harness.controller.handleStateChange('active');
     expect(harness.setLocalExecutionSuspended).toHaveBeenLastCalledWith(false);
-    expect(harness.refreshRelayConnection).toHaveBeenCalledTimes(1);
     expect(harness.setConnectionStatus).toHaveBeenCalledWith('reconnecting');
 
     await flush();

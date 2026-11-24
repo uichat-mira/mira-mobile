@@ -10,7 +10,6 @@ import type { RootStackParamList } from '../types/navigation';
 
 type TransportSpies = {
   direct: jest.Mock;
-  relay: jest.Mock;
 };
 
 const mockRoute: { params: RootStackParamList['HostConfig'] } = {
@@ -129,17 +128,14 @@ jest.mock('../api/remoteMiraHost', () => {
     '../security/deviceCredentialStore',
   ) as typeof import('../security/deviceCredentialStore');
   const direct = jest.fn();
-  const relay = jest.fn();
   const client = new actual.RemoteMiraHostClient(
     new MemoryDeviceCredentialStore(),
     direct as never,
-    undefined,
-    relay as never,
   );
   return {
     ...actual,
     remoteMiraHostClient: client,
-    __pairingTransportSpies: { direct, relay },
+    __pairingTransportSpies: { direct },
   };
 });
 
@@ -238,20 +234,12 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     jest.clearAllMocks();
     mockRoute.params = undefined;
     spies.direct.mockImplementation(successfulDirectTransport);
-    spies.relay.mockImplementation(async () => {
-      throw new RemoteHostError(
-        'RELAY_NETWORK_ERROR',
-        'Relay must not be used for new pairing',
-      );
-    });
   });
 
   it('claims a deep link with historical Relay fields only over Direct', async () => {
     mockRoute.params = {
+      ...relayOnlyParams,
       ...directParams,
-      relay: relayOnlyParams.relay,
-      relayId: relayOnlyParams.relayId,
-      relayToken: relayOnlyParams.relayToken,
     };
     const tree = await renderScreen();
 
@@ -277,7 +265,6 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     expect(spies.direct.mock.calls[2][0].body).toMatchObject({
       transport: 'direct',
     });
-    expect(spies.relay).not.toHaveBeenCalled();
 
     await act(async () => {
       tree.unmount();
@@ -308,7 +295,6 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
 
     expect(renderedText(tree)).toContain('仅支持 Tailscale 直连');
     expect(spies.direct).not.toHaveBeenCalled();
-    expect(spies.relay).not.toHaveBeenCalled();
 
     await act(async () => {
       tree.unmount();
@@ -337,7 +323,6 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     expect(spies.direct.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
     ]);
-    expect(spies.relay).not.toHaveBeenCalled();
 
     await act(async () => {
       tree.unmount();
@@ -372,7 +357,6 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
       '/app/meta',
       '/remote/pairing/claim',
     ]);
-    expect(spies.relay).not.toHaveBeenCalled();
 
     await act(async () => {
       tree.unmount();
@@ -388,7 +372,6 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
 
     expect(renderedText(tree)).toContain('配对链接中的 Mira Host 地址无效');
     expect(spies.direct).not.toHaveBeenCalled();
-    expect(spies.relay).not.toHaveBeenCalled();
 
     await act(async () => {
       tree.unmount();
