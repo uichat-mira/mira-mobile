@@ -16,24 +16,55 @@ Remote Host sessions continue to use their own Host-authoritative runtime:
 Pi Core is not a Mobile copy of the Desktop Harness. Pi does not receive
 Host tool credentials, Cloud Auth secrets or Local Provider keys.
 
-## Execution budget
+## Execution strength
 
-The sole user-configurable execution budget lives in
-src/settings/agentExecutionBudget.ts; it is persisted with the existing
-src/settings/generalSettings.ts document under Settings → 通用 → 常规.
+The sole Local Provider execution-strength table lives in
+`src/settings/agentExecutionStrength.ts`. General settings only select a
+strength; numeric rounds/minutes stay internal and are not user-editable.
 
-- Default: **16 tool rounds**, **15 minutes** overall.
-- Configurable: 1–64 tool rounds, 1–120 minutes.
-- Stored in the existing General settings key (mira.mobile.general.v1).
-  Pre-existing records without an agentBudget field use the new defaults;
-  malformed values are normalized to bounded safe values.
-- LocalAgentRunController.beginRun reloads budget each new run and passes it
-  to Pi. A currently running turn retains its start-of-run budget.
+| Strength | Tool-round cap | Time cap | Role |
+| --- | --- | --- | --- |
+| 纯对话 (plain) | 0 | ordinary model request timeout | no tool schema |
+| 轻量 (light) | 8 | 5 min | short tasks |
+| 标准 (standard) | 24 | 15 min | default |
+| 增强 (enhanced) | 64 | 40 min | more tool steps |
+| 深度 (deep) | 192 | 120 min | long chains |
+
+- A new thread inherits the global strength. A thread may persist an override
+  or reset to inheritance through `LocalSessionRepository` /
+  `LocalProviderRuntime` (`getAgentStrengthOverride`, `setAgentStrength`,
+  `resetAgentStrength`, `getEffectiveAgentStrength`).
+- The effective strength is snapshotted once at run start. A global change
+  affects only inherited threads' later runs; a running turn is unchanged.
+- Plain chat calls the ordinary model path without tools. Every other strength
+  uses the same Pi Core loop; there is no second active switch and no hidden
+  64-round ceiling.
+- Pi receives trusted per-request facts: strength, remaining tool rounds and
+  remaining time. These facts are separate from model reasoning effort; the
+  model cannot raise the budget.
+- A model turn with multiple tools consumes one tool round. Statistics must keep
+  tool rounds and tool-call counts distinct and may reuse existing run events.
+- When the round cap is reached with time remaining, Pi makes one final
+  tool-less model request to summarize completed work and remaining items. A
+  final request that still asks for tools, or a hard timeout, is not reported
+  as a completed turn.
 - This is **not** a cost, Token, or thinking budget. The overall timeout
-  currently includes user-approval waiting time.
+  includes user-approval waiting time.
 
-These bounds are execution guards, not measurements of actual model spend.
-There is no independent or hidden second budget in Pi.
+### Migration from the removed free-form budget
+
+- Existing thread records with `agentEnabled: false` migrate to `plain`;
+  `agentEnabled: true` migrates to inheritance on the non-plain default.
+- Legacy General `agentBudget` values are bounded by the old 1–64 / 1–120
+  contract and mapped deterministically to the closest non-plain strength
+  (relative round + time distance; ties prefer the lower strength). Missing,
+  default or malformed history maps to `standard`.
+- New writes persist `agentExecutionStrength` and thread `agentStrength`; the
+  legacy `agentBudget` / `agentEnabled` fields are read only for migration.
+
+These bounds are execution guards, not measurements of actual model spend, and
+the numbers need calibration against real tasks. There is no independent or
+hidden second budget in Pi.
 
 ## Tool and provider boundaries
 
@@ -240,7 +271,8 @@ Remaining true-device and cross-service acceptance includes:
 4. Who-You separate consent for search and body; mail results may drive
    follow-up authorized calls without embedded instructions granting access.
 5. Reject, timeout, approval uncertainty, app/background cancellation.
-6. Update budget in General and verify next-turn enforcement.
+6. Change the default execution strength in General and verify the next turn of
+   an inherited thread uses it, while an overridden thread keeps its strength.
 7. `web(url)`: a model-constructed real search-engine URL and follow-up reads,
    a weather task without a supplied URL, 30 consecutive reads with Android/iOS
    memory trend and cancellation checks, and public-address/redirect rejection

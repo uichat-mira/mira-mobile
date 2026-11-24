@@ -38,7 +38,7 @@ export type RuntimeEvent =
     }
   | {
       type: 'run-paused';
-      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected';
+      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected' | 'budget-exhausted';
     }
   /**
    * Non-error, user-visible signal that does not stop the turn. Emitted, for
@@ -73,11 +73,21 @@ export interface ConversationRuntime {
   sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>>;
   cancelActiveRun(): void;
-  getAgentEnabled?(sessionId: string): Promise<boolean>;
-  setAgentEnabled?(sessionId: string, enabled: boolean): Promise<void>;
+  /** Local Provider thread-level execution-strength APIs. */
+  getAgentStrengthOverride?(
+    sessionId: string,
+  ): Promise<import('../settings/agentExecutionStrength').AgentExecutionStrengthId | null>;
+  setAgentStrength?(
+    sessionId: string,
+    strength: import('../settings/agentExecutionStrength').AgentExecutionStrengthId,
+  ): Promise<void>;
+  resetAgentStrength?(sessionId: string): Promise<void>;
+  getEffectiveAgentStrength?(
+    sessionId: string,
+  ): Promise<import('../settings/agentExecutionStrength').AgentExecutionStrengthId>;
   resolveToolApproval?(
     invocationId: string,
     decision: ToolApprovalDecision,

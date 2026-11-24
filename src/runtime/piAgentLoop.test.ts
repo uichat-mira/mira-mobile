@@ -395,10 +395,11 @@ describe('PiCoreAgentLoop', () => {
         yield { type: 'finish' as const, reason: 'stop' };
       })()),
     };
-    const controller = new LocalAgentRunController(gateway, async () => ({ maxToolRounds: 16, maxDurationMinutes: 15 }));
+    const controller = new LocalAgentRunController(gateway);
 
     const run = await controller.beginRun({
       executor,
+      strength: 'standard',
       initialMessages: [{ role: 'user', content: 'hello' }],
       shouldPause: () => false,
     });
@@ -412,72 +413,4 @@ describe('PiCoreAgentLoop', () => {
     expect(executor.streamMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('reloads the user execution budget for every new run', async () => {
-    const callTool = jest.fn(async () => ({ content: 'done' }));
-    const gateway: ToolGatewayClient = {
-      listTools: async () => [{ name: 'read_file', parameters: { type: 'object' } }],
-      callTool,
-    };
-    const loadBudget = jest.fn()
-      .mockResolvedValueOnce({ maxToolRounds: 1, maxDurationMinutes: 15 })
-      .mockResolvedValueOnce({ maxToolRounds: 2, maxDurationMinutes: 15 });
-    const executor = {
-      client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
-      streamMessages: jest.fn(async () => (async function* () {
-        yield {
-          type: 'tool-call' as const, callId: 'call-budget',
-          name: 'read_file', arguments: '{}',
-        };
-        yield { type: 'finish' as const, reason: 'tool_calls' };
-      })()),
-    };
-    const controller = new LocalAgentRunController(gateway, loadBudget);
-    const input = {
-      executor,
-      initialMessages: [{ role: 'user' as const, content: 'read something' }],
-    };
-    const first = await controller.beginRun(input);
-    const firstEvents = await collect(first.stream);
-    controller.finishRun(first);
-    expect(firstEvents).toContainEqual({
-      type: 'error', message: 'Tool round limit reached (1)',
-    });
-    expect(callTool).toHaveBeenCalledTimes(1);
-
-    const second = await controller.beginRun(input);
-    const secondEvents = await collect(second.stream);
-    controller.finishRun(second);
-    expect(secondEvents).toContainEqual({
-      type: 'error', message: 'Tool round limit reached (2)',
-    });
-    expect(callTool).toHaveBeenCalledTimes(3);
-    expect(loadBudget).toHaveBeenCalledTimes(2);
-  });
-
-  it('fails closed with an actionable error when the saved execution budget cannot be read', async () => {
-    const listTools = jest.fn(async () => []);
-    const gateway: ToolGatewayClient = {
-      listTools,
-      callTool: jest.fn(async () => ({ content: 'must-not-run' })),
-    };
-    const executor = {
-      client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
-      streamMessages: jest.fn(async () => (async function* () {
-        yield { type: 'text-delta' as const, delta: 'must-not-run' };
-      })()),
-    };
-    const controller = new LocalAgentRunController(gateway, async () => {
-      throw new Error('native storage unavailable');
-    });
-    await expect(controller.beginRun({
-      executor,
-      initialMessages: [{ role: 'user', content: 'hello' }],
-    })).rejects.toMatchObject({
-      code: 'LOCAL_AGENT_BUDGET_UNAVAILABLE',
-      message: expect.stringContaining('通用'),
-    });
-    expect(listTools).not.toHaveBeenCalled();
-    expect(executor.streamMessages).not.toHaveBeenCalled();
-    expect(controller.active).toBe(false);
-  });
 });

@@ -30,9 +30,38 @@ jest.mock('@react-native-community/slider', () => {
 jest.mock('../settings/SettingsPageHeader', () => ({
   SettingsPageHeader: () => null,
 }));
-jest.mock('../settings/SettingsChoiceModal', () => ({
-  SettingsChoiceModal: () => null,
-}));
+jest.mock('../settings/SettingsChoiceModal', () => {
+  const ReactActual = require('react');
+  const { Pressable, Text } = require('react-native');
+  return {
+    SettingsChoiceModal: ({
+      visible,
+      options,
+      onChange,
+    }: {
+      visible: boolean;
+      options: Array<{ value: string; label: string }>;
+      onChange: (value: string) => void;
+    }) =>
+      visible
+        ? ReactActual.createElement(
+            ReactActual.Fragment,
+            null,
+            options.map((option) =>
+              ReactActual.createElement(
+                Pressable,
+                {
+                  key: option.value,
+                  accessibilityLabel: `choice-${option.value}`,
+                  onPress: () => onChange(option.value),
+                },
+                ReactActual.createElement(Text, null, option.label),
+              ),
+            ),
+          )
+        : null,
+  };
+});
 jest.mock('../haptics/haptics', () => ({
   startContinuousVibration: jest.fn(),
   stopContinuousVibration: jest.fn(),
@@ -58,15 +87,8 @@ jest.mock('../settings/generalSettings', () => {
 });
 
 const saveMock = jest.mocked(saveGeneralSettings);
-const findSlider = (tree: ReactTestRenderer, name: string) => {
-  const matches = tree.root.findAll((node) =>
-    node.props.accessibilityLabel === name &&
-    typeof node.props.onSlidingComplete === 'function');
-  expect(matches.length).toBeGreaterThan(0);
-  return matches[0];
-};
 
-it('keeps both budget values when sliders finish within one render', async () => {
+it('persists the selected execution strength without free-form budget controls', async () => {
   saveMock.mockClear();
   let tree!: ReactTestRenderer;
   await act(async () => {
@@ -74,19 +96,45 @@ it('keeps both budget values when sliders finish within one render', async () =>
     await Promise.resolve();
     await Promise.resolve();
   });
-  const rounds = findSlider(tree, '智能体工具轮数上限');
-  const minutes = findSlider(tree, '智能体最长运行分钟数');
+
+  // The removed sliders and their numeric labels must not exist.
+  expect(tree.root.findAll((node) =>
+    node.props.accessibilityLabel === '智能体工具轮数上限' ||
+    node.props.accessibilityLabel === '智能体最长运行分钟数',
+  )).toHaveLength(0);
+
+  const strengthRow = tree.root.find((node) =>
+    node.props.accessibilityLabel === '默认执行强度' &&
+    typeof node.props.onPress === 'function',
+  );
   await act(async () => {
-    rounds.props.onValueChange(24);
-    rounds.props.onSlidingComplete(24);
-    minutes.props.onValueChange(37);
-    minutes.props.onSlidingComplete(37);
+    strengthRow.props.onPress();
+    await Promise.resolve();
+  });
+
+  for (const value of ['plain', 'light', 'standard', 'enhanced', 'deep']) {
+    expect(tree.root.findAll((node) =>
+      node.props.accessibilityLabel === `choice-${value}`,
+    ).length).toBeGreaterThan(0);
+  }
+
+  const deep = tree.root.find((node) =>
+    node.props.accessibilityLabel === 'choice-deep' &&
+    typeof node.props.onPress === 'function',
+  );
+  await act(async () => {
+    deep.props.onPress();
     await Promise.resolve();
     await Promise.resolve();
   });
+
   expect(saveMock).toHaveBeenLastCalledWith(expect.objectContaining({
-    agentBudget: { maxToolRounds: 24, maxDurationMinutes: 37 },
+    agentExecutionStrength: 'deep',
   }));
+  expect(saveMock).toHaveBeenLastCalledWith(
+    expect.not.objectContaining({ agentBudget: expect.anything() }),
+  );
+
   await act(async () => {
     tree.unmount();
   });

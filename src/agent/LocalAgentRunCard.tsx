@@ -36,7 +36,8 @@ export type LocalAgentPauseReason =
   | 'app-suspended'
   | 'timeout'
   | 'cancelled'
-  | 'approval-rejected';
+  | 'approval-rejected'
+  | 'budget-exhausted';
 
 export type LocalAgentNoticeCode =
   | 'tool-channel-unavailable'
@@ -109,6 +110,7 @@ const pauseLabel: Record<LocalAgentPauseReason, string> = {
   timeout: '本轮运行已超时，可重新发送。',
   cancelled: '你已停止本轮运行。',
   'approval-rejected': '该工具调用已拒绝，本轮已停止。',
+  'budget-exhausted': '本轮执行强度已用尽，保留已有结果。',
 };
 
 const noticeLabel: Record<LocalAgentNoticeCode, string> = {

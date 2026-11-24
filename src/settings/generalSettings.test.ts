@@ -29,7 +29,7 @@ describe('generalSettings', () => {
       textScale: 'large',
       hapticsEnabled: false,
       hapticsStrength: 42,
-      agentBudget: { maxToolRounds: 24, maxDurationMinutes: 30 },
+      agentExecutionStrength: 'enhanced',
     } as const;
 
     await saveGeneralSettings(settings, store);
@@ -74,7 +74,7 @@ describe('generalSettings', () => {
     await expect(loadGeneralSettings(store)).resolves.toMatchObject({ hapticsStrength: 0 });
   });
 
-  it('migrates old general settings with the default Agent budget', async () => {
+  it('migrates old general settings without an Agent budget to standard strength', async () => {
     const store = makeStore();
     await store.set('mira.mobile.general.v1', JSON.stringify({
       defaultSessionSource: 'ask',
@@ -85,26 +85,43 @@ describe('generalSettings', () => {
       hapticsStrength: 60,
     }));
     const loaded = await loadGeneralSettings(store);
-    expect(loaded.agentBudget).toEqual({ maxToolRounds: 16, maxDurationMinutes: 15 });
+    expect(loaded.agentExecutionStrength).toBe('standard');
   });
 
-  it('normalizes persisted Agent budget to safe numeric bounds', async () => {
+  it('deterministically migrates the removed free-form Agent budget', async () => {
+    const store = makeStore();
+    const migrate = async (agentBudget: unknown) => {
+      await store.set('mira.mobile.general.v1', JSON.stringify({
+        ...DEFAULT_GENERAL_SETTINGS,
+        agentExecutionStrength: undefined,
+        agentBudget,
+      }));
+      return (await loadGeneralSettings(store)).agentExecutionStrength;
+    };
+
+    await expect(migrate({ maxToolRounds: 16, maxDurationMinutes: 15 }))
+      .resolves.toBe('standard');
+    await expect(migrate({ maxToolRounds: 8, maxDurationMinutes: 5 }))
+      .resolves.toBe('light');
+    // Old bounds clamp this to 64 rounds / 1 minute, closest to enhanced.
+    await expect(migrate({ maxToolRounds: 999, maxDurationMinutes: -2 }))
+      .resolves.toBe('enhanced');
+    await expect(migrate({ maxToolRounds: 'abc', maxDurationMinutes: null }))
+      .resolves.toBe('standard');
+  });
+
+  it('prefers a valid execution-strength field over a legacy budget', async () => {
     const store = makeStore();
     await store.set('mira.mobile.general.v1', JSON.stringify({
       ...DEFAULT_GENERAL_SETTINGS,
-      agentBudget: { maxToolRounds: 999, maxDurationMinutes: -2 },
+      agentExecutionStrength: 'deep',
+      agentBudget: { maxToolRounds: 8, maxDurationMinutes: 5 },
     }));
-    expect((await loadGeneralSettings(store)).agentBudget).toEqual({
-      maxToolRounds: 64, maxDurationMinutes: 1,
-    });
-    await store.set('mira.mobile.general.v1', JSON.stringify({
-      ...DEFAULT_GENERAL_SETTINGS,
-      agentBudget: { maxToolRounds: 'abc', maxDurationMinutes: null },
-    }));
-    expect((await loadGeneralSettings(store)).agentBudget).toEqual({
-      maxToolRounds: 16, maxDurationMinutes: 15,
+    await expect(loadGeneralSettings(store)).resolves.toMatchObject({
+      agentExecutionStrength: 'deep',
     });
   });
+
 
   it('falls back to defaults on malformed JSON', async () => {
     const store = makeStore();

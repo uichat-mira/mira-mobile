@@ -47,13 +47,19 @@ import {
   validateMailManifests,
   validateToolBatch,
 } from '../tools/agentToolPolicies';
-import { DEFAULT_AGENT_EXECUTION_BUDGET } from '../settings/agentExecutionBudget';
+import {
+  DEFAULT_AGENT_EXECUTION_STRENGTH,
+  getAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 /**
  * Pi Core is the sole Local Agent orchestration engine. Provider IO,
  * Tool Gateway authority and the conversation transcript stay Mira-owned.
  */
 export interface PiAgentLoopOptions {
+  /** Effective strength used for the run's central limits and model facts. */
+  strength?: AgentExecutionStrengthId;
   maxToolRounds?: number;
   overallTimeoutMs?: number;
   maxToolResultBytes?: number;
@@ -69,6 +75,54 @@ export type AgentModelCall = (
   messages: readonly OpenAiMessage[],
   tools: readonly OpenAiTool[],
 ) => Promise<AsyncIterable<RuntimeEvent>>;
+
+/**
+ * Trusted, per-request execution facts. This is context only: it never grants
+ * tools, raises a limit or acts as a planner/classifier. The numeric values come
+ * from the same closure that enforces them.
+ */
+const budgetFactsMessage = (input: {
+  strength: AgentExecutionStrengthId;
+  remainingToolRounds: number;
+  remainingTimeMs: number;
+}): OpenAiMessage => {
+  const remainingSeconds = Number.isFinite(input.remainingTimeMs)
+    ? Math.max(0, Math.ceil(input.remainingTimeMs / 1_000))
+    : null;
+  return {
+    role: 'system',
+    content: [
+      '[Trusted execution budget — Mira Mobile]',
+      `strength: ${input.strength}`,
+      `remaining_tool_rounds: ${Math.max(0, input.remainingToolRounds)}`,
+      `remaining_time_seconds: ${
+        remainingSeconds === null ? 'unbounded' : remainingSeconds
+      }`,
+      'This execution budget is separate from model reasoning effort. It bounds',
+      'tool rounds and elapsed run time; it is an upper limit, not a target.',
+      'You cannot change or extend it. One model turn may contain multiple tool',
+      'calls and still consumes one tool round. When no tool rounds remain, tools',
+      'are not provided: summarize the work already completed and what remains',
+      'without claiming unfinished work succeeded. If time runs out, the run is',
+      'paused rather than reported as completed.',
+    ].join('\n'),
+  };
+};
+
+const withBudgetFacts = (
+  messages: readonly OpenAiMessage[],
+  facts: Parameters<typeof budgetFactsMessage>[0],
+): OpenAiMessage[] => {
+  // Keep the existing leading system context (service/personalization) first,
+  // then state the trusted budget before the user turn.
+  let insertAt = 0;
+  while (messages[insertAt]?.role === 'system') insertAt += 1;
+  return [
+    ...messages.slice(0, insertAt),
+    budgetFactsMessage(facts),
+    ...messages.slice(insertAt),
+  ];
+};
 
 const createUsage = (): Usage => ({
   input: 0,
@@ -358,6 +412,8 @@ const toStopReason = (reason: string | null | undefined): {
 const createPiStreamFn = (
   modelCall: AgentModelCall,
   tools: () => readonly OpenAiTool[],
+  prepareMessages: (messages: readonly OpenAiMessage[]) => OpenAiMessage[],
+  isFinalSummary: () => boolean,
   preflightCalls: (calls: readonly ToolCall[]) => void,
   onProviderError: (error: unknown) => void,
 ): StreamFn =>
@@ -380,8 +436,10 @@ const createPiStreamFn = (
       let finishReason: string | null | undefined;
       try {
         if (signal?.aborted) throw abortError();
+        const finalSummary = isFinalSummary();
+        let summaryRequestedTools = false;
         const providerStream = await modelCall(
-          toOpenAiMessages(context.messages),
+          prepareMessages(toOpenAiMessages(context.messages)),
           tools(),
         );
         stream.push({ type: 'start', partial: output });
@@ -411,6 +469,10 @@ const createPiStreamFn = (
             continue;
           }
           if (event.type === 'tool-call') {
+            if (finalSummary) {
+              summaryRequestedTools = true;
+              continue;
+            }
             let parsed: JsonObject = {};
             let argumentsError: string | undefined;
             try {
@@ -446,7 +508,12 @@ const createPiStreamFn = (
         }
 
         if (signal?.aborted) throw abortError();
-        const { stopReason, doneReason } = toStopReason(finishReason);
+        // A tool-less final round cannot request another tool or another
+        // summary. Keep partial text, but mark an incomplete response.
+        const { stopReason, doneReason } = toStopReason(
+          finalSummary && (summaryRequestedTools || finishReason === 'tool_calls' || finishReason == null)
+            ? 'length' : finishReason,
+        );
         output.stopReason = stopReason;
         // The Local Agent only acts on tool calls when the provider explicitly
         // finished with tool_calls. Do not let a malformed round execute tools
@@ -553,9 +620,17 @@ export class PiCoreAgentLoop {
       validateToolServiceCatalog(services, manifests);
     }
     const queue = new RuntimeEventQueue();
-    const maxToolRounds = options.maxToolRounds ?? DEFAULT_AGENT_EXECUTION_BUDGET.maxToolRounds;
+    const strengthId = options.strength ?? DEFAULT_AGENT_EXECUTION_STRENGTH;
+    const strength = getAgentExecutionStrength(strengthId);
+    const maxToolRounds = options.maxToolRounds ?? strength.maxToolRounds;
     const maxToolResultBytes = options.maxToolResultBytes;
-    const deadline = Date.now() + (options.overallTimeoutMs ?? DEFAULT_AGENT_EXECUTION_BUDGET.maxDurationMinutes * 60_000);
+    const timeoutMs = options.overallTimeoutMs ??
+      (strength.maxDurationMinutes === null
+        ? undefined
+        : strength.maxDurationMinutes * 60_000);
+    const deadline = timeoutMs === undefined
+      ? Number.POSITIVE_INFINITY
+      : Date.now() + timeoutMs;
     const shouldPause = options.shouldPause ?? (() => false);
     const externalSignal = options.signal;
     const gateway = this.gateway;
@@ -636,10 +711,12 @@ export class PiCoreAgentLoop {
         abortRun();
       };
       externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        abortRun();
-      }, Math.max(0, deadline - Date.now()));
+      const timeout = Number.isFinite(deadline)
+        ? setTimeout(() => {
+            timedOut = true;
+            abortRun();
+          }, Math.max(0, deadline - Date.now()))
+        : null;
 
       const requestGatewayTool = async (
         manifest: ToolManifest,
@@ -870,7 +947,15 @@ export class PiCoreAgentLoop {
       };
       const streamFn = createPiStreamFn(
         modelCall,
-        () => manifests.map(toTool),
+        // At the end of the allowed rounds, the next model request carries no
+        // tool schema. That request is the single final summarization round.
+        () => toolRounds >= maxToolRounds ? [] : manifests.map(toTool),
+        (messages) => withBudgetFacts(messages, {
+          strength: strength.id,
+          remainingToolRounds: maxToolRounds - toolRounds,
+          remainingTimeMs: deadline - Date.now(),
+        }),
+        () => toolRounds >= maxToolRounds,
         preflightCalls,
         recordError,
       );
@@ -948,6 +1033,13 @@ export class PiCoreAgentLoop {
             if (!fatalError) recordError(new Error(
               message.errorMessage ?? 'Pi Agent request failed',
             ));
+          } else if (toolRounds >= maxToolRounds && message.stopReason === 'length') {
+            // The one tool-less final request did not complete. Preserve text
+            // without presenting a successful run or initiating another request.
+            terminalEmitted = true;
+            if (!timedOut && !cancelled) {
+              queue.push({ type: 'run-paused', reason: 'budget-exhausted' });
+            }
           } else {
             queue.push({
               type: 'finish',
@@ -1031,7 +1123,7 @@ export class PiCoreAgentLoop {
           yield next.value;
         }
       } finally {
-        clearTimeout(timeout);
+        if (timeout !== null) clearTimeout(timeout);
         externalSignal?.removeEventListener('abort', onExternalAbort);
         unsubscribe();
         agent?.abort();
@@ -1064,11 +1156,13 @@ export class PiCoreAgentLoop {
         return;
       }
       if (limitReached) {
-        yield {
-          type: 'error',
-          message: `Tool round limit reached (${maxToolRounds})`,
-        };
-        return;
+        if (!Number.isFinite(deadline) || Date.now() >= deadline) {
+          yield { type: 'run-paused', reason: 'timeout' };
+          return;
+        }
+        throw new Error(
+          'Local Agent reached its tool-round limit without a final summary',
+        );
       }
       if (fatalError) {
         // Reject failed Provider/tool runs so partial answers are never

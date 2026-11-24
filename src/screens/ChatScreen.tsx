@@ -33,6 +33,7 @@ import {
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { ChatMessage } from '../types';
+import type { AgentExecutionStrengthId } from '../settings/agentExecutionStrength';
 import type { ConversationMatch } from '../chat/conversationTools';
 import {
   ConversationOrchestrator,
@@ -235,7 +236,8 @@ export function ChatScreen() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
-  const [agentEnabled, setAgentEnabled] = useState(false);
+  const [agentStrength, setAgentStrength] =
+    useState<AgentExecutionStrengthId>('plain');
   const [cloudCanSend, setCloudCanSend] = useState(false);
   const [agentModeLoading, setAgentModeLoading] = useState(true);
   const [agentPhase, setAgentPhase] = useState<LocalAgentRunPhase>('idle');
@@ -349,8 +351,8 @@ export function ChatScreen() {
     setAgentError(null);
     setAgentNotice(null);
 
-    if (!supportsLocalAgent || !runtime.getAgentEnabled) {
-      setAgentEnabled(false);
+    if (!supportsLocalAgent || !runtime.getEffectiveAgentStrength) {
+      setAgentStrength('plain');
       setAgentModeLoading(false);
       return () => {
         active = false;
@@ -359,12 +361,14 @@ export function ChatScreen() {
 
     setAgentModeLoading(true);
     void runtime
-      .getAgentEnabled(sessionId)
-      .then(enabled => {
-        if (active) setAgentEnabled(enabled);
+      .getEffectiveAgentStrength(sessionId)
+      .then(strength => {
+        if (active) setAgentStrength(strength);
       })
       .catch(() => {
-        if (active) setAgentEnabled(false);
+        // A failed read must not silently enable tools; runtime sends still
+        // fail closed with an actionable strength-unavailable error.
+        if (active) setAgentStrength('plain');
       })
       .finally(() => {
         if (active) setAgentModeLoading(false);
@@ -645,21 +649,25 @@ export function ChatScreen() {
     [],
   );
 
+  const agentEnabled = agentStrength !== 'plain';
+
   const toggleAgentMode = useCallback(async () => {
     if (
       !supportsLocalAgent ||
-      !runtime.setAgentEnabled ||
+      !runtime.setAgentStrength ||
       agentModeLoading ||
       isLoading
     ) {
       return;
     }
-    const next = !agentEnabled;
+    // Transitional input-row entry only. It writes the same thread strength as
+    // the future strength card; there is no independent Agent boolean.
+    const next: AgentExecutionStrengthId = agentEnabled ? 'plain' : 'standard';
     setAgentModeLoading(true);
     try {
-      await runtime.setAgentEnabled(sessionId, next);
-      setAgentEnabled(next);
-      if (!next) {
+      await runtime.setAgentStrength(sessionId, next);
+      setAgentStrength(next);
+      if (next === 'plain') {
         setAgentActivities([]);
         setPendingAgentApproval(null);
         setApprovalAction(null);
@@ -669,7 +677,7 @@ export function ChatScreen() {
         setAgentNotice(null);
       }
     } catch {
-      Alert.alert('Agent 模式', '暂时无法保存 Agent 模式状态，请稍后重试。');
+      Alert.alert('Agent 模式', '暂时无法保存执行强度，请稍后重试。');
     } finally {
       setAgentModeLoading(false);
     }
@@ -808,7 +816,6 @@ export function ChatScreen() {
         (input) =>
           runtime.sendMessage(sessionId, input.content, {
             messageId: input.messageId,
-            agentEnabled: input.agentEnabled,
           }),
       ),
     [loadMessages, refreshSessionTitle, runtime, sessionId],
@@ -855,7 +862,18 @@ export function ChatScreen() {
         return;
       }
 
-      const useLocalAgent = supportsLocalAgent && agentEnabled;
+      let effectiveStrength: AgentExecutionStrengthId = 'plain';
+      if (supportsLocalAgent && runtime.getEffectiveAgentStrength) {
+        try {
+          effectiveStrength = await runtime.getEffectiveAgentStrength(sessionId);
+          setAgentStrength(effectiveStrength);
+        } catch {
+          // Let the runtime send surface the fail-closed strength error instead
+          // of silently downgrading this turn to plain chat.
+          effectiveStrength = agentStrength;
+        }
+      }
+      const useLocalAgent = supportsLocalAgent && effectiveStrength !== 'plain';
       // Retry reuses the same user message id so an uncertain reconnect cannot
       // duplicate the user message (Remote Host V1 requires a stable messageId).
       const userMsg: ChatMessage = existingMessage ?? {
@@ -877,14 +895,16 @@ export function ChatScreen() {
       await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
     },
     [
-      agentEnabled,
       agentModeLoading,
+      agentStrength,
       cloudAuthorityActive,
       cloudCanSend,
       isCloudHost,
       inputText,
       isLoading,
       runTurn,
+      runtime,
+      sessionId,
       supportsLocalAgent,
     ],
   );

@@ -1,4 +1,5 @@
 import type { RemoteMessagePart } from '../protocol/remoteHostV1';
+import type { AgentExecutionStrengthId } from '../settings/agentExecutionStrength';
 
 export type SessionSource = 'remote-host' | 'local-provider' | 'cloud-host';
 
@@ -19,6 +20,8 @@ export interface Session {
   knowledgeBaseId?: string | null;
   roleId?: string | null;
   agentEnabled?: boolean | null;
+  /** Local Provider thread override; null inherits the global strength. */
+  agentStrengthOverride?: AgentExecutionStrengthId | null;
   status?: string;
   /** Canonical Remote Thread message count, used only as a change probe. */
   messageCount?: number;
