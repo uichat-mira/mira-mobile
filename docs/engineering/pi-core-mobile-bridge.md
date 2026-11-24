@@ -1,6 +1,6 @@
 # Mobile Local Agent: Pi Core 1.6
 
-> **文档边界（2026-11-23）**：本文仅描述当前 Pi Core 和 Tool Gateway 的已实现行为及验收边界。0.4.0 以后确认的三层渐进式披露、Desktop 能力严选、跨工具合法调用等**目标产品决策与外部研究**统一见 [Mobile 0.4.0 产品决策与研究唯一真相](../mobile-0.4.0-product-decisions-and-research.md)。特别是下文的邮件调用链阻断属于**当前实现**，不代表新的 D9 产品目标已经交付；不得未经实施合同就移除敏感数据保护。
+> **文档边界（2026-11-24）**：本文仅描述当前 Pi Core 和 Tool Gateway 的已实现行为及验收边界。0.4.0 以后确认的三层渐进式披露、Desktop 能力严选、跨工具合法调用等**目标产品决策与外部研究**统一见 [Mobile 0.4.0 产品决策与研究唯一真相](../mobile-0.4.0-product-decisions-and-research.md)。特别是下文的邮件调用链阻断属于**当前实现**，不代表新的 D9 产品目标已经交付；不得未经实施合同就移除敏感数据保护。
 
 ## Current implementation
 
@@ -53,6 +53,13 @@ There is no independent or hidden second budget in Pi.
 - Cloud Desktop discovery refreshes the validated manifest set dynamically.
   Multiple real Hosts produce a deterministic user choice based on directory
   data, never an invented or silently chosen Host.
+- Discovery may include a trusted service catalog with optional capability
+  descriptors. Pi can call `mira_tools_disclose` to load real schemas from that
+  catalog in the same run, or call an already available tool directly. There is
+  no fixed three-step discovery count. The gateway still owns every schema and
+  rechecks authority/approval on actual calls; plain tool result text cannot add
+  tools. This is the protocol-neutral Mobile foundation, not an OPS-046 or
+  third-party MCP manifest implementation.
 - An uncertain Host approval resolution is an error, not ordinary cancellation.
 - Tool result size bounds, app suspension, run cancellation and execution
   deadlines are enforced by Pi just as before.

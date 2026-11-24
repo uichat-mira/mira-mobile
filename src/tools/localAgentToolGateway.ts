@@ -25,9 +25,13 @@ import {
   type ToolDiscoveryHostCandidate,
   type ToolDiscoveryNoticeCode,
   type ToolDiscoveryResult,
+  type ToolDisclosureRequest,
+  type ToolDisclosureResult,
   type ToolGatewayClient,
   type ToolManifest,
+  type ToolServiceDescriptor,
 } from './toolGatewayClient';
+import { resolveToolDisclosureTarget } from './toolDisclosure';
 
 export interface CloudToolAccountContext {
   accountId: string | null;
@@ -93,6 +97,46 @@ const DESKTOP_HOST_DISCOVERY_MANIFEST: ToolManifest = {
   description: 'Discover authorized Mira Desktop computers when a user task needs tools on a Desktop. Do not call for ordinary chat or phone-only tools. With multiple Desktops, the user chooses in this chat before any remote execution.',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
 };
+
+/**
+ * These catalogs describe real sources only. They deliberately do not invent
+ * business capability groups for Host V1 or a plain MCP server.
+ */
+const serviceFor = (
+  id: string,
+  name: string,
+  description: string,
+  tools: readonly ToolManifest[],
+): ToolServiceDescriptor => ({
+  id,
+  name,
+  description,
+  toolNames: tools.map(tool => tool.name),
+});
+
+const localService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
+  serviceFor(
+    'mira-mobile-local',
+    'Mira Mobile 本机',
+    '手机本机编译期注册的工具；mira_desktop_hosts 只发现已授权 Desktop，不授予工具执行权限。',
+    tools,
+  );
+
+const pairedService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
+  serviceFor(
+    'mira-paired-host',
+    '已配对 Mira Host',
+    '退出 Mira Cloud 后使用的既有配对 Host；不包含 Cloud 账号工具。',
+    tools,
+  );
+
+const desktopService = (tools: readonly ToolManifest[]): ToolServiceDescriptor =>
+  serviceFor(
+    'mira-desktop',
+    'Mira Desktop',
+    '当前 Cloud 账号下已授权 Desktop 的 Remote V1 工具；没有额外语义能力声明。',
+    tools,
+  );
 
 // Numbered selection only refers to a list in the immediately previous genuine
 // assistant response. Resolve its displayed Host ID against today's account
@@ -252,6 +296,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private pendingHostSelectionAccount: string | null = null;
   private active: ToolGatewayClient | null = null;
   private pendingDiscovery: Promise<ToolDiscoveryResult> | null = null;
+  private services: readonly ToolServiceDescriptor[] = [];
+  private catalogRevision: string | undefined;
+  private revision = 0;
 
   constructor(options: LocalAgentToolGatewayOptions = {}) {
     this.local = options.local ?? localToolGatewayClient;
@@ -277,6 +324,42 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     } finally {
       if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
     }
+  }
+
+  async discloseTools(
+    request: ToolDisclosureRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<ToolDisclosureResult> {
+    const active = this.requireActive();
+    if (this.catalogRevision !== undefined &&
+        request.catalogRevision !== this.catalogRevision) {
+      throw new ToolGatewayError(
+        'TOOL_DISCLOSURE_STALE',
+        'The trusted tool catalog changed before disclosure',
+      );
+    }
+    const target = resolveToolDisclosureTarget(this.services, request);
+    const tools = await active.listTools();
+    if (options?.signal?.aborted) {
+      throw new ToolGatewayError('TOOL_CANCELLED', 'Tool disclosure was cancelled');
+    }
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    const disclosed = target.toolNames.flatMap(name => {
+      const tool = byName.get(name);
+      return tool ? [tool] : [];
+    });
+    if (disclosed.length !== target.toolNames.length) {
+      throw new ToolGatewayError(
+        'TOOL_DISCLOSURE_NOT_AVAILABLE',
+        'A declared tool schema is no longer available',
+      );
+    }
+    return {
+      tools: disclosed,
+      ...(this.catalogRevision !== undefined
+        ? { catalogRevision: this.catalogRevision }
+        : {}),
+    };
   }
 
   async callTool(
@@ -321,6 +404,10 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
           content: 'Mira Desktop connected: ' + (selected.name ?? selected.hostId) +
             '. Authorized tools are now available for this Agent run.',
           refreshedTools: discovery.tools,
+          refreshedServices: discovery.services,
+          ...(discovery.catalogRevision !== undefined
+            ? { refreshedCatalogRevision: discovery.catalogRevision }
+            : {}),
         };
       }
       return {
@@ -358,22 +445,37 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     return this.active;
   }
 
+  private withCatalog(
+    discovery: ToolDiscoveryResult,
+    services: readonly ToolServiceDescriptor[],
+  ): ToolDiscoveryResult {
+    this.services = services;
+    this.catalogRevision = String(++this.revision);
+    return {
+      ...discovery,
+      services,
+      catalogRevision: this.catalogRevision,
+    };
+  }
+
   private async discoverOnce(): Promise<ToolDiscoveryResult> {
     const context = this.cloudContext();
     if (context.explicitlySignedOut) {
       this.active = this.paired;
-      return discoveryOf(this.paired);
+      const discovery = await discoveryOf(this.paired);
+      return this.withCatalog(discovery, [pairedService(discovery.tools)]);
     }
     if (!context.accountId) {
       this.active = this.local;
-      return {
-        tools: await this.local.listTools(),
+      const tools = await this.local.listTools();
+      return this.withCatalog({
+        tools,
         notices: [{
           code: context.cloudSessionInvalid
             ? 'cloud-tools-session-invalid'
             : 'cloud-tools-unavailable',
         }],
-      };
+      }, [localService(tools)]);
     }
 
     if (context.cloudSessionInvalid) {
@@ -400,10 +502,10 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       throw new ToolGatewayError('TOOL_NAME_COLLISION',
         'Desktop discovery tool collides with an existing local tool');
     }
-    return {
+    return this.withCatalog({
       tools: [...tools, DESKTOP_HOST_DISCOVERY_MANIFEST],
       notices: [],
-    };
+    }, [localService([...tools, DESKTOP_HOST_DISCOVERY_MANIFEST])]);
   }
 
   private async discoverCloudHost(accountId: string): Promise<ToolDiscoveryResult> {
@@ -520,11 +622,12 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       throw new ToolGatewayError('TOOL_NAME_COLLISION',
         'Desktop discovery tool collides with an existing local tool');
     }
-    return {
-      tools: [...localTools, DESKTOP_HOST_DISCOVERY_MANIFEST],
+    const tools = [...localTools, DESKTOP_HOST_DISCOVERY_MANIFEST];
+    return this.withCatalog({
+      tools,
       notices: [],
       hostCandidates: candidateProjection(usable),
-    };
+    }, [localService(tools)]);
   }
 
   private async bindHost(
@@ -536,13 +639,19 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       throw hostChanged();
     }
     this.entry.assertCurrentAccess(access);
+    const localTools = await this.local.listTools();
     const composite = new CompositeToolGatewayClient(
       this.local,
       this.remoteGateway(accountId, hostId),
     );
     const discovery = await composite.discoverTools();
     this.active = composite;
-    return discovery;
+    const localNames = new Set(localTools.map(tool => tool.name));
+    const remoteTools = discovery.tools.filter(tool => !localNames.has(tool.name));
+    return this.withCatalog(discovery, [
+      localService(localTools),
+      ...(remoteTools.length > 0 ? [desktopService(remoteTools)] : []),
+    ]);
   }
 
   private remoteGateway(accountId: string, hostId: string): RemoteToolGatewayClient {
@@ -568,10 +677,11 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     code: ToolDiscoveryNoticeCode,
   ): Promise<ToolDiscoveryResult> {
     this.active = this.local;
-    return {
-      tools: await this.local.listTools(),
+    const tools = await this.local.listTools();
+    return this.withCatalog({
+      tools,
       notices: [{ code }],
-    };
+    }, [localService(tools)]);
   }
 }
 
