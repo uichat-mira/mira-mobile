@@ -54,10 +54,31 @@ const buildPairingUriFromRoute = (
 
   const query = new URLSearchParams({ version, challenge, code });
   if (host) query.set('host', host);
+  // Historical deep links may still carry Relay metadata. Keep it encodable so
+  // the parser can apply the same Direct-only policy as scan and paste input.
   if (relay) query.set('relay', relay);
   if (relayId) query.set('relayId', relayId);
   if (relayToken) query.set('relayToken', relayToken);
   return `mira://pair?${query.toString()}`;
+};
+
+const describePairingLinkError = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('Tailscale Direct Host address')) {
+    return '该配对链接缺少 Tailscale 直连地址。扫码、粘贴或深链配对仅支持 Tailscale 直连，请在 Mira Desktop 重新生成包含直连地址的二维码。';
+  }
+  if (
+    message.includes('Mira Host') &&
+    (message.includes('not a valid URL') ||
+      message.includes('must use HTTPS') ||
+      message.includes('must include a hostname'))
+  ) {
+    return '配对链接中的 Mira Host 地址无效或不符合安全要求，请让 Mira Desktop 重新生成二维码。';
+  }
+  if (message.includes('Tailscale Direct Host must')) {
+    return '配对地址必须是 Tailscale 直连地址（*.ts.net 或 Tailscale 100.x），不能包含额外路径或参数。';
+  }
+  return message || '无法读取桌面配对链接';
 };
 
 export function HostConfigScreen() {
@@ -101,20 +122,16 @@ export function HostConfigScreen() {
         setPairingLinkError(null);
         setAuthorizationSheetOpen(true);
 
-        if (descriptor.hostUrl) {
-          setConnectivityHostUrl(descriptor.hostUrl);
-          const current = useTailscaleConnectivityStore.getState();
-          if (
-            current.hostUrl !== descriptor.hostUrl ||
-            (current.state !== 'probing' && current.state !== 'ready')
-          ) {
-            void current.probe(descriptor.hostUrl, 'manual').catch(() => {
-              // Pairing transport selection owns the final Direct/Relay choice.
-              // This warm-up probe must not invalidate an otherwise valid URI.
-            });
-          }
-        } else {
-          setConnectivityHostUrl('');
+        setConnectivityHostUrl(descriptor.hostUrl);
+        const current = useTailscaleConnectivityStore.getState();
+        if (
+          current.hostUrl !== descriptor.hostUrl ||
+          (current.state !== 'probing' && current.state !== 'ready')
+        ) {
+          void current.probe(descriptor.hostUrl, 'manual').catch(() => {
+            // This warm-up probe is advisory; the Direct-only claim path
+            // still performs its own preflight before any claim side effect.
+          });
         }
         return true;
       } catch (error) {
@@ -122,9 +139,7 @@ export function HostConfigScreen() {
         setPairingDescriptor(null);
         setAuthorizationSheetOpen(false);
         restoreCurrentConnectivityTarget();
-        setPairingLinkError(
-          error instanceof Error ? error.message : '无法读取桌面配对链接',
-        );
+        setPairingLinkError(describePairingLinkError(error));
         return false;
       }
     },
@@ -140,9 +155,7 @@ export function HostConfigScreen() {
       setPairingDescriptor(null);
       setAuthorizationSheetOpen(false);
       restoreCurrentConnectivityTarget();
-      setPairingLinkError(
-        error instanceof Error ? error.message : '无法读取桌面配对链接',
-      );
+      setPairingLinkError(describePairingLinkError(error));
     }
   }, [
     loadPairingUri,
@@ -161,15 +174,7 @@ export function HostConfigScreen() {
     }
 
     pairedHandledRef.current = true;
-    if (pairingDescriptor.hostUrl) {
-      setConfig({ hostUrl: pairingDescriptor.hostUrl, token: '' });
-    } else {
-      // Relay-only pairing has no Direct Host URL. The secure paired-device
-      // credential remains the connection truth; do not masquerade Relay as a
-      // Tailscale/Mira Host HTTP URL in the local host store.
-      clearConfig();
-      resetConnectivity();
-    }
+    setConfig({ hostUrl: pairingDescriptor.hostUrl, token: '' });
     setConnectionStatus('connected');
     setAuthorizationSheetOpen(false);
     setSuccessToastVisible(true);
@@ -180,11 +185,9 @@ export function HostConfigScreen() {
 
     return () => clearTimeout(navigationTimer);
   }, [
-    clearConfig,
     navigation,
     pairingDescriptor,
     pairingState.phase,
-    resetConnectivity,
     setConfig,
     setConnectionStatus,
   ]);
@@ -229,9 +232,9 @@ export function HostConfigScreen() {
   const pairingMessage = (() => {
     switch (pairingState.phase) {
       case 'claiming':
-        return '正在连接 Mira Desktop 并提交此设备。';
+        return '正在通过 Tailscale 直连提交设备申请。';
       case 'waiting_approval':
-        return '请在 Mira Desktop 上批准此设备。';
+        return '请在 Mira Desktop 上批准此设备（Tailscale 直连）。';
       case 'paired':
         return '桌面已批准，正在返回会话列表。';
       case 'rejected':
@@ -247,10 +250,13 @@ export function HostConfigScreen() {
         if (pairingDeliveredWithoutSave) {
           return '设备凭证已被领取，但本机没有完成保存，请关闭后重新配对。';
         }
-        return '配对未完成，请检查手机网络和 Mira Desktop 后重试。';
+        return (
+          pairingState.message ??
+          '配对未完成，请检查 Tailscale 直连和 Mira Desktop 后重试。'
+        );
       default:
         return secureStorageAvailable
-          ? '提交后，请在桌面端确认此设备。'
+          ? '提交后，请在桌面端确认此设备。配对仅通过 Tailscale 直连提交。'
           : '当前构建无法安全保存设备凭据，不能提交配对申请。';
     }
   })();
@@ -380,7 +386,7 @@ export function HostConfigScreen() {
             </View>
             <Text style={[styles.heroTitle, { color: colors.text.ink }]}>设备配对</Text>
             <Text style={[styles.heroSubtitle, { color: colors.text.muted }]}> 
-              扫描 Mira Desktop 上的配对二维码
+              仅通过 Tailscale 直连扫描 Mira Desktop 上的配对二维码
             </Text>
           </View>
 
@@ -400,7 +406,7 @@ export function HostConfigScreen() {
 
           <View style={styles.pasteSection}>
             <Text style={[styles.pasteLabel, { color: colors.text.muted }]}> 
-              或粘贴配对链接
+              或粘贴配对链接（仅 Tailscale 直连）
             </Text>
             <TextInput
               accessibilityLabel="Mira 配对链接"

@@ -88,7 +88,7 @@ export function PairingScannerModal({
         }
         onScanned(parseScannedPairingUri(value));
       } catch {
-        setScanError('这不是有效的 Mira 配对二维码');
+        setScanError('这不是有效的 Mira Tailscale 直连配对二维码');
         setTimeout(() => {
           scanLocked.current = false;
         }, 1200);
@@ -101,7 +101,7 @@ export function PairingScannerModal({
     cameraState === 'blocked'
       ? '相机权限已被关闭，请在系统设置中允许 Mira 使用相机。'
       : cameraState === 'unavailable'
-      ? '当前设备无法使用相机扫码，请粘贴完整配对链接。'
+      ? '当前设备无法使用相机扫码，请粘贴完整 Tailscale 直连配对链接。'
       : '需要相机权限才能扫描配对二维码。';
 
   return (

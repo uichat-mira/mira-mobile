@@ -38,6 +38,22 @@ const INITIAL_STATE: RemotePairingViewState = {
 
 const POLL_INTERVAL_MS = 1_500;
 
+const pairingStartErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && 'code' in error) {
+    switch (error.code) {
+      case 'PAIRING_DIRECT_HOST_REQUIRED':
+        return '配对链接缺少 Tailscale Direct 地址，请在 Mira Desktop 重新生成包含直连地址的二维码。';
+      case 'PAIRING_DIRECT_UNREACHABLE':
+        return '无法通过 Tailscale 直连 Mira Desktop。请确认手机已加入同一 Tailscale 网络且 Mira Desktop 正在运行，然后重试。';
+      case 'PAIRING_DIRECT_NOT_MIRA_HOST':
+        return 'Tailscale 地址已连接，但目标不是 Mira Desktop。请在桌面端重新生成正确的配对二维码。';
+      default:
+        break;
+    }
+  }
+  return error instanceof Error ? error.message : '提交配对申请失败';
+};
+
 export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
   const [state, setState] = useState<RemotePairingViewState>(INITIAL_STATE);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,13 +74,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
 
   useEffect(() => {
     reset();
-  }, [
-    descriptor?.challengeId,
-    descriptor?.hostUrl,
-    descriptor?.relay?.endpoint,
-    descriptor?.relay?.relayId,
-    reset,
-  ]);
+  }, [descriptor?.challengeId, descriptor?.hostUrl, reset]);
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -131,7 +141,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
             ...current,
             phase: 'waiting_approval',
             pending,
-            message: '已向桌面提交设备申请，等待桌面确认。',
+            message: '已通过 Tailscale 直连提交设备申请，等待桌面确认。',
           }));
           pollTimer.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
         } catch (error) {
@@ -186,7 +196,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
     setState({
       ...INITIAL_STATE,
       phase: 'claiming',
-      message: '正在连接桌面并提交设备申请。',
+      message: '正在通过 Tailscale 直连桌面并提交设备申请。',
     });
 
     try {
@@ -209,7 +219,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
         pending,
         deviceId: null,
         scopes: [],
-        message: '已向桌面提交设备申请，等待桌面确认。',
+        message: '已通过 Tailscale 直连提交设备申请，等待桌面确认。',
       });
       beginPolling(pending);
     } catch (error) {
@@ -225,7 +235,7 @@ export const useRemotePairing = (descriptor: PairingDescriptorV1 | null) => {
       setState({
         ...INITIAL_STATE,
         phase: 'error',
-        message: error instanceof Error ? error.message : '提交配对申请失败',
+        message: pairingStartErrorMessage(error),
       });
     }
   }, [beginPolling, descriptor, state.pending, stopPolling]);

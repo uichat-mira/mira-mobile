@@ -1,5 +1,7 @@
 import { normalizeHostUrl } from '../protocol/remoteHostV1';
 import { runNativeTailscaleProbe } from './nativeTailscaleProbe';
+import { parseTailscaleMiraHostIdentity, type MiraHostIdentity } from './miraHostIdentity';
+export type { MiraHostIdentity } from './miraHostIdentity';
 
 export type TailscaleConnectivityState =
   | 'idle'
@@ -13,11 +15,7 @@ export type TailscaleConnectivityState =
   | 'not_mira_host'
   | 'host_unhealthy';
 
-export interface MiraHostIdentity {
-  name: string;
-  displayName: string;
-  version: string;
-}
+
 
 export interface TailscaleConnectivityResult {
   state: Exclude<TailscaleConnectivityState, 'idle' | 'probing'>;
@@ -33,36 +31,6 @@ export interface TailscaleConnectivityProbeOptions {
   allowInsecureDevelopment?: boolean;
   fetchImpl?: typeof fetch;
 }
-
-type JsonRecord = Record<string, unknown>;
-
-const asRecord = (value: unknown): JsonRecord | null =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : null;
-
-const unwrapData = (value: unknown): unknown => {
-  const record = asRecord(value);
-  return record && 'data' in record ? record.data : value;
-};
-
-const parseIdentity = (value: unknown): MiraHostIdentity | null => {
-  const record = asRecord(unwrapData(value));
-  if (!record) return null;
-
-  const name = typeof record.name === 'string' ? record.name.trim() : '';
-  const displayName =
-    typeof record.displayName === 'string' ? record.displayName.trim() : '';
-  const version =
-    typeof record.version === 'string' ? record.version.trim() : '';
-
-  if (!name || !displayName || !version) return null;
-
-  const marker = `${name} ${displayName}`.toLowerCase();
-  if (!marker.includes('mira') && !marker.includes('uichat')) return null;
-
-  return { name, displayName, version };
-};
 
 const classifyNetworkError = (
   error: unknown,
@@ -210,7 +178,7 @@ export const probeTailscaleMiraHost = async (
       };
     }
 
-    const identity = parseIdentity(await meta.json());
+    const identity = parseTailscaleMiraHostIdentity(await meta.json());
     if (!identity) {
       return {
         state: 'not_mira_host',
