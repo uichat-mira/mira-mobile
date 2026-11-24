@@ -219,6 +219,24 @@ export class LocalSessionRepository {
     return value.agentStrength ?? null;
   }
 
+  /**
+   * Rebinds the conversation to another configured Provider/model.
+   *
+   * The write is based on the latest stored record and touches only
+   * `providerId`, so concurrent Agent-mode or execution-strength writes are
+   * preserved. History, title, ownership-independent metadata and timestamps are
+   * intentionally unchanged: switching models is not a new conversation.
+   */
+  setProviderId(sessionId: string, providerId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const values = await this.loadStored();
+      const index = values.findIndex((item) => item.id === sessionId);
+      if (index < 0) throw new Error('Local session was not found');
+      values[index] = { ...values[index], providerId };
+      await this.saveStored(values);
+    });
+  }
+
   setAgentStrengthOverride(
     sessionId: string,
     strength: AgentExecutionStrengthId | null,
