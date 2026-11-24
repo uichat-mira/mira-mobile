@@ -9,7 +9,7 @@ import {
   type ToolGatewayClient,
   type ToolManifest,
 } from './toolGatewayClient';
-import { weatherToolDefinition } from './localTools/weatherTool';
+import { webToolDefinition } from './localTools/webTool';
 import { whoYouMailSearchTool, whoYouMailMessageTool } from './localTools/whoYouMailTools';
 
 export interface LocalToolContext {
@@ -187,7 +187,7 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
 }
 
 export const localToolGatewayClient = new LocalToolGatewayClient([
-  weatherToolDefinition,
+  webToolDefinition,
   whoYouMailSearchTool,
   whoYouMailMessageTool,
 ]);

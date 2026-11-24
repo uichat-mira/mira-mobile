@@ -165,25 +165,25 @@ describe('chatSessionState', () => {
     ).toContain('未能执行');
   });
 
-  it('localizes built-in weather tool failures and prefers the suggested action', () => {
+  it('localizes built-in web tool failures and prefers the suggested action', () => {
     expect(
       getChatSendErrorMessage(
-        new ToolGatewayError('WEATHER_CITY_NOT_FOUND', 'city not found'),
+        new ToolGatewayError('WEB_URL_FORBIDDEN', 'url not allowed'),
         'local-provider',
       ),
-    ).toContain('没有找到这个城市');
+    ).toContain('公开互联网');
 
     expect(
       getChatSendErrorMessage(
         new ToolGatewayError(
-          'WEATHER_UPSTREAM_FAILED',
+          'WEB_UPSTREAM_FAILED',
           'upstream failed',
           true,
-          '天气服务正在维护，请稍后再试',
+          '网页服务正在维护，请稍后再试',
         ),
         'local-provider',
       ),
-    ).toBe('天气服务正在维护，请稍后再试');
+    ).toBe('网页服务正在维护，请稍后再试');
   });
 
   it('distinguishes Cloud Host grant denial from Relay protocol corruption', () => {

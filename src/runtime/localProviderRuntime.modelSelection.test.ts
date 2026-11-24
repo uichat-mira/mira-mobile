@@ -97,6 +97,7 @@ const createRuntime = (
     configStore: context.configStore,
     credentialStore: context.credentialStore,
     sessionRepository: context.repository,
+    loadGlobalAgentStrength: async () => 'plain',
     ...options,
   });
 
@@ -146,7 +147,7 @@ describe('LocalProviderRuntime model selection', () => {
         timestamp: new Date('2026-11-24T00:00:00Z'),
       },
     ]);
-    await runtime.setAgentEnabled(session.id, true);
+    await runtime.setAgentStrength(session.id, 'deep');
 
     await expect(runtime.listLocalProviderModels(session.id)).resolves.toEqual([
       expect.objectContaining({
@@ -184,7 +185,7 @@ describe('LocalProviderRuntime model selection', () => {
     await expect(context.repository.getMessages(session.id)).resolves.toMatchObject([
       { id: 'user-1', content: 'history stays' },
     ]);
-    await expect(context.repository.getAgentEnabled(session.id)).resolves.toBe(true);
+    await expect(context.repository.getAgentStrengthOverride(session.id)).resolves.toBe('deep');
     await expect(context.repository.getProviderId(other.id)).resolves.toBe(providerA.id);
     await expect(runtime.getSelectedLocalProviderModel(other.id)).resolves.toMatchObject({
       providerId: providerA.id,
@@ -271,10 +272,7 @@ describe('LocalProviderRuntime model selection', () => {
       context,
       [toolCallFixture, textFixture('agent-b-done')],
       {
-        loadAgentBudget: async () => ({
-          maxToolRounds: 16,
-          maxDurationMinutes: 15,
-        }),
+        loadGlobalAgentStrength: async () => 'standard',
         toolGateway: {
           listTools: async () => [{
             name: 'search',
@@ -289,7 +287,7 @@ describe('LocalProviderRuntime model selection', () => {
     await runtime.selectLocalProviderModel(session.id, providerB.id);
 
     const events = await drain(
-      await runtime.sendMessage(session.id, 'find', { agentEnabled: true }),
+      await runtime.sendMessage(session.id, 'find'),
     );
 
     expect(events).toEqual(expect.arrayContaining([
@@ -405,6 +403,46 @@ describe('LocalProviderRuntime model selection', () => {
     await expect(context.repository.getProviderId(session.id)).resolves.toBe(
       providerA.id,
     );
+  });
+
+  it('rechecks deletion scope when a concurrent model switch changes Provider ownership', async () => {
+    const context = await createContext();
+    const runtime = createRuntime(context, {
+      stageSessionReferenceRemoval: async () => ({
+        commit: jest.fn(),
+        rollback: jest.fn(async () => undefined),
+      }),
+    });
+    const session = await runtime.createSession('Keep this thread', providerA.id);
+    await runtime.setAgentStrength(session.id, 'deep');
+    await context.repository.appendMessages(session.id, [{
+      id: 'user-race', role: 'user', content: 'keep history', timestamp: new Date(),
+    }]);
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const load = context.credentialStore.load.bind(context.credentialStore);
+    jest.spyOn(context.credentialStore, 'load').mockImplementationOnce(async (id) => {
+      entered();
+      await gate;
+      return load(id);
+    });
+    const switching = runtime.selectLocalProviderModel(session.id, providerB.id);
+    await enteredPromise;
+    const deleting = runtime.deleteProvider(providerB.id, 0);
+    const deletionAssertion = expect(deleting).rejects.toMatchObject({
+      name: 'LocalProviderDeletionScopeChangedError',
+    });
+    release();
+    await expect(switching).resolves.toMatchObject({ providerId: providerB.id });
+    await deletionAssertion;
+    await expect(context.repository.getProviderId(session.id)).resolves.toBe(providerB.id);
+    await expect(context.repository.getAgentStrengthOverride(session.id)).resolves.toBe('deep');
+    await expect(context.repository.getMessages(session.id)).resolves.toMatchObject([
+      { id: 'user-race', content: 'keep history' },
+    ]);
+    await expect(context.credentialStore.load(providerB.id)).resolves.toBe('sk-b');
   });
 
   it('moves Provider deletion ownership with the conversation selection', async () => {

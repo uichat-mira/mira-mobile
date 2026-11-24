@@ -17,6 +17,7 @@ import {
   loadPersonalizationSettings,
   type PersonalizationSettings,
 } from '../settings/personalizationSettings';
+import { loadGeneralSettings } from '../settings/generalSettings';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { getLocalMemoryService, type LocalMemoryService } from '../memory';
 import { assembleLocalRequestContext } from './localRequestContext';
@@ -25,6 +26,7 @@ import {
   LocalProviderExecutionController,
 } from './localProviderExecution';
 import {
+  LocalAgentExecutionStrengthUnavailableError,
   LocalAgentRunController,
   type LocalAgentToolGatewaySource,
 } from './localAgentRunController';
@@ -39,6 +41,11 @@ import {
   LocalProviderModelSelectionError,
   type LocalProviderModelOption,
 } from './localProviderModelSelection';
+import {
+  DEFAULT_AGENT_EXECUTION_STRENGTH,
+  resolveAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 export interface LocalProviderDeletionImpact {
   providerId: string;
@@ -122,7 +129,7 @@ export interface LocalProviderRuntimeOptions {
   ) => OpenAiStandardClient;
   toolGateway?: LocalAgentToolGatewaySource;
   /** Injected only for deterministic tests; production reads General settings per run. */
-  loadAgentBudget?: () => Promise<import('../settings/agentExecutionBudget').AgentExecutionBudget>;
+  loadGlobalAgentStrength?: () => Promise<AgentExecutionStrengthId>;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
   stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
@@ -151,6 +158,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     apiKey: string,
   ) => OpenAiStandardClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
+  private readonly loadGlobalAgentStrength: () => Promise<AgentExecutionStrengthId>;
   private readonly memoryService: LocalMemoryService;
   private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
   private readonly providerExecution = new LocalProviderExecutionController();
@@ -180,14 +188,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
         }));
     this.loadPersonalization =
       options.loadPersonalization ?? loadPersonalizationSettings;
+    this.loadGlobalAgentStrength =
+      options.loadGlobalAgentStrength ??
+      (async () => (await loadGeneralSettings()).agentExecutionStrength);
     this.memoryService = options.memoryService ?? getLocalMemoryService();
     this.stageSessionReferenceRemoval =
       options.stageSessionReferenceRemoval ?? stageLocalSessionReferenceRemoval;
     this.agentRun = options.toolGateway
-      ? new LocalAgentRunController(
-          options.toolGateway,
-          options.loadAgentBudget,
-        )
+      ? new LocalAgentRunController(options.toolGateway)
       : null;
     this.supportsAgent = Boolean(options.toolGateway);
   }
@@ -386,13 +394,25 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
   async listSessions(): Promise<Session[]> {
     const configs = await this.configStore.load();
+    // The list icon is a projection of the same effective strength used by a
+    // send. A settings read failure must not prevent listing local threads.
+    const globalStrength = await this.loadGlobalAgentStrength().catch(
+      () => DEFAULT_AGENT_EXECUTION_STRENGTH,
+    );
     const sessions = await Promise.all(
       configs.map(async (config) =>
-        (await this.sessionRepository.list(config.id)).map((session) => ({
-          ...session,
-          providerName: config.name,
-          providerModel: config.model,
-        })),
+        (await this.sessionRepository.list(config.id)).map((session) => {
+          const effectiveStrength = resolveAgentExecutionStrength(
+            session.agentStrengthOverride,
+            globalStrength,
+          );
+          return {
+            ...session,
+            providerName: config.name,
+            providerModel: config.model,
+            agentEnabled: effectiveStrength !== 'plain',
+          };
+        }),
       ),
     );
     return sessions
@@ -579,7 +599,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     return this.enqueueSessionOperation(sessionId, () =>
       this.prepareMessageSend(sessionId, input, options),
@@ -589,7 +609,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private async prepareMessageSend(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     if (this.deletingProviderIds.has(providerId)) {
@@ -683,13 +703,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
             session,
             input,
             messageId: options?.messageId,
-            agentEnabled: options?.agentEnabled,
           },
           {
             repository: runtime.sessionRepository,
             executor,
             providerExecution: runtime.providerExecution,
             agentRun: runtime.agentRun,
+            resolveAgentStrength: (targetSessionId) =>
+              runtime.getEffectiveAgentStrength(targetSessionId),
             assembleRequest: (canonicalMessages) =>
               assembleLocalRequestContext(canonicalMessages, {
                 loadPersonalization: runtime.loadPersonalization,
@@ -713,15 +734,51 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return generator;
   }
 
-  getAgentEnabled(sessionId: string): Promise<boolean> {
-    return this.sessionRepository.getAgentEnabled(sessionId);
+  getAgentStrengthOverride(
+    sessionId: string,
+  ): Promise<AgentExecutionStrengthId | null> {
+    return this.sessionRepository.getAgentStrengthOverride(sessionId);
   }
 
-  async setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
+  async getEffectiveAgentStrength(
+    sessionId: string,
+  ): Promise<AgentExecutionStrengthId> {
+    let override: AgentExecutionStrengthId | null;
+    try {
+      override = await this.sessionRepository.getAgentStrengthOverride(sessionId);
+    } catch {
+      throw new LocalAgentExecutionStrengthUnavailableError();
+    }
+    // An explicit thread choice does not depend on the global setting document.
+    if (override !== null) return override;
+
+    let global: AgentExecutionStrengthId;
+    try {
+      global = await this.loadGlobalAgentStrength();
+    } catch {
+      throw new LocalAgentExecutionStrengthUnavailableError();
+    }
+    return resolveAgentExecutionStrength(override, global);
+  }
+
+  async setAgentStrength(
+    sessionId: string,
+    strength: AgentExecutionStrengthId,
+  ): Promise<void> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     const release = this.acquireProviderMutation(providerId);
     try {
-      await this.sessionRepository.setAgentEnabled(sessionId, enabled);
+      await this.sessionRepository.setAgentStrengthOverride(sessionId, strength);
+    } finally {
+      release();
+    }
+  }
+
+  async resetAgentStrength(sessionId: string): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderMutation(providerId);
+    try {
+      await this.sessionRepository.resetAgentStrength(sessionId);
     } finally {
       release();
     }

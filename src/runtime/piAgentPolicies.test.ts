@@ -412,18 +412,23 @@ describe('PiCoreAgentLoop', () => {
     });
   });
 
-  it('stops at the configured round limit', async () => {
+  it('stops after exactly one tool-less summary when the provider still asks for tools', async () => {
+    const callTool = jest.fn(async () => ({ content: 'ok' }));
     const gateway: ToolGatewayClient = {
       listTools: async () => [{ name: 'search', parameters: { type: 'object' } }],
-      callTool: async () => ({ content: 'ok' }),
+      callTool,
     };
-    const loop = new PiCoreAgentLoop(gateway);
-    const events = await collect(await loop.run([{ role: 'user', content: 'test' }], async () => (async function* () {
+    const modelCall = jest.fn(async () => (async function* () {
       yield { type: 'tool-call' as const, callId: 'c1', name: 'search', arguments: '{}' };
       yield { type: 'finish' as const, reason: 'tool_calls' };
-    })(), { maxToolRounds: 1 }));
-
-    expect(events.at(-1)).toEqual({ type: 'error', message: 'Tool round limit reached (1)' });
+    })());
+    const events = await collect(await new PiCoreAgentLoop(gateway).run(
+      [{ role: 'user', content: 'test' }], modelCall, { maxToolRounds: 1 },
+    ));
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(modelCall).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'run-paused', reason: 'budget-exhausted' });
   });
 
   it('reports app suspension when the run signal is also aborted', async () => {
@@ -507,7 +512,9 @@ describe('PiCoreAgentLoop', () => {
     );
 
     expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toEqual([{ role: 'user', content: '1+5=?' }]);
+    expect(calls[0][0]).toEqual(expect.arrayContaining([
+      { role: 'user', content: '1+5=?' },
+    ]));
     expect(calls[0][1]).toEqual([]);
     expect(events).toEqual([
       { type: 'notice', code: 'tool-channel-unavailable' },
@@ -518,9 +525,9 @@ describe('PiCoreAgentLoop', () => {
 
   it('emits discovery notices for a partially available toolset', async () => {
     const gateway: ToolGatewayClient = {
-      listTools: async () => [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+      listTools: async () => [{ name: 'web', parameters: { type: 'object' } }],
       discoverTools: async () => ({
-        tools: [{ name: 'local_weather_current', parameters: { type: 'object' } }],
+        tools: [{ name: 'web', parameters: { type: 'object' } }],
         notices: [{ code: 'toolset-degraded' }],
       }),
       callTool: async () => ({ content: 'unused' }),
@@ -529,7 +536,7 @@ describe('PiCoreAgentLoop', () => {
 
     const events = await collect(
       await loop.run(
-        [{ role: 'user', content: '天气如何' }],
+        [{ role: 'user', content: '网页如何' }],
         async () =>
           (async function* () {
             yield { type: 'text-delta' as const, delta: '晴' };

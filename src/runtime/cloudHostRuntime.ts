@@ -77,7 +77,7 @@ export class CloudHostRuntime implements ConversationRuntime {
   async sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     assertDesktopConnectionActive('cloud');
     const thread = await this.cloud.getThread(sessionId);

@@ -1,7 +1,9 @@
 import type { OpenAiMessage } from '../provider/openAiStandardClient';
 import { PiCoreAgentLoop } from './piAgentLoop';
-import { loadGeneralSettings } from '../settings/generalSettings';
-import type { AgentExecutionBudget } from '../settings/agentExecutionBudget';
+import {
+  getAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 import type { LocalProviderExecutor } from './localProviderExecution';
 import type { RuntimeEvent } from './conversationRuntime';
 import type {
@@ -27,6 +29,8 @@ interface PendingApproval {
 
 export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
+  /** Effective thread strength, already snapshotted for this run. */
+  strength: AgentExecutionStrengthId;
   initialMessages: readonly OpenAiMessage[];
   approvalRecipient?: string;
   /** Current user turn used only to bind an explicitly named Cloud Host. */
@@ -53,15 +57,15 @@ const resolveToolGateway = (
   typeof source === 'function' ? source(selectionText, previousAssistantText) : source;
 
 /**
- * A configured Agent limit is a user-selected safety boundary. If its stored
- * value cannot be read, never silently replace it with a higher default.
+ * A configured execution strength is a user safety boundary. If the effective
+ * value cannot be read, never silently replace it with a different strength.
  */
-export class LocalAgentBudgetUnavailableError extends Error {
-  readonly code = 'LOCAL_AGENT_BUDGET_UNAVAILABLE';
+export class LocalAgentExecutionStrengthUnavailableError extends Error {
+  readonly code = 'LOCAL_AGENT_STRENGTH_UNAVAILABLE';
 
   constructor() {
-    super('无法读取智能体执行预算，请打开「设置 → 通用 → 常规」检查设置后重试。');
-    this.name = 'LocalAgentBudgetUnavailableError';
+    super('无法读取智能体执行强度，请打开「设置 → 通用 → 常规」检查设置后重试。');
+    this.name = 'LocalAgentExecutionStrengthUnavailableError';
   }
 }
 
@@ -70,11 +74,7 @@ export class LocalAgentRunController {
   private activeRunToken: symbol | null = null;
   private pendingApproval: PendingApproval | null = null;
 
-  constructor(
-    private readonly toolGateway: LocalAgentToolGatewaySource,
-    private readonly loadBudget: () => Promise<AgentExecutionBudget> =
-      async () => (await loadGeneralSettings()).agentBudget,
-  ) {}
+  constructor(private readonly toolGateway: LocalAgentToolGatewaySource) {}
 
   get active(): boolean {
     return this.activeRunToken !== null;
@@ -95,21 +95,18 @@ export class LocalAgentRunController {
         input.selectionText,
         input.previousAssistantText,
       );
-      // Re-read on every run so changing General settings takes effect on the
-      // next turn without restarting the app or leaking mutable global state.
-      let budget: AgentExecutionBudget;
-      try {
-        budget = await this.loadBudget();
-      } catch {
-        throw new LocalAgentBudgetUnavailableError();
-      }
+      const strength = getAgentExecutionStrength(input.strength);
       const loop = new PiCoreAgentLoop(gateway);
       const stream = await loop.run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {
-          maxToolRounds: budget.maxToolRounds,
-          overallTimeoutMs: budget.maxDurationMinutes * 60_000,
+          strength: strength.id,
+          maxToolRounds: strength.maxToolRounds,
+          overallTimeoutMs:
+            strength.maxDurationMinutes === null
+              ? undefined
+              : strength.maxDurationMinutes * 60_000,
           shouldPause: input.shouldPause,
           approvalRecipient: input.approvalRecipient,
           signal: abortController.signal,

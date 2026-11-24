@@ -1,11 +1,21 @@
 import type { ChatMessage, Session } from '../types';
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
+import {
+  isAgentExecutionStrengthId,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 interface StoredLocalSession {
   id: string;
   providerId: string;
   title: string;
   updatedAt: string;
+  /**
+   * null means "inherit the global strength". A missing field is a legacy
+   * record and is migrated from the old agentEnabled boolean on read.
+   */
+  agentStrength?: AgentExecutionStrengthId | null;
+  /** Legacy read-only field; new writes use agentStrength exclusively. */
   agentEnabled?: boolean;
   messages: Array<{
     id: string;
@@ -47,7 +57,11 @@ const toSession = (value: StoredLocalSession): Session => ({
   title: value.title,
   updatedAt: new Date(value.updatedAt),
   source: 'local-provider',
-  agentEnabled: value.agentEnabled === true,
+  // Display projection only. The persisted truth is agentStrength; an
+  // inherited thread is Agent-capable and resolved with the global setting by
+  // LocalProviderRuntime.listSessions().
+  agentEnabled: value.agentStrength !== 'plain',
+  agentStrengthOverride: value.agentStrength ?? null,
   status: 'local',
 });
 
@@ -96,12 +110,32 @@ const parseStored = (value: unknown): StoredLocalSession => {
       ...(item.mailPrivate === true ? { mailPrivate: true as const } : {}),
     };
   });
+  const hasStrength = Object.prototype.hasOwnProperty.call(record, 'agentStrength');
+  // Legacy records always carried an explicit agentEnabled boolean. Missing
+  // strength therefore maps false/absent to plain and true to inherit. Unknown
+  // strength values fail closed to plain instead of silently granting tools.
+  const agentStrength: AgentExecutionStrengthId | null = hasStrength
+    ? record.agentStrength === null
+      ? null
+      : isAgentExecutionStrengthId(record.agentStrength)
+        ? record.agentStrength
+        : 'plain'
+    : record.agentEnabled === true
+      ? null
+      : 'plain';
+  // Preserve fields owned by parallel session settings (for example a model
+  // switch card) while normalizing the strength field this repository owns.
+  // The legacy boolean is dropped on the next write so it cannot become a
+  // second active switch.
+  const preserved: Record<string, unknown> = { ...record };
+  delete preserved.agentEnabled;
   return {
+    ...(preserved as unknown as StoredLocalSession),
     id: record.id,
     providerId: record.providerId,
     title: record.title,
     updatedAt: record.updatedAt,
-    agentEnabled: record.agentEnabled === true,
+    agentStrength,
     messages,
   };
 };
@@ -145,7 +179,7 @@ export class LocalSessionRepository {
         providerId,
         title: title.trim() || DEFAULT_LOCAL_SESSION_TITLE,
         updatedAt: now,
-        agentEnabled: false,
+        agentStrength: null,
         messages: [],
       };
       await this.saveStored([value, ...values]);
@@ -177,10 +211,12 @@ export class LocalSessionRepository {
     return value.providerId;
   }
 
-  async getAgentEnabled(sessionId: string): Promise<boolean> {
+  async getAgentStrengthOverride(
+    sessionId: string,
+  ): Promise<AgentExecutionStrengthId | null> {
     const value = (await this.loadStored()).find((item) => item.id === sessionId);
     if (!value) throw new Error('Local session was not found');
-    return value.agentEnabled === true;
+    return value.agentStrength ?? null;
   }
 
   /**
@@ -201,17 +237,26 @@ export class LocalSessionRepository {
     });
   }
 
-  setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
+  setAgentStrengthOverride(
+    sessionId: string,
+    strength: AgentExecutionStrengthId | null,
+  ): Promise<void> {
     return this.enqueueWrite(async () => {
       const values = await this.loadStored();
       const index = values.findIndex((item) => item.id === sessionId);
       if (index < 0) throw new Error('Local session was not found');
+      // Field-level update on the freshest record: another card may have
+      // changed the thread's model/provider fields while this write was queued.
       values[index] = {
         ...values[index],
-        agentEnabled: enabled,
+        agentStrength: strength,
       };
       await this.saveStored(values);
     });
+  }
+
+  resetAgentStrength(sessionId: string): Promise<void> {
+    return this.setAgentStrengthOverride(sessionId, null);
   }
 
   async getMessages(sessionId: string): Promise<ChatMessage[]> {
