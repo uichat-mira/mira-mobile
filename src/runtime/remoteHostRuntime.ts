@@ -1,5 +1,6 @@
 import type { ChatMessage, Session } from '../types';
 import { miraHostClient } from '../api/miraHostClient';
+import { assertDesktopConnectionActive } from '../connectivity/desktopConnectionAuthority';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 
 export class RemoteHostRuntime implements ConversationRuntime {
@@ -10,7 +11,8 @@ export class RemoteHostRuntime implements ConversationRuntime {
     return miraHostClient.listSessions();
   }
 
-  deleteSession(sessionId: string): Promise<void> {
+  async deleteSession(sessionId: string): Promise<void> {
+    assertDesktopConnectionActive('direct');
     return miraHostClient.deleteSession(sessionId);
   }
 
@@ -23,6 +25,7 @@ export class RemoteHostRuntime implements ConversationRuntime {
     input: string,
     options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    assertDesktopConnectionActive('direct');
     const stream = await miraHostClient.sendMessage(sessionId, input, options?.messageId);
     return (async function* () {
       for await (const delta of stream) yield { type: 'text-delta' as const, delta };

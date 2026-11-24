@@ -7,6 +7,7 @@ import {
   type RemoteManifest,
 } from '../protocol/remoteHostV1';
 import type { HostAgentRunClient } from '../runtime/durableHostAgentRuntime';
+import { assertDesktopConnectionActive } from '../connectivity/desktopConnectionAuthority';
 import { useCloudAccountStore } from './cloudAccountStore';
 import {
   cloudRelayEntry,
@@ -34,7 +35,15 @@ export class CloudHostAgentRunClient implements HostAgentRunClient {
       cloudRelayEntry,
     private readonly json: typeof requestCloudRelayJson = requestCloudRelayJson,
     private readonly ownerIsActive: () => boolean = () => {
+      // A Cloud Agent thread belongs to its route-selected account and to the
+      // active Cloud transport. Opening history stays possible; new reads for
+      // mutations and observations stop once Cloud is no longer active.
       const state = useCloudAccountStore.getState();
+      try {
+        assertDesktopConnectionActive('cloud');
+      } catch {
+        return false;
+      }
       return state.status === 'signed_in' && state.account?.id === accountId;
     },
   ) {}

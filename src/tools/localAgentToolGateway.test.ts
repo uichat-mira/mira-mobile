@@ -11,6 +11,7 @@ import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
 import { PiCoreAgentLoop } from '../runtime/piAgentLoop';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import {
   LocalAgentToolGateway,
@@ -250,6 +251,7 @@ const gateway = (
   cloudContext: cloudContext(options.context ?? {
     accountId: 'account-a',
     explicitlySignedOut: false,
+    desktopMode: 'cloud',
   }),
   json: fixture.json as unknown as typeof requestCloudRelayJson,
   sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
@@ -293,12 +295,16 @@ const previousHostPrompt = (...setups: HostSetup[]): string => [
 ].join('\n');
 
 describe('LocalAgentToolGateway', () => {
-  it('uses the existing Local + paired Host toolset only when explicitly signed out', async () => {
+  it('uses the existing Local + paired Host toolset when Direct is active and Cloud is signed out', async () => {
     const fixture = discoveryFixture();
     const paired = pairedGateway();
     const selected = gateway(fixture, {
       paired,
-      context: { accountId: null, explicitlySignedOut: true },
+      context: {
+        accountId: null,
+        explicitlySignedOut: true,
+        desktopMode: 'direct',
+      },
     });
 
     await expect(selected.listTools()).resolves.toEqual([{
@@ -310,11 +316,80 @@ describe('LocalAgentToolGateway', () => {
     expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });
 
+  it('keeps Desktop tools on the active Direct transport while Cloud is signed in', async () => {
+    const fixture = discoveryFixture();
+    const paired = pairedGateway();
+    const selected = gateway(fixture, {
+      paired,
+      context: {
+        accountId: 'account-a',
+        explicitlySignedOut: false,
+        desktopMode: 'direct',
+      },
+    });
+
+    await expect(selected.listTools()).resolves.toEqual([{
+      name: 'paired_tool',
+      description: 'Paired Host tool',
+      parameters: { type: 'object' },
+    }]);
+    expect(paired.listTools).toHaveBeenCalledTimes(1);
+    expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
+  });
+
+  it('stops an already-disclosed Desktop tool after the active mode changes', async () => {
+    const fixture = discoveryFixture();
+    let context: CloudToolAccountContext = {
+      accountId: 'account-a',
+      explicitlySignedOut: false,
+      desktopMode: 'cloud',
+    };
+    const selected = new LocalAgentToolGateway({
+      local: localGateway(),
+      paired: pairedGateway(),
+      entry: fixture.entry,
+      cloudContext: () => context,
+      json: fixture.json as unknown as typeof requestCloudRelayJson,
+      sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+    });
+    expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
+      .toContain(sharedToolName);
+
+    context = { ...context, desktopMode: 'direct' };
+    await expect(selected.callTool({
+      callId: 'call-after-switch', name: sharedToolName, arguments: '{}',
+    })).rejects.toMatchObject({ code: 'DESKTOP_CONNECTION_INACTIVE' });
+    expect(fixture.json).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ path: expect.stringContaining('tool-invocations') }),
+    );
+  });
+
+  it('exposes no Desktop tools when no transport is active', async () => {
+    const fixture = discoveryFixture();
+    const paired = pairedGateway();
+    const selected = gateway(fixture, {
+      paired,
+      context: {
+        accountId: 'account-a',
+        explicitlySignedOut: false,
+        desktopMode: 'none',
+      },
+    });
+
+    await expect(selected.listTools()).resolves.toEqual([localTool]);
+    expect(paired.listTools).not.toHaveBeenCalled();
+    expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
+  });
+
   it.each(['session_rejected', 'device_revoked'] as const)(
     'does not fall back to paired tools after Cloud status %s',
     async status => {
       const original = useCloudAccountStore.getState();
+      const originalMode = useDesktopConnectionStore.getState();
       useCloudAccountStore.setState({ status, account: null });
+      useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
       try {
         const paired = pairedGateway();
         const fixture = discoveryFixture();
@@ -333,6 +408,7 @@ describe('LocalAgentToolGateway', () => {
         expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
       } finally {
         useCloudAccountStore.setState(original);
+        useDesktopConnectionStore.setState(originalMode);
       }
     },
   );
@@ -569,7 +645,7 @@ describe('Cloud Local Agent authority changes', () => {
   it('stops a run when the Cloud account switches', async () => {
     const fixture = discoveryFixture();
     let context: CloudToolAccountContext = {
-      accountId: 'account-a', explicitlySignedOut: false,
+      accountId: 'account-a', explicitlySignedOut: false, desktopMode: 'cloud',
     };
     const selected = new LocalAgentToolGateway({
       local: localGateway(),
@@ -581,7 +657,9 @@ describe('Cloud Local Agent authority changes', () => {
     });
     expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
       .toContain(sharedToolName);
-    context = { accountId: 'account-b', explicitlySignedOut: false };
+    context = {
+      accountId: 'account-b', explicitlySignedOut: false, desktopMode: 'cloud',
+    };
     await expect(selected.callTool({
       callId: 'call-switched', name: sharedToolName, arguments: '{}',
     })).rejects.toMatchObject({ code: 'CLOUD_TOOL_HOST_CHANGED' });

@@ -4,6 +4,7 @@ import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
 import { HostConfigScreen } from './HostConfigScreen';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import type { RemoteJsonRequest } from '../api/remoteHttp';
 import { RemoteHostError } from '../api/remoteHttp';
 import type { RootStackParamList } from '../types/navigation';
@@ -376,5 +377,27 @@ describe('HostConfigScreen Tailscale Direct-only pairing entry', () => {
     await act(async () => {
       tree.unmount();
     });
+  });
+
+  it('blocks pairing while Cloud is active without consuming a claim', async () => {
+    useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
+    mockRoute.params = directParams;
+    let tree: ReactTestRenderer | undefined;
+    try {
+      tree = await renderScreen();
+
+      expect(renderedText(tree)).toContain('当前正在使用 Mira Cloud 桌面连接');
+      expect(
+        findPressable(tree, '提交配对申请'),
+      ).toBeUndefined();
+      expect(spies.direct).not.toHaveBeenCalled();
+    } finally {
+      if (tree) {
+        await act(async () => {
+          tree?.unmount();
+        });
+      }
+      useDesktopConnectionStore.setState({ mode: 'none', hydrated: true });
+    }
   });
 });

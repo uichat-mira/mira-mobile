@@ -22,7 +22,7 @@
 这五项由 [MOB-090 #354](https://github.com/uichat-mira/mira-mobile/issues/354) 持有完整用户行为、边界、回归与验收合同；本页只做可检索摘要，**不另立重复的施工合同**。
 
 1. **D1：扫码/粘贴/配对深链只面向 Tailscale Direct。** Cloud Relay 经 Mira Cloud 身份与 Host 授权进入，不依赖扫码；2026-11-24 维护者进一步裁决：旧配对 Relay 自动回退及静态 token 路径全部退役，已保存的混合凭据仅保留 Direct，Relay-only 凭据需重新配对；官方 Cloud Relay 独立保留。
-2. **D2：Tailscale Direct 与 Cloud Relay 的「活动 Desktop 远程连接」互斥**，另一入口可见但置灰，执行路由不得偷偷回退；**Cloud 账号登录与 Tailscale 直连不互斥**。左下角新建远程会话必须走正确来源。云身份已登录且正在使用 Tailscale 时，单入口究竟如何选取来源，#354 标记为需消歧的交互边界。
+2. **D2：Tailscale Direct 与 Cloud Relay 的「活动 Desktop 远程连接」互斥**，另一入口可见但置灰，执行路由不得偷偷回退；**Cloud 账号登录与 Tailscale 直连不互斥**。左下角新建远程会话跟随当前活动连接：Direct 使用 paired Host，Cloud 使用 Cloud Host，无活动连接时先呈现连接选择，不隐式选源。#354 的消歧点已由 [MOB-095 #374](https://github.com/uichat-mira/mira-mobile/issues/374) 落定，活动模式/断开的权威行为见 [远程连接唯一真相源](remote-access/remote-connection-canonical-v1.md) 1.1。
 3. **D3：侧边栏右下角为云账号身份入口**；登录后有可信头像时才显示头像，否则合适的账号占位；未登录明确提示，不能用传输连接状态冒充账号身份。
 4. **D4：设置页底部是唯一的情境化退出操作位。** Tailscale 活动连接时仅断开连接；Cloud Relay 活动连接时退出云账号；已登录但无活动连接时仍可退出云账号；同时保留云账号详情的独立退出能力。云退出使狐邮、云工具、云设备和 Cloud Relay 失效，但不抹除独立 Tailscale 配对、Local Provider 密钥或本地聊天历史。
 5. **D5：计划用手机本地的单一 web_fetch(query 或 url) 替换专用天气工具。** 既能搜索关键词，也能读取已知公开 URL；不把 Desktop 的双工具划分直接复制到手机。该工具不依赖云登录/桌面在线；搜索 Provider、网络防护、抽取方式及设备验收仍待论证。**当前代码仍是 local_weather_current，不能写成已替换。**

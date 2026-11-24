@@ -4,6 +4,7 @@ import renderer, { act } from 'react-test-renderer';
 
 import { CustomDrawer } from './CustomDrawer';
 import { useCloudAccountStore, type CloudAccountStatus } from '../cloud/cloudAccountStore';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 
 // Use the real Zustand subscription path. Only remote OAuth I/O is isolated;
 // a hand-crafted selector mock would miss an open drawer that stops updating.
@@ -36,6 +37,20 @@ jest.mock('../api/miraHostClient', () => ({
   },
 }));
 
+jest.mock('../cloud/cloudRemoteBusiness', () => ({
+  cloudRemoteBusinessClient: {
+    createThread: jest.fn(),
+    reset: jest.fn(),
+  },
+}));
+
+jest.mock('../settings/generalSettings', () => ({
+  DEFAULT_GENERAL_SETTINGS: { defaultSessionSource: 'ask' },
+  loadGeneralSettings: jest.fn(async () => ({
+    defaultSessionSource: 'remote-host',
+  })),
+}));
+
 jest.mock('../runtime/runtimeRegistry', () => ({
   runtimeRegistry: {
     listSessions: () => mockListSessions(),
@@ -62,6 +77,7 @@ jest.mock('./SessionKindIcon', () => ({
 }));
 jest.mock('../hooks/useRoleNameMap', () => ({ useRoleNameMap: () => ({}) }));
 jest.mock('lucide-react-native', () => ({
+  Check: () => null,
   Clock: () => null,
   FolderKanban: () => null,
   FolderOpen: () => null,
@@ -145,6 +161,7 @@ describe('CustomDrawer session collection', () => {
     mockCanDeleteSession.mockReset();
     mockCanDeleteSession.mockResolvedValue(true);
     setCloudAccount('signed_out', null);
+    useDesktopConnectionStore.setState({ mode: 'none', hydrated: true });
   });
 
   it('groups pinned threads above recent threads', async () => {
@@ -189,6 +206,7 @@ describe('CustomDrawer Cloud account entry', () => {
     mockCanDeleteSession.mockReset();
     mockCanDeleteSession.mockResolvedValue(true);
     setCloudAccount('signed_out', null);
+    useDesktopConnectionStore.setState({ mode: 'none', hydrated: true });
   });
 
   it('replaces the static M placeholder with an explicit signed-out entry', async () => {
@@ -312,6 +330,115 @@ describe('CustomDrawer Cloud account entry', () => {
     expect(collectText(tree)).toContain('未登录');
     expect(collectText(tree)).not.toContain('bob');
 
+    await act(async () => tree.unmount());
+  });
+});
+
+describe('CustomDrawer remote chat routing', () => {
+  const { miraHostClient } = jest.requireMock('../api/miraHostClient');
+  const { cloudRemoteBusinessClient } = jest.requireMock(
+    '../cloud/cloudRemoteBusiness',
+  );
+
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    mockListSessions.mockReset();
+    mockListSessions.mockResolvedValue([]);
+    miraHostClient.createSession.mockReset();
+    cloudRemoteBusinessClient.createThread.mockReset();
+    setCloudAccount('signed_out', null);
+    useDesktopConnectionStore.setState({ mode: 'none', hydrated: true });
+  });
+
+  const pressChat = async (tree: ReactTestRenderer) => {
+    const button = tree.root.findAll(
+      node =>
+        node.props.accessibilityLabel === '聊天' &&
+        typeof node.props.onPress === 'function',
+    )[0];
+    await act(async () => {
+      button.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  it('creates a Direct Agent thread and navigates as remote-host', async () => {
+    useDesktopConnectionStore.setState({ mode: 'direct', hydrated: true });
+    miraHostClient.createSession.mockResolvedValue({
+      id: 'thread-direct', title: 'Direct chat', source: 'remote-host',
+    });
+    const tree = await renderDrawer();
+
+    await pressChat(tree);
+
+    expect(miraHostClient.createSession).toHaveBeenCalledWith(undefined, {
+      agentEnabled: true,
+    });
+    expect(cloudRemoteBusinessClient.createThread).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('Chat', {
+      sessionId: 'thread-direct',
+      title: 'Direct chat',
+      source: 'remote-host',
+    });
+    await act(async () => tree.unmount());
+  });
+
+  it('creates a Cloud Agent thread with the exact initiating account', async () => {
+    setCloudAccount('signed_in', { id: 'account-alice', username: 'alice' });
+    useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
+    cloudRemoteBusinessClient.createThread.mockResolvedValue({
+      id: 'thread-cloud', title: 'Cloud chat',
+    });
+    const tree = await renderDrawer();
+
+    await pressChat(tree);
+
+    expect(cloudRemoteBusinessClient.createThread).toHaveBeenCalledWith(
+      undefined,
+      { agentEnabled: true },
+    );
+    expect(miraHostClient.createSession).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('Chat', {
+      sessionId: 'thread-cloud',
+      title: 'Cloud chat',
+      source: 'cloud-host',
+      cloudAccountId: 'account-alice',
+    });
+    await act(async () => tree.unmount());
+  });
+
+  it('does not navigate a Direct result after the active mode changed', async () => {
+    useDesktopConnectionStore.setState({ mode: 'direct', hydrated: true });
+    let resolveCreate!: (value: unknown) => void;
+    miraHostClient.createSession.mockReturnValue(
+      new Promise(resolve => { resolveCreate = resolve; }),
+    );
+    const tree = await renderDrawer();
+
+    await pressChat(tree);
+    useDesktopConnectionStore.setState({ mode: 'cloud', generation: 9 });
+    await act(async () => {
+      resolveCreate({ id: 'stale', title: 'Stale', source: 'remote-host' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    await act(async () => tree.unmount());
+  });
+
+  it('presents the existing connection choice instead of creating without a mode', async () => {
+    const tree = await renderDrawer();
+
+    await pressChat(tree);
+
+    expect(miraHostClient.createSession).not.toHaveBeenCalled();
+    expect(cloudRemoteBusinessClient.createThread).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(collectText(tree)).toContain('连接 Mira Desktop');
     await act(async () => tree.unmount());
   });
 });

@@ -12,6 +12,20 @@
 
 Tailscale Direct 配对使用 `mira_device_*` 设备凭据和 scope；官方 Cloud Relay 使用独立的云身份、Client ticket 与 Host Grant。两者不互为备用通道。
 
+### 1.1 活动 Desktop 远程连接（MOB-095 / A2）
+
+Mobile 只允许**一个**活动的 Desktop 远程连接，取值为 `none` / `direct` / `cloud`。该模式由一个 Mobile 运行时权威统一持有，不等于“是否存在凭据”：
+
+- 长期授权仍分别保存在 Direct 设备凭据与 Cloud Session 中；Cloud 账号登录、独立云服务（如狐邮）和 Local Provider 都不要求激活 Cloud Relay。
+- 只有用户显式操作才能激活或切换；切换时先在本地释放旧传输并停止/分离在途工作，绝不重放已发出的变更，也不删除 Host 持久 Run 或历史。
+- 启动时只恢复上一次**显式**激活的模式，并且仍要求对应授权有效：Direct 需要设备凭据仍在，Cloud 需要 Cloud Session 仍有效。仅有凭据或仅有登录不会推断出活动模式；Cloud 失效时回到 `none`，不会自动回退到 Direct。升级后尚无显式模式记录的用户从 `none` 开始，需在连接入口选择；既有 Direct 凭据本身不构成活动模式。
+- 网络健康、登录状态和活动模式是三个独立事实：暂时断网或 Cloud 短暂不可用不会切换模式。
+- 已保存的历史会话保留原始 source/owner；非活动来源的新消息、Agent 操作和 Desktop 工具调用会被拒绝，而不是静默换传输。
+- 新建远程会话跟随活动模式：Direct → paired `createSession`；Cloud → Cloud business `createThread`（携带发起时的精确 Cloud account 与 Host 归属）；`none` → 先呈现连接选择，不创建假会话。模式/账号在创建期间变化时，不导航过期结果。
+- 连接 UI 始终同时展示两种 Desktop 连接；一种活动时另一种置灰并说明原因，并提供显式断开路径。Cloud 账号登录/退出与 Desktop 传输保持分离，使用 Direct 不要求退出 Cloud。
+- 扫码/粘贴/`mira://pair` 深链在存在活动连接时直接阻断，不解析、不探测、不消耗 claim。
+- Desktop 依据自身登录态拒绝 Direct 准入（DSK-018）时，Mobile 将其视为当前 Direct 路径不可用，不因此自动改用 Cloud。
+
 自 MOB-092（2026-11-23）起，**扫码 / 粘贴 / `mira://pair` 深链这一新设备配对入口只面向 Tailscale Direct**：
 
 - 配对 URI 必须携带可解析、满足既有安全要求的 `host`（Tailscale Direct HTTPS endpoint）；新配对入口识别 `*.ts.net` Tailscale Serve 域名及 `100.64.0.0/10` Tailnet IPv4 origin；拒绝普通公网 HTTPS、额外路径或 URL 参数。其他 Tailnet 广告格式需实际验证后再扩展；
@@ -20,7 +34,7 @@ Tailscale Direct 配对使用 `mira_device_*` 设备凭据和 scope；官方 Clo
 
 Cloud Relay 不依赖扫码。它通过 Mira Cloud 账号、Host 授权和既有 Cloud Relay 合同进入，由 [MOB-080 #274](https://github.com/uichat-mira/mira-mobile/issues/274) 等合同负责；本入口不得以 Relay 代替 Direct 完成配对。
 
-2026-11-24 维护者裁决：旧配对的 Relay 兼容彻底退役。保留既有 Direct 身份，移除旧 Relay endpoint/token 与自动回退；Cloud Relay 和业务会话合同保持独立。活动 Tailscale / Cloud Relay 互斥与来源路由属于 A2，不在本文新入口语义内。
+2026-11-24 维护者裁决：旧配对的 Relay 兼容彻底退役。保留既有 Direct 身份，移除旧 Relay endpoint/token 与自动回退；Cloud Relay 和业务会话合同保持独立。活动 Tailscale / Cloud Relay 互斥与来源路由由 [MOB-095 #374](https://github.com/uichat-mira/mira-mobile/issues/374) 落定，见本文 1.1；新远程会话跟随当前活动连接，没有活动连接时先显式选择，不隐式选源。
 
 ## 2. 新设备首次配对：Tailscale Direct-only
 
@@ -198,7 +212,12 @@ Workspace create / update / delete
 
 ## 8. 验收
 
-- 新扫码 / 粘贴 / `mira://pair` 深链：必须包含有效 Tailscale Direct Host；
+- 同一时间只存在一个活动 Desktop 远程连接；Direct / Cloud 激活不能重叠，UI 与真实运行时使用同一权威；
+- Cloud 已登录 + Direct 活动是有效状态并保持 Direct；独立云服务、Local Provider 与本地聊天继续可用；
+- 显式断开后再切换可达且安全；断开不撤销无关凭据，不在失败、登出、撤权、Host 切换、重连或过期响应时自动换传输；
+- Desktop 拒绝 Direct 准入时按当前 Direct 路径不可用处理；不借此自动改走 Cloud；
+- 新建远程会话只调用一个正确客户端并携带精确 source/owner/Host；无活动连接时进入连接选择；旧本地默认与历史 source 隔离保持；
+- 新扫码 / 粘贴 / `mira://pair` 深链：必须包含有效 Tailscale Direct Host；存在活动连接时阻断且不消耗 claim；
 - `host` + 历史 `relay` / `relayHint` / `relayToken`：只做 Direct preflight/claim/poll，不调用 Relay；
 - Relay-only / 缺少 `host` / 无效 Host：准确报错且不产生 claim 副作用；
 - Direct 不可达：无 claim；claim 已发出但响应不确定：保持 uncertain，不向 Relay 重发；
