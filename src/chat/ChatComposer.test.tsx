@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
-import { TextInput, StyleSheet } from 'react-native';
+import { TextInput, StyleSheet, DeviceEventEmitter } from 'react-native';
 import { themePresets } from '../theme/palette';
 import Slider from '@react-native-community/slider';
 import { ChatComposer } from './ChatComposer';
@@ -186,6 +186,17 @@ describe('MOB-104 ChatComposer', () => {
     );
     expect(button(tree, '选择模型：未选择')).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
+    const sendTarget = button(tree, '发送消息');
+    expect(StyleSheet.flatten(sendTarget.props.style)).toMatchObject({
+      width: 44,
+      height: 44,
+    });
+    expect(
+      StyleSheet.flatten(
+        tree.root.findAllByProps({ testID: 'composer-send-face' })[0].props
+          .style,
+      ),
+    ).toMatchObject({ width: 32, height: 32 });
     await press(tree, '发送消息');
     expect(send).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -299,6 +310,19 @@ describe('MOB-104 ChatComposer', () => {
     });
     await focus(tree);
     await press(tree, '执行强度：轻量');
+    // Android IMEs can hide the keyboard and blur the input when a toolbar
+    // control takes focus. The open popup must remain independently usable.
+    await act(async () => {
+      tree.root.findByType(TextInput).props.onBlur();
+      DeviceEventEmitter.emit('keyboardDidHide', {
+        endCoordinates: { screenX: 0, screenY: 800, width: 360, height: 0 },
+        duration: 0,
+        easing: 'keyboard',
+      });
+    });
+    expect(
+      tree.root.findAllByProps({ testID: 'composer-popup-strength' }).length,
+    ).toBeGreaterThan(0);
     const slider = tree.root.findByType(Slider);
     expect(slider.props.maximumValue).toBe(4);
     await act(async () => {
@@ -316,6 +340,7 @@ describe('MOB-104 ChatComposer', () => {
     );
     expect(tree.root.findByType(TextInput).props.value).toBe('preserved draft');
     await press(tree, '关闭输入框菜单');
+    await focus(tree);
     await press(tree, '执行强度：深度');
     await press(tree, '跟随全局');
     await expect(
