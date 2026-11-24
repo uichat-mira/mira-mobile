@@ -353,8 +353,8 @@ describe('PiCoreAgentLoop', () => {
           sensitiveResult: 'mail-search',
         },
         {
-          name: 'weather',
-          description: 'Weather',
+          name: 'web',
+          description: 'Web page',
           parameters: { type: 'object' },
         },
       ],
@@ -362,7 +362,7 @@ describe('PiCoreAgentLoop', () => {
     };
     const seenTools: Array<readonly unknown[]> = [];
     const events = await collect(await new PiCoreAgentLoop(gateway).run(
-      [{ role: 'user', content: 'weather?' }],
+      [{ role: 'user', content: 'web?' }],
       async (_messages, tools) => {
         seenTools.push(tools);
         return (async function* () {
@@ -377,7 +377,7 @@ describe('PiCoreAgentLoop', () => {
         function: expect.objectContaining({ name: 'whoyou_mail_search' }),
       }),
       expect.objectContaining({
-        function: expect.objectContaining({ name: 'weather' }),
+        function: expect.objectContaining({ name: 'web' }),
       }),
     ]));
     expect(events).not.toContainEqual({

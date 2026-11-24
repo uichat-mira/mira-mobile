@@ -11,7 +11,8 @@ export type LocalAgentActivityStatus =
   | 'approved'
   | 'rejected'
   | 'completed'
-  | 'truncated';
+  | 'truncated'
+  | 'failed';
 
 export interface LocalAgentActivity {
   callId: string;
@@ -35,7 +36,8 @@ export type LocalAgentPauseReason =
   | 'app-suspended'
   | 'timeout'
   | 'cancelled'
-  | 'approval-rejected';
+  | 'approval-rejected'
+  | 'budget-exhausted';
 
 export type LocalAgentNoticeCode =
   | 'tool-channel-unavailable'
@@ -85,6 +87,7 @@ const activityLabel: Record<LocalAgentActivityStatus, string> = {
   rejected: '已拒绝',
   completed: '已完成',
   truncated: '结果已截断',
+  failed: '调用失败',
 };
 
 /**
@@ -107,13 +110,14 @@ const pauseLabel: Record<LocalAgentPauseReason, string> = {
   timeout: '本轮运行已超时，可重新发送。',
   cancelled: '你已停止本轮运行。',
   'approval-rejected': '该工具调用已拒绝，本轮已停止。',
+  'budget-exhausted': '本轮执行强度已用尽，保留已有结果。',
 };
 
 const noticeLabel: Record<LocalAgentNoticeCode, string> = {
   'tool-channel-unavailable':
     '工具通道当前不可用，本次已按普通回答处理，未使用任何工具。',
   'toolset-degraded':
-    'Host 工具暂时不可用，本轮只使用手机内置工具（如天气）。',
+    'Host 工具暂时不可用，本轮只使用手机内置工具（如网页读取）。',
   'cloud-tools-unavailable':
     'Mira Cloud 或 Desktop Host 暂不可连接；本轮只使用手机内置工具。',
   'cloud-tools-unauthorized':

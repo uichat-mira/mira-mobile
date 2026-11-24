@@ -19,6 +19,7 @@ export type RuntimeEvent =
       name: string;
       content: string;
       truncated?: boolean;
+      failed?: boolean;
     }
   | {
       type: 'approval-required';
@@ -37,7 +38,7 @@ export type RuntimeEvent =
     }
   | {
       type: 'run-paused';
-      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected';
+      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected' | 'budget-exhausted';
     }
   /**
    * Non-error, user-visible signal that does not stop the turn. Emitted, for

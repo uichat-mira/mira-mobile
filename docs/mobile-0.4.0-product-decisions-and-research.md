@@ -10,7 +10,7 @@
 本页是 **Mobile 0.4.0 相关跨服务能力消费的产品决策、研究结论、待决问题** 的唯一汇总入口；后续相同主题只在这里维护结论，不在多份随手文档重复定义协议或复制任务状态。
 
 - **已运行事实**：以各仓库当前代码、配置和真实运行证据为准；Mobile 现状详见 [Pi Core 工程真相](engineering/pi-core-mobile-bridge.md)，Desktop 现状详见 [Desktop Tool 当前真相](https://github.com/uichat-mira/mira-desktop/blob/dev/docs/TOOL_CURRENT_TRUTH.md)。
-- **具体施工范围、验收与结论**：以 GitHub Issue / PR 为准。尤其 [MOB-090 #354](https://github.com/uichat-mira/mira-mobile/issues/354) 持有 D1–D5 的完整原始决策合同；[MOB-087 #342](https://github.com/uichat-mira/mira-mobile/issues/342)、[MOB-088 #343](https://github.com/uichat-mira/mira-mobile/issues/343) 持有既有 Host Gateway/选机合同。
+- **具体施工范围、验收与结论**：以 GitHub Issue / PR 为准。尤其 [MOB-090 #354](https://github.com/uichat-mira/mira-mobile/issues/354) 持有 D1–D4 及 D5 历史背景的完整原始决策合同；D5 的搜索/URL 语义已由 [MOB-101 #388](https://github.com/uichat-mira/mira-mobile/issues/388) 裁决为唯一 `web(url)` 并取代旧 query 接口。[MOB-087 #342](https://github.com/uichat-mira/mira-mobile/issues/342)、[MOB-088 #343](https://github.com/uichat-mira/mira-mobile/issues/343) 持有既有 Host Gateway/选机合同。
 - **本页的决策** 表示维护者已表明产品方向，**不代表代码已实现、批准新的跨仓协议、授权开卡/施工/合并/发布**。
 - **本页的研究** 只说明已有证据能证明什么；外部协议提案、内部静态代码检查、工程推断、已验收功能必须分开。
 - Mira Mobile 两条既有路径——Remote Host 与 Local Provider——继续独立；此处讨论的三层披露主要针对 **Local Provider 下的 Pi Core Agent 发现与消费工具**，不擅自改变 Remote Host 自有 Agent Run 的执行权威。
@@ -25,7 +25,7 @@
 2. **D2：Tailscale Direct 与 Cloud Relay 的「活动 Desktop 远程连接」互斥**，另一入口可见但置灰，执行路由不得偷偷回退；**Cloud 账号登录与 Tailscale 直连不互斥**。左下角新建远程会话跟随当前活动连接：Direct 使用 paired Host，Cloud 使用 Cloud Host，无活动连接时先呈现连接选择，不隐式选源。#354 的消歧点已由 [MOB-095 #374](https://github.com/uichat-mira/mira-mobile/issues/374) 落定，活动模式/断开的权威行为见 [远程连接唯一真相源](remote-access/remote-connection-canonical-v1.md) 1.1。
 3. **D3：侧边栏右下角为云账号身份入口**；登录后有可信头像时才显示头像，否则合适的账号占位；未登录明确提示，不能用传输连接状态冒充账号身份。
 4. **D4：设置页底部是唯一的情境化退出操作位。** 活动 Tailscale 连接优先显示「退出登录（Tailscale）」：确认后只释放当前 Direct 连接并回到扫码入口，Mira ID 与云功能保持登录。无活动 Tailscale 但存在可信 Mira ID（含离线保留身份或活动 Cloud Relay）时显示「退出登录（Mira ID）」：确认后执行真实云账号退出并回到 Mira Cloud 账户页，Cloud Relay、狐邮、云工具/云设备和在途云请求立即失效。两种身份都不存在时不显示。云退出不抹除独立 Tailscale 配对、Local Provider 密钥或本地聊天历史，云账号详情仍保留独立退出能力。
-5. **D5：计划用手机本地的单一 web_fetch(query 或 url) 替换专用天气工具。** 既能搜索关键词，也能读取已知公开 URL；不把 Desktop 的双工具划分直接复制到手机。该工具不依赖云登录/桌面在线；搜索 Provider、网络防护、抽取方式及设备验收仍待论证。**当前代码仍是 local_weather_current，不能写成已替换。**
+5. **D5：手机本地唯一 `web(url)` 替代专用天气工具（2026-11-24 维护者裁决，见 [MOB-101 #388](https://github.com/uichat-mira/mira-mobile/issues/388)）。** 工具只接收必填 URL：可读取已知公开网页，也由模型自行构造普通搜索引擎结果页、目录页或站内搜索 URL，再沿返回链接继续读取；没有独立 query/search 模式、搜索供应商、站点白名单或专用天气后门。该工具不依赖云登录 / 桌面在线，只做公开 HTTP(S) 只读 GET，不登录、不提交表单、不执行页面脚本。网络边界、1 MiB 下载上限、16 KiB 结果上限、30 秒超时、取消与正文/链接提取由本机实现承担；平台网络限制、真实搜索引擎可达性和真机内存/取消证据仍以实施卡及其验收为准，不能把 Jest 通过写成真机完成。
 
 ### D6：Desktop 远程能力的准入来源
 
@@ -86,7 +86,7 @@
 
 - package.json 版本为 **0.4.0**；但版本号不能证明本页新架构已经交付，也不能代替已安装 APK/IPA 的运行证据。
 - src/runtime/piAgentLoop.ts 已以 Pi Core 1.6 为本机 Local Provider 的正式编排路径，原 Loop 已退役；当前 Tool Gateway 提供本机+Who-You MCP+Desktop Remote Host 等来源。
-- src/tools/localToolGatewayClient.ts 仍在 App 内直接注册 local_weather_current、whoyou_mail_search、whoyou_mail_message_get 三个 Tool；前者直接访问 Open-Meteo，后两者经狐邮的 Streamable HTTP MCP Client。
+- src/tools/localToolGatewayClient.ts 在 App 内直接注册 web、whoyou_mail_search、whoyou_mail_message_get 三个 Tool：`web(url)` 经平台原生有界 HTTP 传输读取公开网页，后两者经狐邮的 Streamable HTTP MCP Client。旧的 local_weather_current / Open-Meteo 路径已移除；实际能力与限制见 D5 和 [MOB-101 #388](https://github.com/uichat-mira/mira-mobile/issues/388)。
 - src/tools/localAgentToolGateway.ts 的 Cloud Local Agent 起始工具包含本机工具和 mira_desktop_hosts；发现授权 Desktop 后通过 refreshedTools 替换模型工具集合。src/tools/remoteToolGatewayClient.ts、cloudToolHostClient.ts 通过既有 /remote/v1/tools 和远端 invocation/approval/cancel，而不是直接将 Desktop MCP Server 透传给手机。
 - **MOB-100 / 语义工具链阻断移除（2026-11-24）**：src/tools/agentToolPolicies.ts 的 MailStage/邮件调用链限制和 src/runtime/piAgentLoop.ts 的结果驱动工具集缩减/跨能力披露阻断已删除。授权工具在前序结果后保持可见，邮件结果可用于后续合法调用参数；`sensitiveResult` 仅保留披露审批与接收方提示。身份/绑定/撤权/schema/审批/取消/预算仍按现有合同。**旧拦截已不在活动路径；自动化只证明源码行为，不代表 0.4.0 真机 T4。**
 - **MOB-094 / PR #370 基座切片（2026-11-24）**：`src/tools/toolDisclosure.ts` / `toolGatewayClient.ts` 与 Pi Core 新增受信任的服务目录、可选语义能力、`mira_tools_disclose` 按需获取真实 Schema、运行中动态工具集及版本核对。已知有效工具可直接调用，无固定发现层数或回合；现有 Local Tool Gateway/Host 仍为协议中立基线。**该基座切片本身未实现 Who-You Resource 的真实 MCP 消费、Desktop 标准 MCP Server、Relay MCP 转发或 B3 多服务真机验收；Who-You 消费由下一条 MOB-096 切片另行补充。** 本项的真实交付与验收状态以 PR #370、Issue #369 和相应代码/运行证据为准，不能把代码合并等同于真机与跨服务完成。

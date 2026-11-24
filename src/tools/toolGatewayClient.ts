@@ -157,6 +157,10 @@ export class ToolGatewayError extends Error {
   }
 }
 
+/** A completed, failed read-only operation that leaves the run usable.
+ * Only a trusted executor can classify its own expected failures this way. */
+export class RecoverableToolCallError extends ToolGatewayError {}
+
 /**
  * Protocol-neutral boundary for approved remote tools. The concrete transport
  * stays behind an adapter; model/provider credentials never enter this contract.

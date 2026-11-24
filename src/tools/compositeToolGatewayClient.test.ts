@@ -7,8 +7,8 @@ import type {
 } from './toolGatewayClient';
 
 const localManifest: ToolManifest = {
-  name: 'local_weather_current',
-  description: 'Local weather',
+  name: 'web',
+  description: 'Web page',
   parameters: { type: 'object' },
   destructive: false,
   requiresApproval: false,

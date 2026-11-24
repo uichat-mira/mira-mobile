@@ -689,10 +689,11 @@ describe('MOB-064 Local Memory runtime integration', () => {
     );
 
     // Exhausting the budget is not a hard error, but this scripted final
-    // summary still asks for tools, so it is length-limited rather than treated
+    // summary still asks for tools, so it is paused rather than treated
     // as a completed answer. No Memory is written and nothing is processed.
     expect(events.some(event => event.type === 'error')).toBe(false);
-    expect(events).toContainEqual({ type: 'finish', reason: 'length' });
+    expect(events).toContainEqual({ type: 'run-paused', reason: 'budget-exhausted' });
+    expect(events).not.toContainEqual({ type: 'finish', reason: 'stop' });
     expect(modelCalls).toBeGreaterThan(1);
     expect((await service.getOverview()).records).toHaveLength(0);
   });
