@@ -215,7 +215,10 @@ export const discoverWhoYouMcpService = async (
       toolDescriptors,
       capabilityResource,
       grantedScopes: credential.claims.scopes,
-      requiredScope: WHO_YOU_READ_SCOPE,
+      requiredScopes: [WHO_YOU_READ_SCOPE],
+      // This binding is the protected MailStage read slice only. Write/send or
+      // destructive MCP capabilities stay outside the binding's policy.
+      permittedAccess: ['read'],
       permittedToolNames: WHO_YOU_PROTECTED_READ_TOOLS,
       sensitiveResultFor: (name) => requiredMailRole(name) ?? undefined,
       serverInfo,

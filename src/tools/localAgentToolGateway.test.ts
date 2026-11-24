@@ -28,6 +28,7 @@ import {
   type ToolServiceDescriptor,
 } from './toolGatewayClient';
 import type { WhoYouMcpServiceDiscovery } from '../mcp/whoYouMcpService';
+import type { McpServiceDiscovery } from '../mcp/mcpServiceBinding';
 import { WhoYouError } from '../whoYou/whoYouError';
 
 const localTool: ToolManifest = {
@@ -250,7 +251,7 @@ const gateway = (
     context?: CloudToolAccountContext;
     selectionText?: string;
     previousAssistantText?: string;
-    mcp?: WhoYouMcpServiceDiscovery | null;
+    mcp?: McpServiceDiscovery | readonly McpServiceDiscovery[] | null;
   } = {},
 ) => new LocalAgentToolGateway({
   local: options.local ?? localGateway(),
@@ -635,6 +636,54 @@ describe('LocalAgentToolGateway', () => {
 });
 
 describe('Cloud Local Agent authority changes', () => {
+  it('keeps one Desktop service type across transports and rejects a same-mode re-pair generation', async () => {
+    const fixture = discoveryFixture();
+    let context: CloudToolAccountContext = {
+      accountId: 'account-a',
+      explicitlySignedOut: false,
+      desktopMode: 'direct',
+      desktopGeneration: 1,
+    };
+    const selected = new LocalAgentToolGateway({
+      local: localGateway(),
+      paired: pairedGateway(),
+      entry: fixture.entry,
+      cloudContext: () => context,
+      json: fixture.json as unknown as typeof requestCloudRelayJson,
+      sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+      mcp: null,
+    });
+    const direct = await selected.discoverTools();
+    expect(direct.services).toEqual([
+      expect.objectContaining({
+        id: 'mira-desktop',
+        toolNames: ['paired_tool'],
+      }),
+    ]);
+    await expect(selected.callTool({
+      callId: 'paired-call',
+      name: 'paired_tool',
+      arguments: '{}',
+    })).resolves.toMatchObject({ content: 'paired-result' });
+
+    // Same mode, new connection generation: the old Desktop binding is stale.
+    context = { ...context, desktopGeneration: 2 };
+    await expect(selected.callTool({
+      callId: 'paired-after-repair',
+      name: 'paired_tool',
+      arguments: '{}',
+    })).rejects.toMatchObject({ code: 'DESKTOP_CONNECTION_INACTIVE' });
+    await expect(selected.resolveApproval({
+      invocationId: 'approval-after-repair',
+      callId: 'paired-after-repair',
+      name: 'paired_tool',
+      arguments: '{}',
+      message: 'run',
+    }, 'approved')).rejects.toMatchObject({
+      code: 'DESKTOP_CONNECTION_INACTIVE',
+    });
+  });
+
   it('stops a run when the selected Host loses its tool grant', async () => {
     const setup: HostSetup = { host: hostA, tools: [cloudTool] };
     const fixture = discoveryFixture({ hosts: [setup] });
@@ -1334,6 +1383,63 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
       DESKTOP_HOST_DISCOVERY_TOOL,
     ]);
     expect(discovered?.services?.[0].toolNames).toContain('whoyou_mail_search');
+  });
+
+  it('keeps independent bindings usable when a sibling service fails', async () => {
+    const selected = gateway(discoveryFixture(), {
+      local: localGateway(),
+      mcp: [
+        { discover: jest.fn(async () => { throw new WhoYouError('unavailable', 'offline'); }) },
+        mcpDiscovery({
+          service: mcpService, tools: mcpTools, catalogRevision: 'sibling-rev',
+          degradation: 'none', accountId: 'account-a',
+          initialToolNames: ['whoyou_mail_search'], expiresAt: Date.now() + 60_000,
+          assertCurrent: () => undefined,
+        }),
+      ],
+    });
+    const discovered = await selected.discoverTools();
+    expect(discovered.notices).toEqual([]);
+    expect(discovered.services).toEqual([
+      expect.objectContaining({ id: 'mira-mobile-local' }),
+      expect.objectContaining({ id: 'who-you', toolNames: [
+        'whoyou_mail_search', 'whoyou_mail_message_get',
+      ] }),
+    ]);
+    expect(discovered.tools.map((tool) => tool.name)).toEqual([
+      'local_weather_current',
+      'whoyou_mail_search',
+      DESKTOP_HOST_DISCOVERY_TOOL,
+    ]);
+  });
+
+  it('rejects colliding tool names deterministically instead of shadow-routing', async () => {
+    const duplicate = (serviceId: string, revision: string): WhoYouMcpServiceDiscovery => ({
+      discover: jest.fn(async () => ({
+        service: {
+          id: serviceId,
+          name: serviceId,
+          toolNames: ['shared_duplicate_tool'],
+        },
+        tools: [{
+          name: 'shared_duplicate_tool',
+          description: serviceId,
+          parameters: { type: 'object' },
+        }],
+        catalogRevision: revision,
+        degradation: 'none' as const,
+        accountId: 'account-a',
+        initialToolNames: ['shared_duplicate_tool'],
+        expiresAt: Date.now() + 60_000,
+        assertCurrent: () => undefined,
+      })),
+    });
+    const selected = gateway(discoveryFixture(), {
+      mcp: [duplicate('service-a', 'a'), duplicate('service-b', 'b')],
+    });
+    await expect(selected.discoverTools()).rejects.toMatchObject({
+      code: 'TOOL_NAME_COLLISION',
+    });
   });
 
   it('runs the complete read-only Who You chain through real Pi Core and the existing approval flow', async () => {

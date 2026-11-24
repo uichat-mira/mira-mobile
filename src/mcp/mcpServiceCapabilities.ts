@@ -76,8 +76,18 @@ export interface ProjectMcpServiceOptions {
   capabilityResource?: unknown;
   /** Runtime-confirmed bearer scopes; service declarations never grant scopes. */
   grantedScopes: readonly string[];
-  /** The minimum read scope this Mobile slice was authorized to request. */
-  requiredScope: string;
+  /**
+   * Scopes this trusted binding requires before it projects anything. Service
+   * declarations never grant scopes; an absent/empty list means no scope is
+   * required for this binding.
+   */
+  requiredScopes?: readonly string[];
+  /**
+   * Local capability-access policy for this binding. A declared capability is
+   * grouped only when its access mode is explicitly permitted here; read-only
+   * is not a generic default. Grouping never grants execution authority.
+   */
+  permittedAccess: readonly ServiceAccessMode[];
   /**
    * Local execution policy. Only these real tools can be disclosed or called;
    * `access` / `confirmation` in the resource are hints, not permission.
@@ -288,8 +298,10 @@ const manifestOf = (
  *
  * - `tools/list` remains the only schema/tool authority.
  * - Only locally permitted real tools are exposed as callable manifests.
- * - Only `read` capabilities whose declared scopes are actually granted are
- *   projected, and each capability is reduced to the exposed real tools.
+ * - A capability is projected only when its access mode is locally permitted
+ *   and its declared scopes are actually granted, and each capability is
+ *   reduced to the exposed real tools. Projecting a write/send capability does
+ *   not grant any tool that local policy did not permit.
  * - Missing/unknown/mismatched resources degrade to a flat service with no
  *   invented capability groups. Real tools are never dropped for being
  *   unclassified.
@@ -297,9 +309,12 @@ const manifestOf = (
 export const projectMcpService = (
   options: ProjectMcpServiceOptions,
 ): McpServiceProjection => {
-  if (!options.grantedScopes.includes(options.requiredScope)) {
+  const grantedScopes = new Set(options.grantedScopes);
+  const requiredScopes = options.requiredScopes ?? [];
+  if (!requiredScopes.every((scope) => grantedScopes.has(scope))) {
     throw new ServiceCapabilitiesUnsupportedError('scope');
   }
+  const permittedAccess = new Set(options.permittedAccess);
   const permitted = new Set(options.permittedToolNames);
   const realTools = new Map<string, McpToolDescriptor>();
   for (const tool of options.toolDescriptors) {
@@ -353,10 +368,8 @@ export const projectMcpService = (
   const capabilities: ToolCapabilityDescriptor[] = [];
   const grouped = new Set<string>();
   for (const capability of resource.capabilities) {
-    if (capability.access !== 'read') continue;
-    if (!capability.requiredScopes.includes(options.requiredScope) ||
-        !capability.requiredScopes.every((scope) =>
-          options.grantedScopes.includes(scope))) {
+    if (!permittedAccess.has(capability.access)) continue;
+    if (!capability.requiredScopes.every((scope) => grantedScopes.has(scope))) {
       continue;
     }
     const toolNames = capability.tools.filter((name) => exposedNames.has(name));
