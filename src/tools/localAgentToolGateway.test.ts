@@ -16,11 +16,18 @@ import {
   LocalAgentToolGateway,
   type CloudToolAccountContext,
 } from './localAgentToolGateway';
-import { DESKTOP_HOST_DISCOVERY_TOOL } from './toolGatewayClient';
-import type {
-  ToolGatewayClient,
-  ToolManifest,
+import {
+  DESKTOP_HOST_DISCOVERY_TOOL,
+  TOOL_DISCLOSURE_TOOL,
+  ToolApprovalRequiredError,
+  type ToolApprovalRequest,
+  type ToolApprovalResolution,
+  type ToolGatewayClient,
+  type ToolManifest,
+  type ToolServiceDescriptor,
 } from './toolGatewayClient';
+import type { WhoYouMcpServiceDiscovery } from '../mcp/whoYouMcpService';
+import { WhoYouError } from '../whoYou/whoYouError';
 
 const localTool: ToolManifest = {
   name: 'local_weather_current',
@@ -242,6 +249,7 @@ const gateway = (
     context?: CloudToolAccountContext;
     selectionText?: string;
     previousAssistantText?: string;
+    mcp?: WhoYouMcpServiceDiscovery | null;
   } = {},
 ) => new LocalAgentToolGateway({
   local: options.local ?? localGateway(),
@@ -256,6 +264,7 @@ const gateway = (
   ...(options.selectionText ? { selectionText: options.selectionText } : {}),
   ...(options.previousAssistantText
     ? { previousAssistantText: options.previousAssistantText } : {}),
+  ...(options.mcp !== undefined ? { mcp: options.mcp } : {}),
 });
 
 const asyncStream = <T>(events: T[]): AsyncIterable<T> =>
@@ -1032,5 +1041,265 @@ describe('Cloud Local Agent joint entry', () => {
         args: { query: 'mira' },
       },
     });
+  });
+});
+
+describe('LocalAgentToolGateway trusted MCP service slice', () => {
+  const mcpService: ToolServiceDescriptor = {
+    id: 'who-you',
+    name: '狐邮 Who You',
+    toolNames: ['whoyou_mail_search', 'whoyou_mail_message_get'],
+    capabilities: [{
+      id: 'who-you.mail.read',
+      name: 'Mail search and reading',
+      toolNames: ['whoyou_mail_search', 'whoyou_mail_message_get'],
+    }],
+  };
+  const mcpTools: ToolManifest[] = [
+    {
+      name: 'whoyou_mail_search',
+      description: 'Real MCP search schema',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        additionalProperties: false,
+      },
+      sensitiveResult: 'mail-search',
+    },
+    {
+      name: 'whoyou_mail_message_get',
+      description: 'Real MCP message schema',
+      parameters: {
+        type: 'object',
+        properties: { messageId: { type: 'string' } },
+        required: ['messageId'],
+        additionalProperties: false,
+      },
+      sensitiveResult: 'mail-body',
+    },
+  ];
+  const approval: ToolApprovalRequest = {
+    invocationId: 'mcp-approval-1',
+    callId: 'mail-call-1',
+    name: 'whoyou_mail_search',
+    arguments: '{"query":"mira"}',
+    message: 'send mail metadata to the model',
+  };
+
+  const mcpLocal = (): ToolGatewayClient => ({
+    listTools: jest.fn(async () => [localTool, ...mcpTools]),
+    callTool: jest.fn(async (request) => {
+      if (request.name === 'whoyou_mail_search') {
+        throw new ToolApprovalRequiredError(approval);
+      }
+      return { content: 'local-result' };
+    }),
+    resolveApproval: jest.fn(async (): Promise<ToolApprovalResolution> => ({
+      status: 'completed',
+      result: { content: 'approved-mail' },
+    })),
+  });
+
+  const mcpDiscovery = (
+    snapshot: Awaited<ReturnType<WhoYouMcpServiceDiscovery['discover']>>,
+  ): WhoYouMcpServiceDiscovery => ({
+    discover: jest.fn(async () => snapshot),
+  });
+
+  it('defers the real mail schemas, discloses them, and reuses the existing approval path', async () => {
+    let current = true;
+    const local = mcpLocal();
+    const selected = gateway(discoveryFixture(), {
+      local,
+      mcp: mcpDiscovery({
+        service: mcpService,
+        tools: mcpTools,
+        catalogRevision: 'mcp-rev-1',
+        degradation: 'none',
+        accountId: 'account-a',
+        initialToolNames: [],
+        expiresAt: Date.now() + 60_000,
+        assertCurrent: () => {
+          if (!current) throw new Error('account changed');
+        },
+      }),
+    });
+
+    const discovered = await selected.discoverTools?.();
+    expect(discovered?.catalogRevision).toBe('mcp-rev-1');
+    expect(discovered?.notices).toEqual([]);
+    // Static mail schemas are replaced by the deferred MCP service; no shadow
+    // duplicate remains visible in the local service.
+    expect(discovered?.tools.map((tool) => tool.name)).toEqual([
+      'local_weather_current',
+      DESKTOP_HOST_DISCOVERY_TOOL,
+    ]);
+    expect(discovered?.services?.[0].toolNames).toEqual([
+      'local_weather_current',
+      DESKTOP_HOST_DISCOVERY_TOOL,
+    ]);
+    expect(discovered?.services?.[1]).toEqual(mcpService);
+
+    const disclosed = await selected.discloseTools?.({
+      serviceId: 'who-you',
+      capabilityId: 'who-you.mail.read',
+      catalogRevision: 'mcp-rev-1',
+    });
+    expect(disclosed?.tools.map((tool) => tool.name)).toEqual([
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+    ]);
+    expect(disclosed?.tools[0].parameters).toEqual(mcpTools[0].parameters);
+    expect(disclosed?.tools[1].parameters).toEqual(mcpTools[1].parameters);
+    expect(disclosed?.catalogRevision).toBe('mcp-rev-1');
+
+    await expect(selected.discloseTools?.({
+      serviceId: 'who-you',
+      capabilityId: 'who-you.mail.read',
+      catalogRevision: 'stale',
+    })).rejects.toMatchObject({ code: 'TOOL_DISCLOSURE_STALE' });
+
+    await expect(selected.callTool({
+      callId: 'mail-call-1',
+      name: 'whoyou_mail_search',
+      arguments: '{"query":"mira"}',
+    })).rejects.toBeInstanceOf(ToolApprovalRequiredError);
+    await expect(selected.resolveApproval?.(approval, 'approved')).resolves.toEqual({
+      status: 'completed',
+      result: { content: 'approved-mail' },
+    });
+
+    current = false;
+    await expect(selected.callTool({
+      callId: 'mail-call-2',
+      name: 'whoyou_mail_search',
+      arguments: '{"query":"mira"}',
+    })).rejects.toThrow('account changed');
+  });
+
+  it('degrades to the compiled-in static read tools when the binding is unavailable', async () => {
+    const selected = gateway(discoveryFixture(), {
+      local: mcpLocal(),
+      mcp: {
+        discover: jest.fn(async () => {
+          throw new WhoYouError('session_rejected', 'signed out');
+        }),
+      },
+    });
+    const discovered = await selected.discoverTools?.();
+    expect(discovered?.notices).toEqual([]);
+    expect(discovered?.tools.map((tool) => tool.name)).toEqual([
+      'local_weather_current',
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      DESKTOP_HOST_DISCOVERY_TOOL,
+    ]);
+    expect(discovered?.services?.[0].toolNames).toContain('whoyou_mail_search');
+  });
+
+  it('runs the complete read-only Who You chain through real Pi Core and the existing approval flow', async () => {
+    const local: ToolGatewayClient = {
+      listTools: jest.fn(async () => [localTool, ...mcpTools]),
+      callTool: jest.fn(async (request) => {
+        if (request.name === 'whoyou_mail_search' ||
+            request.name === 'whoyou_mail_message_get') {
+          throw new ToolApprovalRequiredError({
+            invocationId: 'inv-' + request.name,
+            callId: request.callId,
+            name: request.name,
+            arguments: request.arguments,
+            message: 'send mail data to the current model',
+          });
+        }
+        return { content: 'local-result' };
+      }),
+      resolveApproval: jest.fn(async (pending): Promise<ToolApprovalResolution> => ({
+        status: 'completed',
+        result: {
+          content: pending.name === 'whoyou_mail_search'
+            ? 'UNTRUSTED_EMAIL_CONTENT fixture search result'
+            : 'UNTRUSTED_EMAIL_CONTENT fixture body result',
+        },
+      })),
+    };
+    const selected = gateway(discoveryFixture(), {
+      local,
+      mcp: mcpDiscovery({
+        service: mcpService,
+        tools: mcpTools,
+        catalogRevision: 'mcp-rev-who-you',
+        degradation: 'none',
+        accountId: 'account-a',
+        initialToolNames: ['whoyou_mail_search'],
+        expiresAt: Date.now() + 60_000,
+        assertCurrent: () => undefined,
+      }),
+    });
+
+    const offered: string[][] = [];
+    const modelCall = jest.fn(async (
+      _messages: readonly OpenAiMessage[],
+      tools: readonly OpenAiTool[],
+    ) => {
+      offered.push(tools.map((tool) => tool.function.name));
+      if (offered.length === 1) {
+        return asyncStream([
+          { type: 'tool-call' as const, callId: 'search', name: 'whoyou_mail_search',
+            arguments: JSON.stringify({ query: 'mira' }) },
+          { type: 'finish' as const, reason: 'tool_calls' },
+        ]);
+      }
+      if (offered.length === 2) {
+        return asyncStream([
+          { type: 'tool-call' as const, callId: 'disclose', name: TOOL_DISCLOSURE_TOOL,
+            arguments: JSON.stringify({
+              serviceId: 'who-you',
+              toolNames: ['whoyou_mail_message_get'],
+            }) },
+          { type: 'finish' as const, reason: 'tool_calls' },
+        ]);
+      }
+      if (offered.length === 3) {
+        return asyncStream([
+          { type: 'tool-call' as const, callId: 'body',
+            name: 'whoyou_mail_message_get',
+            arguments: JSON.stringify({ messageId: 'msg-1' }) },
+          { type: 'finish' as const, reason: 'tool_calls' },
+        ]);
+      }
+      return asyncStream([
+        { type: 'text-delta' as const, delta: 'mail summary ready' },
+        { type: 'finish' as const, reason: 'stop' },
+      ]);
+    });
+
+    const events = await drain(await new PiCoreAgentLoop(selected).run(
+      [{ role: 'user', content: '搜索并阅读一封邮件' }],
+      modelCall,
+      { requestApproval: async () => 'approved' },
+    ));
+
+    expect(offered[0]).toEqual(expect.arrayContaining([
+      'whoyou_mail_search',
+      TOOL_DISCLOSURE_TOOL,
+    ]));
+    expect(offered[0]).not.toContain('whoyou_mail_message_get');
+    // Direct search must allow a *subsequent* schema disclosure for the sole
+    // safe next step, not demand disclosure before calling the known tool.
+    expect(offered[1]).toEqual([TOOL_DISCLOSURE_TOOL]);
+    expect(offered[2]).toEqual(['whoyou_mail_message_get']);
+    expect(events.filter((event) => event.type === 'approval-required'))
+      .toHaveLength(2);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'tool-result',
+        name: 'whoyou_mail_search',
+      }),
+      expect.objectContaining({
+        type: 'tool-result',
+        name: 'whoyou_mail_message_get',
+      }),
+      { type: 'text-delta', delta: 'mail summary ready' },
+    ]));
   });
 });

@@ -99,7 +99,8 @@ export type ToolDiscoveryNoticeCode =
   | 'cloud-tools-unavailable'
   | 'cloud-tools-unauthorized'
   | 'cloud-tools-session-invalid'
-  | 'cloud-tools-host-ambiguous';
+  | 'cloud-tools-host-ambiguous'
+  | 'mcp-service-degraded';
 
 export interface ToolDiscoveryNotice {
   code: ToolDiscoveryNoticeCode;

@@ -1,0 +1,228 @@
+import {
+  MCP_PROTOCOL_VERSION,
+  McpProtocolClient,
+  McpProtocolError,
+} from './mcpProtocolClient';
+
+const ENDPOINT = 'https://mcp.example.test/mcp';
+const TOKEN = 'fixture-read-token';
+
+interface FixtureTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+}
+
+const tools: FixtureTool[] = [
+  {
+    name: 'fixture_read_a',
+    description: 'Read A',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fixture_read_b',
+    description: 'Read B',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+  },
+  {
+    name: 'fixture_read_c',
+    description: 'Read C',
+    inputSchema: { type: 'object', properties: {} },
+  },
+];
+
+const json = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+
+const rpc = (id: unknown, result: unknown): Response =>
+  json(200, { jsonrpc: '2.0', id, result });
+
+const rpcError = (id: unknown, code: string): Response =>
+  json(200, { jsonrpc: '2.0', id, error: { code, message: 'no' } });
+
+const fixtureFetch = () =>
+  jest.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+    const body = JSON.parse(String(init?.body)) as {
+      id?: number;
+      method: string;
+      params?: Record<string, unknown>;
+    };
+    if (body.method === 'initialize') {
+      return rpc(body.id, {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: { tools: {}, resources: {} },
+        serverInfo: { name: 'fixture-server', version: '1.2.3' },
+      });
+    }
+    if (body.method === 'notifications/initialized') {
+      return new Response(null, { status: 202 });
+    }
+    if (body.method === 'tools/list') {
+      if (body.params?.cursor === 'page-2') {
+        return rpc(body.id, { tools: [tools[2]] });
+      }
+      return rpc(body.id, {
+        tools: [tools[0], tools[1]],
+        nextCursor: 'page-2',
+      });
+    }
+    if (body.method === 'resources/list') {
+      return rpc(body.id, {
+        resources: [{
+          uri: 'mira://service/fixture/capabilities',
+          name: 'fixture-capabilities',
+          mimeType: 'application/json',
+        }],
+      });
+    }
+    if (body.method === 'resources/read') {
+      return rpc(body.id, {
+        contents: [{
+          uri: 'mira://service/fixture/capabilities',
+          mimeType: 'application/json',
+          text: JSON.stringify({ schema: 'mira.service-capabilities/v1' }),
+        }],
+      });
+    }
+    if (body.method === 'tools/call') {
+      return rpc(body.id, {
+        content: [{ type: 'text', text: 'ok' }],
+        structuredContent: { name: body.params?.name },
+      });
+    }
+    return rpcError(body.id, 'method_not_found');
+  });
+
+const client = (fetchImpl: typeof fetch) =>
+  new McpProtocolClient({ endpoint: ENDPOINT, token: TOKEN, fetchImpl });
+
+describe('generic MCP protocol client', () => {
+  it('negotiates, paginates the real tool list and reads the optional resource', async () => {
+    const fetchMock = fixtureFetch();
+    const api = client(fetchMock as unknown as typeof fetch);
+    const info = await api.initialize();
+    expect(info).toEqual({
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      serverName: 'fixture-server',
+      serverVersion: '1.2.3',
+      tools: true,
+      resources: true,
+    });
+    const listed = await api.listTools();
+    expect(listed.map((tool) => tool.name)).toEqual([
+      'fixture_read_a',
+      'fixture_read_b',
+      'fixture_read_c',
+    ]);
+    expect(listed[0].inputSchema).toEqual(tools[0].inputSchema);
+    const resources = await api.listResources();
+    expect(resources).toEqual([{
+      uri: 'mira://service/fixture/capabilities',
+      name: 'fixture-capabilities',
+      mimeType: 'application/json',
+    }]);
+    const contents = await api.readResource(resources[0].uri);
+    expect(JSON.parse(contents[0].text)).toEqual({
+      schema: 'mira.service-capabilities/v1',
+    });
+    const called = await api.callTool('fixture_read_a', { query: 'mira' });
+    expect(called).toMatchObject({ structuredContent: { name: 'fixture_read_a' } });
+
+    type Captured = [string, RequestInit & { redirect?: string }];
+    const calls = fetchMock.mock.calls as unknown as Captured[];
+    expect(calls.every(([url]) => url === ENDPOINT)).toBe(true);
+    for (const [, init] of calls) {
+      expect(init.redirect).toBe('error');
+      expect((init.headers as Record<string, string>).authorization)
+        .toBe(`Bearer ${TOKEN}`);
+      expect(String(init.body)).not.toContain(TOKEN);
+    }
+  });
+
+  it('rejects duplicate tool names and unsupported protocol versions', async () => {
+    const duplicate = fixtureFetch();
+    duplicate.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { id?: number; method: string };
+      if (body.method === 'initialize') {
+        return rpc(body.id, { protocolVersion: MCP_PROTOCOL_VERSION });
+      }
+      if (body.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      return rpc(body.id, { tools: [tools[0], tools[0]] });
+    });
+    await expect(client(duplicate as unknown as typeof fetch).listTools())
+      .rejects.toMatchObject({ code: 'MCP_TOOL_DUPLICATE' });
+
+    const unsupported = jest.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { id?: number };
+      return rpc(body.id, { protocolVersion: '1999-01-01' });
+    });
+    await expect(client(unsupported as unknown as typeof fetch).initialize())
+      .rejects.toMatchObject({ code: 'MCP_PROTOCOL_UNSUPPORTED' });
+  });
+
+  it('maps auth failure and malformed JSON-RPC, and never exposes provider bodies', async () => {
+    const unauthorized = jest.fn(async () =>
+      json(401, { error: 'secret-provider-body' }));
+    await expect(client(unauthorized as unknown as typeof fetch).initialize())
+      .rejects.toMatchObject({ kind: 'unauthorized', status: 401 });
+
+    const mismatched = jest.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === 'initialize') {
+        return rpc(999, { protocolVersion: MCP_PROTOCOL_VERSION });
+      }
+      return new Response(null, { status: 202 });
+    });
+    const error = await client(mismatched as unknown as typeof fetch)
+      .initialize()
+      .catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(McpProtocolError);
+    expect(String(error)).not.toContain(TOKEN);
+  });
+
+  it('cancels a stalled request through the caller signal', async () => {
+    const controller = new AbortController();
+    let observed: AbortSignal | undefined;
+    const stalled = jest.fn(async (_url: string, init?: RequestInit) =>
+      new Promise<Response>(() => {
+        observed = init?.signal ?? undefined;
+      }));
+    const pending = client(stalled as unknown as typeof fetch)
+      .initialize(controller.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'MCP_REQUEST_CANCELLED' });
+    expect(observed?.aborted).toBe(true);
+  });
+
+  it('rejects a resource read without textual JSON contents', async () => {
+    const empty = fixtureFetch();
+    empty.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { id?: number; method: string };
+      if (body.method === 'initialize') {
+        return rpc(body.id, {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: { resources: {} },
+        });
+      }
+      if (body.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      return rpc(body.id, { contents: [] });
+    });
+    const api = client(empty as unknown as typeof fetch);
+    await api.initialize();
+    await expect(api.readResource('mira://service/x/capabilities'))
+      .rejects.toMatchObject({ code: 'MCP_RESOURCE_CONTENT_INVALID' });
+  });
+});

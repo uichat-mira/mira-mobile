@@ -9,9 +9,16 @@ import {
   requestCloudRelayJson,
 } from '../api/cloudRelay';
 import { RemoteHostError } from '../api/remoteHttp';
+import {
+  whoYouMcpServiceDiscovery,
+  type WhoYouMcpServiceDiscovery,
+} from '../mcp/whoYouMcpService';
+import { McpProtocolError } from '../mcp/mcpProtocolClient';
+import { WhoYouError } from '../whoYou/whoYouError';
 import { CloudToolHostClient } from './cloudToolHostClient';
 import { CompositeToolGatewayClient } from './compositeToolGatewayClient';
 import { localToolGatewayClient } from './localToolGatewayClient';
+import { McpServiceToolGateway } from './mcpServiceToolGateway';
 import { mobileToolGatewayClient } from './mobileToolGatewayClient';
 import { RemoteToolGatewayClient } from './remoteToolGatewayClient';
 import {
@@ -60,7 +67,20 @@ export interface LocalAgentToolGatewayOptions {
   selectionText?: string;
   /** The immediately preceding local assistant message, if any. */
   previousAssistantText?: string;
+  /**
+   * Trusted cloud MCP service discovery. `null` disables the dynamic MCP slice;
+   * omitted uses the verified Who You service binding.
+   */
+  mcp?: WhoYouMcpServiceDiscovery | null;
 }
+
+type McpDiscovery =
+  | { status: 'ready'; gateway: McpServiceToolGateway }
+  | { status: 'degraded'; notice: 'mcp-service-degraded' | null }
+  | { status: 'disabled' };
+
+/** Bounds optional cloud discovery so an ordinary Local chat cannot hang. */
+const MCP_DISCOVERY_TIMEOUT_MS = 12_000;
 
 type ProbedHost =
   | { status: 'usable'; candidate: CloudRelayHostCandidate; toolNames: string[] }
@@ -293,12 +313,15 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly sse: typeof openCloudRelayPostSse;
   private readonly selectionText: string;
   private readonly previousAssistantText: string;
+  private readonly mcp: WhoYouMcpServiceDiscovery | null;
   private pendingHostSelectionAccount: string | null = null;
   private active: ToolGatewayClient | null = null;
   private pendingDiscovery: Promise<ToolDiscoveryResult> | null = null;
   private services: readonly ToolServiceDescriptor[] = [];
   private catalogRevision: string | undefined;
   private revision = 0;
+  private mcpGateway: McpServiceToolGateway | null = null;
+  private mcpOwnedToolNames: ReadonlySet<string> = new Set();
 
   constructor(options: LocalAgentToolGatewayOptions = {}) {
     this.local = options.local ?? localToolGatewayClient;
@@ -309,6 +332,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     this.sse = options.sse ?? openCloudRelayPostSse;
     this.selectionText = normalizeMatchText(options.selectionText ?? '');
     this.previousAssistantText = options.previousAssistantText ?? '';
+    this.mcp = options.mcp === undefined ? whoYouMcpServiceDiscovery : options.mcp;
   }
 
   async listTools(): Promise<readonly ToolManifest[]> {
@@ -330,6 +354,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     request: ToolDisclosureRequest,
     options?: { signal?: AbortSignal },
   ): Promise<ToolDisclosureResult> {
+    if (this.mcpGateway && request.serviceId === this.mcpGateway.serviceId) {
+      return this.mcpGateway.discloseTools(request, options);
+    }
     const active = this.requireActive();
     if (this.catalogRevision !== undefined &&
         request.catalogRevision !== this.catalogRevision) {
@@ -416,6 +443,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         hostCandidates: candidateProjection(usable),
       };
     }
+    if (this.mcpGateway && this.mcpOwnedToolNames.has(request.name)) {
+      return this.mcpGateway.callTool(request, options);
+    }
     return this.requireActive().callTool(request, options);
   }
 
@@ -424,6 +454,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     decision: ToolApprovalDecision,
     options?: { signal?: AbortSignal },
   ): Promise<ToolApprovalResolution> {
+    if (this.mcpGateway && this.mcpOwnedToolNames.has(approval.name)) {
+      return this.mcpGateway.resolveApproval(approval, decision, options);
+    }
     const active = this.requireActive();
     const resolve = active.resolveApproval;
     if (!resolve) {
@@ -448,9 +481,10 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private withCatalog(
     discovery: ToolDiscoveryResult,
     services: readonly ToolServiceDescriptor[],
+    catalogRevision?: string,
   ): ToolDiscoveryResult {
     this.services = services;
-    this.catalogRevision = String(++this.revision);
+    this.catalogRevision = catalogRevision ?? String(++this.revision);
     return {
       ...discovery,
       services,
@@ -459,6 +493,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   }
 
   private async discoverOnce(): Promise<ToolDiscoveryResult> {
+    this.clearMcp();
     const context = this.cloudContext();
     if (context.explicitlySignedOut) {
       this.active = this.paired;
@@ -496,16 +531,104 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       }
     }
     this.pendingHostSelectionAccount = accountId;
+    const localTools = await this.local.listTools();
+    const mcp = await this.discoverMcp(accountId);
+    this.mcpGateway = mcp.status === 'ready' ? mcp.gateway : null;
+    this.mcpOwnedToolNames = this.mcpGateway?.ownedToolNames ?? new Set();
+    const baseLocal = localTools.filter(
+      (tool) => !this.mcpOwnedToolNames.has(tool.name),
+    );
+    const mcpVisible = this.mcpGateway
+      ? await this.mcpGateway.listTools()
+      : [];
     this.active = this.local;
-    const tools = await this.local.listTools();
-    if (tools.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+    const mapped = [...baseLocal, ...mcpVisible];
+    if (mapped.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
       throw new ToolGatewayError('TOOL_NAME_COLLISION',
         'Desktop discovery tool collides with an existing local tool');
     }
+    const tools = [...mapped, DESKTOP_HOST_DISCOVERY_MANIFEST];
+    const services: ToolServiceDescriptor[] = [
+      localService([...baseLocal, DESKTOP_HOST_DISCOVERY_MANIFEST]),
+    ];
+    if (this.mcpGateway) services.push(this.mcpGateway.service);
     return this.withCatalog({
-      tools: [...tools, DESKTOP_HOST_DISCOVERY_MANIFEST],
-      notices: [],
-    }, [localService([...tools, DESKTOP_HOST_DISCOVERY_MANIFEST])]);
+      tools,
+      notices: mcp.status === 'degraded' && mcp.notice
+        ? [{ code: mcp.notice }]
+        : [],
+    }, services, this.mcpGateway?.catalogRevision);
+  }
+
+  /**
+   * Discovers the optional trusted cloud MCP service for this run. A lost
+   * session, changed account/identity, unsupported declaration or missing
+   * permitted tool degrades to the compiled-in local tools; it never keeps a
+   * stale MCP catalog or credential binding.
+   */
+  private async discoverMcp(accountId: string): Promise<McpDiscovery> {
+    if (!this.mcp) return { status: 'disabled' };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MCP_DISCOVERY_TIMEOUT_MS);
+    try {
+      const snapshot = await this.mcp.discover({
+        accountId,
+        signal: controller.signal,
+      });
+      if (snapshot.tools.length === 0) {
+        return { status: 'degraded', notice: 'mcp-service-degraded' };
+      }
+      const executor = snapshot.executionGateway ?? this.local;
+      const resolveLocalApproval = executor.resolveApproval?.bind(executor);
+      const initialNames = new Set(snapshot.initialToolNames ?? []);
+      const gateway = new McpServiceToolGateway({
+        snapshot: {
+          service: snapshot.service,
+          tools: snapshot.tools,
+          catalogRevision: snapshot.catalogRevision,
+          // Only tools already known to the existing Agent entry path are
+          // visible; other declared schemas require an explicit disclosure.
+          visibleTools: snapshot.tools.filter(
+            (tool) => initialNames.has(tool.name),
+          ),
+          degradation: snapshot.degradation,
+          assertCurrent: snapshot.assertCurrent,
+        },
+        executeTool: (request, options) =>
+          executor.callTool(request, options),
+        ...(resolveLocalApproval
+          ? { resolveToolApproval: resolveLocalApproval }
+          : {}),
+      });
+      return { status: 'ready', gateway };
+    } catch (error) {
+      if (error instanceof WhoYouError) {
+        // Ordinary session/network unavailability is not a catalog defect:
+        // keep the compiled-in read tools usable without a noisy notice.
+        const catalogDefect = error.kind === 'invalid_response';
+        return {
+          status: 'degraded',
+          notice: catalogDefect ? 'mcp-service-degraded' : null,
+        };
+      }
+      if (error instanceof McpProtocolError) {
+        const catalogDefect = error.kind === 'invalid_response' ||
+          error.kind === 'unsupported' ||
+          error.kind === 'rejected';
+        return {
+          status: 'degraded',
+          notice: catalogDefect ? 'mcp-service-degraded' : null,
+        };
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private clearMcp(): void {
+    this.mcpGateway = null;
+    this.mcpOwnedToolNames = new Set();
   }
 
   private async discoverCloudHost(accountId: string): Promise<ToolDiscoveryResult> {
@@ -616,6 +739,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       );
     }
     this.pendingHostSelectionAccount = this.cloudContext().accountId;
+    this.clearMcp();
     this.active = this.local;
     const localTools = await this.local.listTools();
     if (localTools.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
@@ -639,6 +763,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       throw hostChanged();
     }
     this.entry.assertCurrentAccess(access);
+    // The Host binding replaces this run's service catalog; an MCP binding from
+    // the unsigned-in/no-Host path must not stay callable behind it.
+    this.clearMcp();
     const localTools = await this.local.listTools();
     const composite = new CompositeToolGatewayClient(
       this.local,
@@ -676,6 +803,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private async localOnly(
     code: ToolDiscoveryNoticeCode,
   ): Promise<ToolDiscoveryResult> {
+    this.clearMcp();
     this.active = this.local;
     const tools = await this.local.listTools();
     return this.withCatalog({
