@@ -117,6 +117,18 @@ hidden second budget in Pi.
   credential surface as `LocalProviderModelSelectionError` reasons. The runtime
   never silently falls back to another Provider.
 
+### Conversation composer (MOB-104)
+
+The ChatScreen composer keeps one text input while switching between compact
+and focused layouts. Its strength slider and model menu consume the existing
+thread Runtime APIs; they do not persist separate UI preferences. Inherited
+strength can be restored, and the local model header reflects the selection.
+Remote threads do not receive Local Provider selectors. The plus menu contains
+only image, camera and file UI entries, with no native pickers, permissions,
+attachment storage or upload integration. The existing run events, approval,
+message rendering and stop path are retained. Device layout/keyboard checks
+remain T4 acceptance, not implied by component tests.
+
 ### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
 
 This is the first real OPS-046 consumer, still limited to the read-only mail

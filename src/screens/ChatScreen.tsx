@@ -11,7 +11,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -24,12 +23,9 @@ import {
 } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Bot,
   ChevronLeft,
   MoreVertical,
-  Send,
   Share2,
-  Square,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { ChatMessage } from '../types';
@@ -47,9 +43,11 @@ import { useThreadReadStore } from '../store/threadReadStore';
 import { useThreadPinStore } from '../store/threadPinStore';
 import { removeLastOpenedSession } from '../session/lastOpenedSession';
 import { useTheme } from '../theme/ThemeContext';
-import { fontSize, radius, shadows, sizing, spacing } from '../theme/tokens';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { AssistantMarkdown } from '../chat/AssistantMarkdown';
 import { ConversationMenu } from '../chat/ConversationMenu';
+import { ChatComposer } from '../chat/ChatComposer';
+import { useComposerControls } from '../chat/useComposerControls';
 import { ConversationSearchBar } from '../chat/ConversationSearchBar';
 import { MessageAttachments } from '../chat/MessageAttachments';
 import {
@@ -235,11 +233,10 @@ export function ChatScreen() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [preparingSend, setPreparingSend] = useState(false);
+  const sendingRef = useRef(false);
   const [streamingText, setStreamingText] = useState('');
-  const [agentStrength, setAgentStrength] =
-    useState<AgentExecutionStrengthId>('plain');
   const [cloudCanSend, setCloudCanSend] = useState(false);
-  const [agentModeLoading, setAgentModeLoading] = useState(true);
   const [agentPhase, setAgentPhase] = useState<LocalAgentRunPhase>('idle');
   const [agentActivities, setAgentActivities] = useState<LocalAgentActivity[]>([]);
   const [agentPauseReason, setAgentPauseReason] =
@@ -288,6 +285,11 @@ export function ChatScreen() {
     Boolean(cloudAccountId) && cloudAccountId === activeCloudAccountId
   );
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
+  const controls = useComposerControls(runtime, sessionId);
+  const { strength: agentStrength, setStrength: setAgentStrength, refresh: refreshComposer, mutationPending: composerMutationPending } = controls;
+  const agentModeLoading = controls.loading || controls.saving;
+  const selectedModel = controls.models.find(option => option.selected);
+  useFocusEffect(useCallback(() => { void refreshComposer(); }, [refreshComposer]));
   const shareDisabled =
     isSharing || isLoading || isLoadingHistory || historyError !== null;
   const shareAccessibilityLabel = isSharing
@@ -342,7 +344,6 @@ export function ChatScreen() {
   }, [isCloudHost, isLocalProvider, sessionId]);
 
   useEffect(() => {
-    let active = true;
     setAgentActivities([]);
     setPendingAgentApproval(null);
     setApprovalAction(null);
@@ -350,34 +351,7 @@ export function ChatScreen() {
     setAgentPauseReason(null);
     setAgentError(null);
     setAgentNotice(null);
-
-    if (!supportsLocalAgent || !runtime.getEffectiveAgentStrength) {
-      setAgentStrength('plain');
-      setAgentModeLoading(false);
-      return () => {
-        active = false;
-      };
-    }
-
-    setAgentModeLoading(true);
-    void runtime
-      .getEffectiveAgentStrength(sessionId)
-      .then(strength => {
-        if (active) setAgentStrength(strength);
-      })
-      .catch(() => {
-        // A failed read must not silently enable tools; runtime sends still
-        // fail closed with an actionable strength-unavailable error.
-        if (active) setAgentStrength('plain');
-      })
-      .finally(() => {
-        if (active) setAgentModeLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [runtime, sessionId, supportsLocalAgent]);
+  }, [runtime, sessionId]);
 
   useEffect(() => {
     if (!isLocalProvider || !runtime.setExecutionSuspended) return undefined;
@@ -651,45 +625,6 @@ export function ChatScreen() {
 
   const agentEnabled = agentStrength !== 'plain';
 
-  const toggleAgentMode = useCallback(async () => {
-    if (
-      !supportsLocalAgent ||
-      !runtime.setAgentStrength ||
-      agentModeLoading ||
-      isLoading
-    ) {
-      return;
-    }
-    // Transitional input-row entry only. It writes the same thread strength as
-    // the future strength card; there is no independent Agent boolean.
-    const next: AgentExecutionStrengthId = agentEnabled ? 'plain' : 'standard';
-    setAgentModeLoading(true);
-    try {
-      await runtime.setAgentStrength(sessionId, next);
-      setAgentStrength(next);
-      if (next === 'plain') {
-        setAgentActivities([]);
-        setPendingAgentApproval(null);
-        setApprovalAction(null);
-        setAgentPhase('idle');
-        setAgentPauseReason(null);
-        setAgentError(null);
-        setAgentNotice(null);
-      }
-    } catch {
-      Alert.alert('Agent 模式', '暂时无法保存执行强度，请稍后重试。');
-    } finally {
-      setAgentModeLoading(false);
-    }
-  }, [
-    agentEnabled,
-    agentModeLoading,
-    isLoading,
-    runtime,
-    sessionId,
-    supportsLocalAgent,
-  ]);
-
   const handleAgentApproval = useCallback(
     (decision: ToolApprovalDecision) => {
       if (
@@ -729,6 +664,7 @@ export function ChatScreen() {
           });
           setInputText('');
           setIsLoading(true);
+          setPreparingSend(false);
           setStreamingText('');
           break;
         case 'agent-reset':
@@ -855,56 +791,67 @@ export function ChatScreen() {
       const content = (text ?? existingMessage?.content ?? inputText).trim();
       if (
         !content ||
+        sendingRef.current ||
         isLoading ||
         (isCloudHost && (!cloudAuthorityActive || !cloudCanSend)) ||
-        (supportsLocalAgent && agentModeLoading)
+        (isLocalProvider && (agentModeLoading || composerMutationPending()))
       ) {
         return;
       }
 
-      let effectiveStrength: AgentExecutionStrengthId = 'plain';
-      if (supportsLocalAgent && runtime.getEffectiveAgentStrength) {
-        try {
-          effectiveStrength = await runtime.getEffectiveAgentStrength(sessionId);
-          setAgentStrength(effectiveStrength);
-        } catch {
-          // Let the runtime send surface the fail-closed strength error instead
-          // of silently downgrading this turn to plain chat.
-          effectiveStrength = agentStrength;
+      sendingRef.current = true;
+      setPreparingSend(true);
+      try {
+        let effectiveStrength: AgentExecutionStrengthId = 'plain';
+        if (supportsLocalAgent && runtime.getEffectiveAgentStrength) {
+          try {
+            effectiveStrength = await runtime.getEffectiveAgentStrength(sessionId);
+            setAgentStrength(effectiveStrength);
+          } catch {
+            // Let the runtime send surface the fail-closed strength error instead
+            // of silently downgrading this turn to plain chat.
+            effectiveStrength = agentStrength;
+          }
         }
-      }
-      const useLocalAgent = supportsLocalAgent && effectiveStrength !== 'plain';
-      // Retry reuses the same user message id so an uncertain reconnect cannot
-      // duplicate the user message (Remote Host V1 requires a stable messageId).
-      const userMsg: ChatMessage = existingMessage ?? {
-        id: createLocalMessageId(),
-        role: 'user',
-        content,
-        timestamp: new Date(),
-      };
-      if (!existingMessage) {
-        setMessages((prev) => [...prev, userMsg]);
-      }
+        const useLocalAgent = supportsLocalAgent && effectiveStrength !== 'plain';
+        // Retry reuses the same user message id so an uncertain reconnect cannot
+        // duplicate the user message (Remote Host V1 requires a stable messageId).
+        const userMsg: ChatMessage = existingMessage ?? {
+          id: createLocalMessageId(),
+          role: 'user',
+          content,
+          timestamp: new Date(),
+        };
+        if (!existingMessage) {
+          setMessages((prev) => [...prev, userMsg]);
+        }
 
-      // Haptic feedback fires for every user-initiated send (including retries)
-      // so the interaction contract "my question was delivered" matches what
-      // users feel. It runs in parallel with runTurn — no await, the network
-      // path must never wait on the vibrator.
-      void lightImpact();
+        // Haptic feedback fires for every user-initiated send (including retries)
+        // so the interaction contract "my question was delivered" matches what
+        // users feel. It runs in parallel with runTurn — no await, the network
+        // path must never wait on the vibrator.
+        void lightImpact();
 
-      await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
+        await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
+      } finally {
+        sendingRef.current = false;
+        setPreparingSend(false);
+      }
     },
     [
       agentModeLoading,
       agentStrength,
+      composerMutationPending,
       cloudAuthorityActive,
       cloudCanSend,
       isCloudHost,
+      isLocalProvider,
       inputText,
       isLoading,
       runTurn,
       runtime,
       sessionId,
+      setAgentStrength,
       supportsLocalAgent,
     ],
   );
@@ -1101,7 +1048,7 @@ export function ChatScreen() {
           </Text>
           <Text style={[styles.headerSource, { color: colors.text.soft }]} numberOfLines={1}>
             {isLocalProvider
-              ? `${providerName || 'Local Provider'}${providerModel ? ` · ${providerModel}` : ''}`
+              ? (selectedModel ? `${selectedModel.providerName} · ${selectedModel.model}` : controls.supportsModels ? 'Local Provider' : `${providerName || 'Local Provider'}${providerModel ? ` · ${providerModel}` : ''}`)
               : 'Remote Host'}
           </Text>
         </View>
@@ -1197,11 +1144,32 @@ export function ChatScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
+        <ChatComposer
+          key={sessionId}
+          value={inputText}
+          onChangeText={setInputText}
+          placeholder={isCloudHost && !cloudCanSend ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
+          editable={cloudAuthorityActive && (!isCloudHost || cloudCanSend) && !isLoading}
+          running={isLoading}
+          onSend={() => void sendMessage()}
+          onStop={handleStop}
+          strength={controls.supportsStrength ? agentStrength : undefined}
+          followsGlobal={controls.override === null}
+          strengthReady={controls.strengthReady}
+          models={controls.supportsModels ? controls.models : undefined}
+          modelsReady={controls.modelsReady}
+          busy={preparingSend || (isLocalProvider && agentModeLoading)}
+          error={controls.error}
+          onRefresh={() => void refreshComposer()}
+          onStrength={value => { if (!sendingRef.current) void controls.chooseStrength(value); }}
+          onModel={providerId => { if (!sendingRef.current) void controls.chooseModel(providerId); }}
+        >
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.messageList}
           onContentSizeChange={scrollToBottom}
           onScrollToIndexFailed={({ index, averageItemLength }) => {
@@ -1248,138 +1216,7 @@ export function ChatScreen() {
           ListFooterComponent={renderFooter}
         />
 
-        {supportsLocalAgent ? (
-          <View style={styles.agentModeRow}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={
-                agentEnabled ? '关闭本地 Agent 模式' : '开启本地 Agent 模式'
-              }
-              disabled={agentModeLoading || isLoading}
-              onPress={() => void toggleAgentMode()}
-              style={({ pressed }) => [
-                styles.agentModeButton,
-                {
-                  backgroundColor: agentEnabled
-                    ? colors.bg.soft
-                    : colors.bg.card,
-                  borderColor: agentEnabled
-                    ? colors.primary
-                    : colors.border.default,
-                },
-                pressed && { opacity: 0.72 },
-                (agentModeLoading || isLoading) && { opacity: 0.5 },
-              ]}
-            >
-              <Bot
-                size={16}
-                color={agentEnabled ? colors.primary : colors.text.muted}
-                strokeWidth={2}
-              />
-              <Text
-                style={[
-                  styles.agentModeText,
-                  {
-                    color: agentEnabled
-                      ? colors.text.ink
-                      : colors.text.muted,
-                  },
-                ]}
-              >
-                {agentModeLoading
-                  ? 'Agent…'
-                  : agentEnabled
-                    ? 'Agent 已开启'
-                    : 'Agent'}
-              </Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        <View
-          style={[
-            styles.inputBar,
-            {
-              borderTopColor: colors.border.soft,
-              backgroundColor: colors.bg.canvas,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.inputWrapper,
-              {
-                backgroundColor: colors.bg.input,
-                borderColor: colors.border.default,
-              },
-            ]}
-          >
-            <TextInput
-              style={[styles.input, { color: colors.text.ink }]}
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder={isCloudHost && !cloudCanSend
-                ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
-              placeholderTextColor={colors.text.placeholder}
-              multiline
-              maxLength={500}
-              editable={
-                cloudAuthorityActive && (!isCloudHost || cloudCanSend) &&
-                !isLoading && !(supportsLocalAgent && agentModeLoading)
-              }
-              blurOnSubmit={false}
-              onSubmitEditing={() => void sendMessage()}
-            />
-            {isLoading ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="停止生成"
-                style={({ pressed }) => [
-                  styles.sendBtn,
-                  {
-                    backgroundColor: pressed
-                      ? colors.primaryActive
-                      : colors.text.ink,
-                  },
-                ]}
-                onPress={handleStop}
-              >
-                <Square
-                  size={16}
-                  color={colors.bg.elevated}
-                  fill={colors.bg.elevated}
-                />
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="发送消息"
-                style={({ pressed }) => [
-                  styles.sendBtn,
-                  {
-                    backgroundColor: pressed
-                      ? colors.primaryActive
-                      : colors.primary,
-                  },
-                  (!inputText.trim() ||
-                    (isCloudHost && !cloudCanSend) ||
-                    (supportsLocalAgent && agentModeLoading)) && {
-                    backgroundColor: colors.primaryDisabled,
-                  },
-                ]}
-                onPress={() => void sendMessage()}
-                disabled={
-                  !inputText.trim() ||
-                  (isCloudHost && !cloudCanSend) ||
-                  !cloudAuthorityActive ||
-                  (supportsLocalAgent && agentModeLoading)
-                }
-              >
-                <Send size={18} color={colors.onPrimary} strokeWidth={2.5} />
-              </Pressable>
-            )}
-          </View>
-        </View>
+        </ChatComposer>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1540,56 +1377,4 @@ const styles = StyleSheet.create({
   },
   retryText: { fontSize: fontSize.sm },
   failureText: { fontSize: fontSize.sm, lineHeight: 18, marginTop: 6 },
-  agentModeRow: {
-    paddingHorizontal: 14,
-    paddingBottom: spacing.xs,
-    alignItems: 'flex-start',
-  },
-  agentModeButton: {
-    minHeight: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.full,
-  },
-  agentModeText: {
-    fontSize: fontSize.caption,
-    fontWeight: '600',
-  },
-  inputBar: {
-    paddingHorizontal: 14,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  inputWrapper: {
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 6,
-    paddingLeft: 14,
-    paddingRight: spacing.xs,
-    paddingVertical: spacing.xs,
-    borderWidth: 1,
-    borderRadius: 24,
-    ...shadows.composer,
-  },
-  input: {
-    flex: 1,
-    minHeight: sizing.touchTarget,
-    maxHeight: 100,
-    paddingHorizontal: 0,
-    paddingVertical: 10,
-    fontSize: fontSize.md,
-    lineHeight: 22,
-  },
-  sendBtn: {
-    width: sizing.touchTarget,
-    height: sizing.touchTarget,
-    borderRadius: sizing.touchTarget / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 });
