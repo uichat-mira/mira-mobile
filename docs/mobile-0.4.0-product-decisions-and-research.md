@@ -63,8 +63,8 @@
 ### D10：保留已有 Host 发现价值，不把其当成全部能力发现
 
 - 当前 Mobile 的 mira_desktop_hosts 是模型可见的 Desktop Host 发现入口，有实际的授权 Host 探测与同轮 refreshedTools 更新；设计原因是复用既有 Remote Tool Gateway、避免跨 Host 凭据/工具别名混用。这一层的存在 **不是错误**。
-- 不足之处在于：现有 Cloud Local Agent 首轮主要让模型主动调用 Host 发现工具，然后取得的是远程扁平的完整 Tool Schema 清单。它缺少「环境摘要 → 服务声明的能力画像 → 按需 Tool Schema」的连续披露机制。
-- 后续应在这条已运行的 Host/Gateway 链路之上补发现和披露契约，不应为了形式统一重造 Relay、Host 执行、审批或 Pi Agent Runtime。
+- 不足之处在于：现有 Cloud Local Agent 首轮主要让模型主动调用 Host 发现工具，然后取得远程扁平的完整 Tool Schema 清单；尚未提供服务与能力摘要、针对具体 Tool 的动态披露及有效期复用。**这并不意味着必须按三级顺序逐次调用发现工具。**
+- 迁移应复用已运行的 Host/Gateway 身份与执行链，在其受控边界新增标准 MCP Tool 出口与通用消费；不因统一协议而重造 Relay、Host 执行、审批或 Pi Agent Runtime，也不能在未验证替代路径前移除现有 Remote V1 工具调用。
 
 ### D11：统一 MCP Server 暴露模式（2026-11-24 维护者正式裁决）
 
