@@ -101,6 +101,7 @@ test('Pi Core sends object-only root oneOf as an object in actual continuation w
   type WireTool = { function: { name: string; parameters: Record<string, unknown> } };
   type WireMessage = {
     role: string;
+    content?: string | null;
     tool_call_id?: string;
     tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
   };
@@ -125,7 +126,9 @@ test('Pi Core sends object-only root oneOf as an object in actual continuation w
   expect(second.tools?.find(item => item.function.name === mixed.name)?.function.parameters)
     .toEqual(mixedOneOf);
   expect(second.messages?.map(message => message.role))
-    .toEqual(['system', 'user', 'assistant', 'tool']);
+    .toEqual(['system', 'system', 'user', 'assistant', 'tool']);
+  expect(second.messages?.[1]?.content)
+    .toContain('[Trusted execution budget');
   expect(second.messages?.at(-2)?.tool_calls?.[0]).toEqual({
     id: 'call-desktop-1',
     type: 'function',

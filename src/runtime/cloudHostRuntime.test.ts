@@ -92,7 +92,7 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     });
     const runtime = new CloudHostRuntime(client as never);
     await expect(runtime.getMessages('remote-1')).resolves.toHaveLength(1);
-    await runtime.sendMessage('remote-1', 'run on Host', { agentEnabled: false });
+    await runtime.sendMessage('remote-1', 'run on Host');
     expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       threadId: 'remote-1', agentEnabled: true, content: 'run on Host',
     }));

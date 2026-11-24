@@ -136,7 +136,7 @@ describe('ConversationOrchestrator', () => {
 
     expect(outcome).toEqual({ messageId: 'u1', cancelled: false, failed: false });
     expect(harness.sends).toEqual([
-      { content: 'hi', messageId: 'u1', agentEnabled: false },
+      { content: 'hi', messageId: 'u1' },
     ]);
     expect(harness.events).toContainEqual({ type: 'text', text: 'hello' });
     expect(harness.events).toContainEqual({

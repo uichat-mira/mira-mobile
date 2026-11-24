@@ -423,7 +423,11 @@ describe('PiCoreAgentLoop', () => {
       yield { type: 'finish' as const, reason: 'tool_calls' };
     })(), { maxToolRounds: 1 }));
 
-    expect(events.at(-1)).toEqual({ type: 'error', message: 'Tool round limit reached (1)' });
+    // The limit now produces one tool-less summary request instead of a hard
+    // error. This scripted provider still asks for a tool, so the summary is
+    // length-limited rather than falsely marked complete.
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'finish', reason: 'length' });
   });
 
   it('reports app suspension when the run signal is also aborted', async () => {
@@ -507,7 +511,9 @@ describe('PiCoreAgentLoop', () => {
     );
 
     expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toEqual([{ role: 'user', content: '1+5=?' }]);
+    expect(calls[0][0]).toEqual(expect.arrayContaining([
+      { role: 'user', content: '1+5=?' },
+    ]));
     expect(calls[0][1]).toEqual([]);
     expect(events).toEqual([
       { type: 'notice', code: 'tool-channel-unavailable' },

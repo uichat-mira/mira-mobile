@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
+import { Bot, ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing, type TextScaleId } from '../theme/tokens';
@@ -25,11 +25,9 @@ import {
 } from '../settings/generalSettings';
 import { startContinuousVibration, stopContinuousVibration } from '../haptics/haptics';
 import {
-  AGENT_ROUNDS_MIN,
-  AGENT_ROUNDS_MAX,
-  AGENT_DURATION_MINUTES_MIN,
-  AGENT_DURATION_MINUTES_MAX,
-} from '../settings/agentExecutionBudget';
+  AGENT_EXECUTION_STRENGTHS,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 const defaultSessionSourceOptions: readonly SettingsChoice<DefaultSessionSource>[] = [
   { value: 'ask', label: '每次询问（默认）' },
@@ -48,6 +46,15 @@ const textScaleOptions: readonly SettingsChoice<TextScaleId>[] = [
   { value: 'large', label: '大' },
 ];
 
+// Names come from the single strength table. Numeric rounds/minutes are
+// deliberately internal and never rendered as an editable free-form budget.
+const agentStrengthOptions: readonly SettingsChoice<AgentExecutionStrengthId>[] =
+  AGENT_EXECUTION_STRENGTHS.map((strength) => ({
+    value: strength.id,
+    label: strength.label,
+    description: strength.description,
+  }));
+
 const errorMessage = (error: unknown) =>
   error instanceof Error && error.message ? error.message : '无法保存常规设置，请稍后重试。';
 
@@ -58,6 +65,7 @@ export function GeneralSettingsScreen() {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [textScaleOpen, setTextScaleOpen] = useState(false);
+  const [agentStrengthOpen, setAgentStrengthOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -147,6 +155,9 @@ export function GeneralSettingsScreen() {
       case 'text-scale':
         setTextScaleOpen(true);
         break;
+      case 'agent-execution-strength':
+        setAgentStrengthOpen(true);
+        break;
     }
   }, []);
 
@@ -159,6 +170,10 @@ export function GeneralSettingsScreen() {
     launchBehaviorOptions.find((option) => option.value === settings.launchBehavior)?.label ?? '';
   const textScaleLabel =
     textScaleOptions.find((option) => option.value === settings.textScale)?.label ?? '';
+  const agentStrengthLabel =
+    agentStrengthOptions.find(
+      (option) => option.value === settings.agentExecutionStrength,
+    )?.label ?? '';
 
   return (
     <SafeAreaView
@@ -217,75 +232,22 @@ export function GeneralSettingsScreen() {
           新建会话时默认使用的连接来源；选择“每次询问”会在新建时单独确认。
         </Text>
 
-        <SettingsSectionHeader>智能体执行预算</SettingsSectionHeader>
-        <View style={[styles.strengthRow, { backgroundColor: colors.bg.card }]}>
-          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>
-            工具调用轮数上限 · {settings.agentBudget.maxToolRounds} 轮
-          </Text>
-          <Slider
-            style={styles.strengthSlider}
-            minimumValue={AGENT_ROUNDS_MIN}
-            maximumValue={AGENT_ROUNDS_MAX}
-            step={1}
-            value={settings.agentBudget.maxToolRounds}
-            minimumTrackTintColor={colors.primary}
-            maximumTrackTintColor={colors.border.default}
-            thumbTintColor={colors.primary}
-            disabled={loadFailed || saving}
-            accessibilityLabel="智能体工具轮数上限"
-            onValueChange={(value) => {
-              const current = draftRef.current;
-              const next = {
-                ...current,
-                agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
-              };
-              draftRef.current = next;
-              setSettings(next);
-            }}
-            onSlidingComplete={(value) => {
-              const current = draftRef.current;
-              applySettings({
-                ...current,
-                agentBudget: { ...current.agentBudget, maxToolRounds: Math.round(value) },
-              });
-            }}
+        <SettingsSectionHeader>智能体执行强度</SettingsSectionHeader>
+        <SettingsGroup onAction={handleAction}>
+          <SettingsRow
+            icon={Bot}
+            title="默认执行强度"
+            subtitle={agentStrengthLabel}
+            actionId="agent-execution-strength"
+            isFirst
+            isLast
+            right={<ChevronDown size={20} color={colors.text.soft} />}
+            showChevron={false}
           />
-        </View>
-        <View style={[styles.strengthRow, { backgroundColor: colors.bg.card }]}>
-          <Text style={[styles.strengthLabel, { color: colors.text.ink }]}>
-            单次运行最长时间 · {settings.agentBudget.maxDurationMinutes} 分钟
-          </Text>
-          <Slider
-            style={styles.strengthSlider}
-            minimumValue={AGENT_DURATION_MINUTES_MIN}
-            maximumValue={AGENT_DURATION_MINUTES_MAX}
-            step={1}
-            value={settings.agentBudget.maxDurationMinutes}
-            minimumTrackTintColor={colors.primary}
-            maximumTrackTintColor={colors.border.default}
-            thumbTintColor={colors.primary}
-            disabled={loadFailed || saving}
-            accessibilityLabel="智能体最长运行分钟数"
-            onValueChange={(value) => {
-              const current = draftRef.current;
-              const next = {
-                ...current,
-                agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
-              };
-              draftRef.current = next;
-              setSettings(next);
-            }}
-            onSlidingComplete={(value) => {
-              const current = draftRef.current;
-              applySettings({
-                ...current,
-                agentBudget: { ...current.agentBudget, maxDurationMinutes: Math.round(value) },
-              });
-            }}
-          />
-        </View>
+        </SettingsGroup>
         <Text style={[styles.help, { color: colors.text.muted }]}>
-          仅控制本机智能体的工具循环和总时长；下次运行生效，不限制费用。
+          仅作用于本机 Local Provider 对话。新线程默认跟随此强度，已有线程可继承或单独覆盖；
+          修改只影响之后的运行，不限制模型推理档位或费用。
         </Text>
 
         <SettingsSectionHeader>显示</SettingsSectionHeader>
@@ -405,6 +367,15 @@ export function GeneralSettingsScreen() {
         options={textScaleOptions}
         onChange={(value) => applySettings({ ...settings, textScale: value })}
         onClose={() => setTextScaleOpen(false)}
+      />
+      <SettingsChoiceModal
+        visible={agentStrengthOpen}
+        value={settings.agentExecutionStrength}
+        options={agentStrengthOptions}
+        onChange={(value) =>
+          applySettings({ ...settings, agentExecutionStrength: value })
+        }
+        onClose={() => setAgentStrengthOpen(false)}
       />
     </SafeAreaView>
   );

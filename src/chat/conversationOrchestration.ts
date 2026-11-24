@@ -97,7 +97,6 @@ export interface ConversationLifecycleOptions {
 export interface ConversationSendInput {
   content: string;
   messageId: string;
-  agentEnabled?: boolean;
 }
 
 export interface DispatchConversationTurnOptions {
@@ -159,7 +158,6 @@ export class ConversationOrchestrator {
       const stream = await this.send({
         content: input.content,
         messageId,
-        agentEnabled: useLocalAgent,
       });
       for await (const event of stream) {
         if (this.abortRequested) break;
