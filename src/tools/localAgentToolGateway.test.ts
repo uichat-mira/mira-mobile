@@ -1681,10 +1681,21 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
       TOOL_DISCLOSURE_TOOL,
     ]));
     expect(offered[0]).not.toContain('whoyou_mail_message_get');
-    // Direct search must allow a *subsequent* schema disclosure for the sole
-    // safe next step, not demand disclosure before calling the known tool.
-    expect(offered[1]).toEqual([TOOL_DISCLOSURE_TOOL]);
-    expect(offered[2]).toEqual(['whoyou_mail_message_get']);
+    // A mail result keeps the authorized toolset and can be followed by a
+    // schema disclosure for the next legitimate step.
+    expect(offered[1]).toEqual(expect.arrayContaining([
+      'local_weather_current',
+      'whoyou_mail_search',
+      'mira_desktop_hosts',
+      TOOL_DISCLOSURE_TOOL,
+    ]));
+    expect(offered[1]).not.toContain('whoyou_mail_message_get');
+    expect(offered[2]).toEqual(expect.arrayContaining([
+      'local_weather_current',
+      'whoyou_mail_search',
+      'whoyou_mail_message_get',
+      'mira_desktop_hosts',
+    ]));
     expect(events.filter((event) => event.type === 'approval-required'))
       .toHaveLength(2);
     expect(events).toEqual(expect.arrayContaining([

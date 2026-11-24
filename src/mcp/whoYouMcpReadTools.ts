@@ -98,7 +98,7 @@ const exactApproval = (
 
 /**
  * Real MCP execution with the existing Mobile one-shot consent gate and the
- * same bounded untrusted mail projection as the pre-existing MailStage path.
+ * same bounded untrusted mail projection as the static mail tools.
  * Neither the service's tool list nor its capability resource grants access:
  * only the two locally reviewed read operations can reach this executor.
  */

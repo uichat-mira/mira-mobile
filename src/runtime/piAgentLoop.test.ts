@@ -343,7 +343,7 @@ describe('PiCoreAgentLoop', () => {
     expect(events).toContainEqual({ type: 'finish', reason: 'stop' });
   });
 
-  it('exposes verified mail tools under the migrated privacy policy', async () => {
+  it('exposes verified mail tools without a data-source-driven tool whitelist', async () => {
     const gateway: ToolGatewayClient = {
       listTools: async () => [
         {

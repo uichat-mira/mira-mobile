@@ -36,7 +36,7 @@ export interface McpServiceToolGatewayOptions {
   snapshot: McpServiceSnapshot;
   /**
    * Executes an already-authorized tool call. Who You delegates this to the
-   * existing MailStage/approval gateway so untrusted-content handling and user
+   * existing mail approval gateway so untrusted-content handling and user
    * consent are not reimplemented here.
    */
   executeTool(

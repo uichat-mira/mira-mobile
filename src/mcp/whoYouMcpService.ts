@@ -34,9 +34,9 @@ export const WHO_YOU_MCP_RESOURCE_URI = 'mira://service/who-you/capabilities';
 const CAPABILITIES_MIME = 'application/json';
 
 /**
- * Only tools already covered by the Mobile MailStage disclosure approval may be
- * exposed through the dynamic MCP path. This is an execution policy, not a
- * second capability registry: every name is still resolved against the real
+ * Only tools already covered by the existing Mobile mail disclosure approval
+ * may be exposed through the dynamic MCP path. This is an execution policy, not
+ * a second capability registry: every name is still resolved against the real
  * `tools/list` and its authoritative schema.
  */
 export const WHO_YOU_PROTECTED_READ_TOOLS = [
@@ -141,7 +141,7 @@ const readCapabilityResource = async (
  * identity confirmation, authoritative `tools/list`, and the optional OPS-046
  * v1 capability resource. The resource never supplies schemas or permissions.
  *
- * This function does not execute tools. The existing protected MailStage
+ * This function does not execute tools. The existing protected mail consent
  * gateway remains the execution authority for the exposed read tools.
  */
 export const discoverWhoYouMcpService = async (
@@ -216,7 +216,7 @@ export const discoverWhoYouMcpService = async (
       capabilityResource,
       grantedScopes: credential.claims.scopes,
       requiredScopes: [WHO_YOU_READ_SCOPE],
-      // This binding is the protected MailStage read slice only. Write/send or
+      // This binding is the protected mail read slice only. Write/send or
       // destructive MCP capabilities stay outside the binding's policy.
       permittedAccess: ['read'],
       permittedToolNames: WHO_YOU_PROTECTED_READ_TOOLS,

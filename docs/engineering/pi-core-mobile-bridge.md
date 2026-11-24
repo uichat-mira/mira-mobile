@@ -1,6 +1,6 @@
 # Mobile Local Agent: Pi Core 1.6
 
-> **文档边界（2026-11-24）**：本文仅描述当前 Pi Core 和 Tool Gateway 的已实现行为及验收边界。0.4.0 以后确认的三层渐进式披露、Desktop 能力严选、跨工具合法调用等**目标产品决策与外部研究**统一见 [Mobile 0.4.0 产品决策与研究唯一真相](../mobile-0.4.0-product-decisions-and-research.md)。特别是下文的邮件调用链阻断属于**当前实现**，不代表新的 D9 产品目标已经交付；不得未经实施合同就移除敏感数据保护。
+> **文档边界（2026-11-24）**：本文仅描述当前 Pi Core 和 Tool Gateway 的已实现行为及验收边界。0.4.0 以后确认的三层渐进式披露、Desktop 能力严选、跨工具合法调用等**目标产品决策与外部研究**统一见 [Mobile 0.4.0 产品决策与研究唯一真相](../mobile-0.4.0-product-decisions-and-research.md)。MOB-100 已移除邮件结果驱动的工具链阻断；模型拥有语义决策权，授权工具不会因前序结果被禁用。邮件披露同意、审批、身份/授权与协议校验仍按现有合同保留。
 
 ## Current implementation
 
@@ -44,12 +44,14 @@ There is no independent or hidden second budget in Pi.
 - Bad Provider streams and missing Tool Gateway scopes surface as failures.
   An unavailable channel can degrade to plain-model output with a visible
   notice; requested unavailable tools fail rather than claiming success.
-- A preflight checks the entire tool batch before any tool executes, including
-  mailbox privacy rules and exclusive Desktop discovery.
+- A preflight validates every requested tool and keeps catalog-changing
+  Desktop discovery/disclosure in its own batch, because those calls replace
+  the run's tool set. This is protocol timing, not semantic intent inference.
 - whoyou_mail_search and whoyou_mail_message_get must carry the exact expected
-  sensitivity roles. Mail search may only be followed by mail-body retrieval;
-  after a body result no further tool calls may occur in that user turn.
-  Consent is requested through the existing user approval with recipient notice.
+  sensitivity roles so the existing disclosure approval and recipient notice
+  remain intact. The marker never selects or narrows tools: mail results are
+  data the model may use for reasoning and arguments, and any follow-up tool
+  call is still authorized and approved by its own service contract.
 - Cloud Desktop discovery refreshes the validated manifest set dynamically.
   Multiple real Hosts produce a deterministic user choice based on directory
   data, never an invented or silently chosen Host.
@@ -67,7 +69,7 @@ There is no independent or hidden second budget in Pi.
 ### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
 
 This is the first real OPS-046 consumer, still limited to the read-only mail
-tools already covered by the MOB-086 MailStage approval.
+tools already covered by the existing MOB-086 mail disclosure approval.
 
 - `src/mcp/mcpProtocolClient.ts` is a protocol-neutral Streamable HTTP MCP
   client. It performs `initialize`, paginated `tools/list`, optional
@@ -95,9 +97,10 @@ tools already covered by the MOB-086 MailStage approval.
   inbox/10-message scope; body reads permit plain text only. Existing bounded
   untrusted-data result projections are reused, with no unapproved mail sent
   to Pi. The Cloud account, exact session-token identity and read credential
-  are revalidated before and after approval or execution. A direct search
-  may subsequently disclose only the trusted mail-body reader, never
-  unrelated tools under the MailStage restrictions.
+  are revalidated before and after approval or execution. A mail result may
+  subsequently drive the body reader, another authorized service or a repeated
+  search in the same run; disclosure and every call still revalidate identity,
+  authorization and the owning service's approval.
 - A signed-in Local Agent run now starts with the real weather tool, the
   existing `whoyou_mail_search` entry and the disclosure entry.
   `who-you.mail.read` is disclosed on demand to reveal the remaining real
@@ -119,6 +122,32 @@ tools already covered by the MOB-086 MailStage approval.
   model stream, Cloud credential issuer and MCP HTTP fixture are substituted.
 
 
+
+### Semantic tool-chain blocking removal (MOB-100, 2026-11-24)
+
+MOB-100 removes the MailStage/`MAIL_TOOL_CHAIN_RESTRICTED` mechanism from the
+active Pi Core path. It does not replace it with another state machine,
+allowlist or intent classifier.
+
+- The model has the only semantic decision over which authorized service/tool
+  is relevant and how a result is used. A previous result, including mail, URL,
+  ID or path, can be used as reasoning input and as arguments for the next call.
+- Authorized tools stay visible after sensitive results. Only a trusted
+  catalog-changing discovery/disclosure call changes schemas, and those calls
+  remain single-batch operations because they rewrite the run's tool set.
+- The `sensitiveResult` marker still identifies the existing mail disclosure
+  approval and recipient notice. It is not a tool-selection rule.
+- Real identity, service binding, scopes, revocation, schema/catalog checks,
+  explicit service approvals, rejected approvals, cancellation and the
+  execution budget are unchanged.
+- Future separate approval policy may use service-declared tool ratings plus
+  user settings, but no rating model, setting or new prompt is implemented here.
+- Residual risk: mail disclosure consent authorizes showing data to the current
+  model, not an arbitrary external recipient. A later call that transmits that
+  content is governed by the target service's existing exact-call approval.
+  Mobile does not infer payload sensitivity or add a semantic classifier; a
+  service without argument-level approval remains a service/approval-contract
+  gap for #337 and the owning service to resolve.
 
 ### Host discovery and Provider compatibility (2026-11-23)
 
@@ -161,7 +190,8 @@ Remaining Android true-device and cross-service acceptance includes:
 1. Local Provider plain text and conversation persistence.
 2. One approved Desktop tool call with model continuation.
 3. Multiple Desktop Hosts: visible choice without guessing.
-4. Who-You separate consent for search and body, no chained side effects.
+4. Who-You separate consent for search and body; mail results may drive
+   follow-up authorized calls without embedded instructions granting access.
 5. Reject, timeout, approval uncertainty, app/background cancellation.
 6. Update budget in General and verify next-turn enforcement.
 

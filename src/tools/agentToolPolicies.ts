@@ -6,13 +6,16 @@ import {
   type ToolManifest,
 } from './toolGatewayClient';
 
-export type MailStage = 'none' | 'search' | 'body';
-
 // Privileged tool names must not derive their privacy role from Host metadata.
 export const requiredMailRole = (name: string): 'mail-search' | 'mail-body' | null =>
   name === 'whoyou_mail_search' ? 'mail-search'
     : name === 'whoyou_mail_message_get' ? 'mail-body' : null;
 
+/**
+ * Verifies that the existing mail disclosure contract still marks the two
+ * privileged readers. This protects the privacy approval, not tool selection:
+ * prior results never add, remove or disable an authorized tool.
+ */
 export const validateMailManifests = (manifests: readonly ToolManifest[]): void => {
   if (manifests.some((manifest) => {
     const required = requiredMailRole(manifest.name);
@@ -25,44 +28,20 @@ export const validateMailManifests = (manifests: readonly ToolManifest[]): void 
   }
 };
 
-export const allowedMailStageTools = (
-  manifests: readonly ToolManifest[],
-  stage: MailStage,
-): readonly ToolManifest[] =>
-  stage === 'none' ? manifests
-    : stage === 'search' ? manifests.filter((item) =>
-        item.sensitiveResult === 'mail-body' || item.name === TOOL_DISCLOSURE_TOOL)
-      : [];
-
 /**
- * Validate the whole tool batch before the first tool executes. Checking one
- * tool at a time would permit a mail search followed by an unsafe tool in the
- * same provider response, leaking untrusted mail into a side effect.
+ * Catalog-changing entries replace the run's tool set when they execute. Keep
+ * them in their own provider batch so later calls are not validated against a
+ * tool set that is about to change. This is a protocol timing constraint, not
+ * an inference about user intent, tool results or the data source.
  */
 export const validateToolBatch = (
   calls: readonly { name: string }[],
-  manifests: readonly ToolManifest[],
-  stage: MailStage,
 ): void => {
-  const active = allowedMailStageTools(manifests, stage);
-  if (stage === 'body' ||
-    (stage !== 'none' && calls.some((call) => !active.some((m) => m.name === call.name)))) {
-    throw new ToolGatewayError(
-      'MAIL_TOOL_CHAIN_RESTRICTED',
-      '邮件数据不能驱动其他工具操作。请另起一轮对话。',
-    );
-  }
   if (calls.length > 1 && calls.some((call) =>
     call.name === DESKTOP_HOST_DISCOVERY_TOOL || call.name === TOOL_DISCLOSURE_TOOL)) {
     throw new ToolGatewayError(
       'CLOUD_HOST_DISCOVERY_EXCLUSIVE',
-      'Tool disclosure and Desktop discovery cannot be batched with other tool operations',
-    );
-  }
-  if (calls.length > 1 && calls.some((call) => requiredMailRole(call.name) !== null)) {
-    throw new ToolGatewayError(
-      'MAIL_TOOL_CHAIN_RESTRICTED',
-      '邮件工具必须单独调用，不能与其他工具组合执行。',
+      'Tool catalog discovery/disclosure cannot be batched with other tool operations',
     );
   }
 };
