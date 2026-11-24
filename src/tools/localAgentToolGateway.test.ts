@@ -379,6 +379,7 @@ describe('LocalAgentToolGateway', () => {
     });
 
     await expect(selected.listTools()).resolves.toEqual([localTool]);
+    await expect(selected.callTool({ callId: 'local-only', name: localTool.name, arguments: '{}' })).resolves.toMatchObject({ content: 'local-result' });
     expect(paired.listTools).not.toHaveBeenCalled();
     expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });

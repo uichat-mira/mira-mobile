@@ -19,6 +19,7 @@ Mobile 只允许**一个**活动的 Desktop 远程连接，取值为 `none` / `d
 - 长期授权仍分别保存在 Direct 设备凭据与 Cloud Session 中；Cloud 账号登录、独立云服务（如狐邮）和 Local Provider 都不要求激活 Cloud Relay。
 - 只有用户显式操作才能激活或切换；切换时先在本地释放旧传输并停止/分离在途工作，绝不重放已发出的变更，也不删除 Host 持久 Run 或历史。
 - 启动时只恢复上一次**显式**激活的模式，并且仍要求对应授权有效：Direct 需要设备凭据仍在，Cloud 需要 Cloud Session 仍有效。仅有凭据或仅有登录不会推断出活动模式；Cloud 失效时回到 `none`，不会自动回退到 Direct。升级后尚无显式模式记录的用户从 `none` 开始，需在连接入口选择；既有 Direct 凭据本身不构成活动模式。
+- 启动、回前台及系统网络变化时只恢复当前模式：Direct 走现有 Tailscale 恢复；Cloud 走官方 Relay 的授权 manifest 请求；none 不建立桌面连接。迟到结果不得更新另一模式。工具披露继续复用通用 Gateway，狐邮接入 MOB-096 后与 Desktop MCP 方向另做一致性检查；本卡不建立新的专用工具协议。
 - 网络健康、登录状态和活动模式是三个独立事实：暂时断网或 Cloud 短暂不可用不会切换模式。
 - 已保存的历史会话保留原始 source/owner；非活动来源的新消息、Agent 操作和 Desktop 工具调用会被拒绝，而不是静默换传输。
 - 新建远程会话跟随活动模式：Direct → paired `createSession`；Cloud → Cloud business `createThread`（携带发起时的精确 Cloud account 与 Host 归属）；`none` → 先呈现连接选择，不创建假会话。模式/账号在创建期间变化时，不导航过期结果。

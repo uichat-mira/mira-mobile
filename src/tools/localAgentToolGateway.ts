@@ -349,7 +349,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       );
     }
     const target = resolveToolDisclosureTarget(this.services, request);
+    target.toolNames.forEach(name => this.assertDesktopToolStillActive(name));
     const tools = await active.listTools();
+    target.toolNames.forEach(name => this.assertDesktopToolStillActive(name));
     if (options?.signal?.aborted) {
       throw new ToolGatewayError('TOOL_CANCELLED', 'Tool disclosure was cancelled');
     }
@@ -493,6 +495,8 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       // independent Cloud services such as Who-You mail) remain usable.
       this.desktopTransportMode = null;
       this.desktopToolNames = new Set();
+      this.active = this.local;
+      this.pendingHostSelectionAccount = null;
       const tools = await this.local.listTools();
       return this.withCatalog({ tools, notices: [] }, [localService(tools)]);
     }
@@ -511,7 +515,12 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
           .map(tool => tool.name)
           .filter(name => !localNames.has(name)),
       );
-      return this.withCatalog(discovery, [pairedService(discovery.tools)]);
+      const localTools = discovery.tools.filter(tool => localNames.has(tool.name));
+      const desktopTools = discovery.tools.filter(tool => !localNames.has(tool.name));
+      return this.withCatalog(discovery, [
+        ...(localTools.length ? [localService(localTools)] : []),
+        ...(desktopTools.length ? [pairedService(desktopTools)] : []),
+      ]);
     }
 
     this.desktopTransportMode = 'cloud';
@@ -730,6 +739,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         changedAccountId => {
           const current = this.cloudContext();
           return (
+            current.desktopMode === 'cloud' &&
             !current.explicitlySignedOut &&
             current.accountId === changedAccountId
           );

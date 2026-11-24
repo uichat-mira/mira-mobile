@@ -9,6 +9,7 @@ import {
   type LocalKeyValueStore,
 } from '../storage/localKeyValueStore';
 import { useHostStore } from '../store/hostStore';
+import type { ConnectionStatus } from '../types';
 
 /**
  * The one Mobile authority for the active Desktop remote connection.
@@ -27,6 +28,7 @@ export interface DesktopConnectionState {
   generation: number;
   hydrated: boolean;
   transitioning: boolean;
+  cloudConnectionStatus: ConnectionStatus;
   message: string | null;
   restore: (deps?: DesktopConnectionRestoreDeps) => Promise<void>;
   activateDirect: (storage?: LocalKeyValueStore) => Promise<boolean>;
@@ -63,12 +65,16 @@ const readStoredMode = async (
   }
 };
 
+const modeWrites = new WeakMap<LocalKeyValueStore, Promise<void>>();
 const persistMode = async (
   storage: LocalKeyValueStore,
   mode: DesktopConnectionMode,
 ): Promise<void> => {
   try {
-    await storage.set(MODE_STORAGE_KEY, mode);
+    const previous = modeWrites.get(storage) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => storage.set(MODE_STORAGE_KEY, mode));
+    modeWrites.set(storage, next);
+    await next;
   } catch {
     // The in-memory authority stays correct for this session. On next launch
     // the user is asked again instead of an unverified mode being inferred.
@@ -122,6 +128,7 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
     generation: 0,
     hydrated: false,
     transitioning: false,
+    cloudConnectionStatus: 'disconnected',
     message: null,
 
     restore: async (deps = {}) => {
@@ -129,6 +136,7 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
       if (restorePromise) return restorePromise;
 
       restorePromise = (async () => {
+        const sequence = activationSequence;
         const storage = deps.storage ?? localKeyValueStore;
         const storedMode = await readStoredMode(storage);
         let mode: DesktopConnectionMode = 'none';
@@ -152,6 +160,10 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
           mode = hasRetainedCloudAuthorization() ? 'cloud' : 'none';
         }
 
+        if (sequence !== activationSequence) {
+          set({ hydrated: true });
+          return;
+        }
         set({
           mode,
           generation: ++activationSequence,
@@ -184,7 +196,6 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
       // A newer explicit activation owns the result; do not release its
       // transport from this superseded call.
       if (sequence !== activationSequence) {
-        set({ transitioning: false });
         return false;
       }
       if (!authorized) {
@@ -223,6 +234,7 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
 
       set({
         mode: 'cloud',
+        cloudConnectionStatus: 'connecting',
         generation: sequence,
         transitioning: false,
         message: null,
@@ -241,6 +253,7 @@ export const useDesktopConnectionStore = create<DesktopConnectionState>(
 
       set({
         mode: 'none',
+        cloudConnectionStatus: 'disconnected',
         generation: sequence,
         transitioning: false,
         message: null,
@@ -261,7 +274,8 @@ export const restoreDesktopConnection = (deps?: DesktopConnectionRestoreDeps) =>
 export const assertDesktopConnectionActive = (
   expected: 'direct' | 'cloud',
 ): void => {
-  if (useDesktopConnectionStore.getState().mode === expected) return;
+  const state = useDesktopConnectionStore.getState();
+  if (state.mode === expected && !state.transitioning) return;
   throw new RemoteHostError(
     'DESKTOP_CONNECTION_INACTIVE',
     expected === 'direct'

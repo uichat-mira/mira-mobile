@@ -46,6 +46,8 @@ export function SessionListScreen() {
   const cloudStatus = useCloudAccountStore(state => state.status);
   const cloudAccountId = useCloudAccountStore(state => state.account?.id);
   const desktopMode = useDesktopConnectionStore(state => state.mode);
+  const connectionGeneration = useDesktopConnectionStore(state => state.generation);
+  const cloudConnectionStatus = useDesktopConnectionStore(state => state.cloudConnectionStatus);
   const activateDirect = useDesktopConnectionStore(state => state.activateDirect);
   const activateCloud = useDesktopConnectionStore(state => state.activateCloud);
   const disconnectDesktop = useDesktopConnectionStore(state => state.disconnect);
@@ -101,9 +103,10 @@ export function SessionListScreen() {
     removeSession,
   } = useSessionCollection({
     listSessions: (filter) => runtimeRegistry.listSessions(filter),
-    canDeleteRemoteSessions: () => sourceFilter === 'cloud-host'
+    canDeleteRemoteSessions: () => desktopMode === 'cloud'
       ? runtimeRegistry.cloud.canDeleteSession()
-      : miraHostClient.canDeleteSession(),
+      : desktopMode === 'direct' ? miraHostClient.canDeleteSession() : Promise.resolve(false),
+    connectionGeneration,
     syncUnreadSessions,
     hydrateLocalState,
     autoLoad: false,
@@ -150,9 +153,7 @@ export function SessionListScreen() {
             ? '已启用 · 会话经官方 Relay 读取'
             : '启用 Cloud Relay 并查看账号下的桌面会话',
       status: cloudActive
-        ? sourceFilter === 'cloud-host' && !isLoading
-          ? loadDiagnostic ? 'error' : 'connected'
-          : 'connecting'
+        ? loadDiagnostic ? 'error' : cloudConnectionStatus === 'connected' ? 'connected' : 'connecting'
         : cloudStatus === 'signed_in'
           ? 'disconnected'
           : 'not-configured',

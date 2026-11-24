@@ -97,6 +97,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
   const cloudStatus = useCloudAccountStore((state) => state.status);
   const cloudAccount = useCloudAccountStore((state) => state.account);
+  const connectionGeneration = useDesktopConnectionStore((state) => state.generation);
   const activateDirect = useDesktopConnectionStore((state) => state.activateDirect);
   const activateCloud = useDesktopConnectionStore((state) => state.activateCloud);
   const [creatingChat, setCreatingChat] = useState(false);
@@ -135,6 +136,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     syncUnreadSessions: syncCappedUnread,
     hydrateLocalState,
     filter: 'all',
+    connectionGeneration,
   });
 
   // Group by device-local pin state first, then apply the Recent display cap.
@@ -175,6 +177,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
       sessionId: session.id,
       title: session.title,
       source: session.source,
+      ...(session.source === 'cloud-host' ? { cloudAccountId: useCloudAccountStore.getState().account?.id } : {}),
       providerName: session.providerName,
       providerModel: session.providerModel,
     });

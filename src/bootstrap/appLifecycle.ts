@@ -5,6 +5,8 @@ export interface AppLifecycleDeps {
   getConnectionStatus(): ConnectionStatus;
   setConnectionStatus(status: ConnectionStatus): void;
   restoreConnection(): Promise<unknown | null>;
+  /** When supplied, only the selected transport is eligible for recovery. */
+  connectionKey?(): string | null;
 }
 
 export interface AppLifecycleController {
@@ -50,8 +52,10 @@ export const createAppLifecycleController = (
 
       if (nextState === 'active' && previousState !== 'active') {
 
-        const shouldRestore =
-          deps.getConnectionStatus() === 'connected' || retryInterruptedResume;
+        const key = deps.connectionKey?.();
+        const shouldRestore = deps.connectionKey
+          ? key !== null
+          : deps.getConnectionStatus() === 'connected' || retryInterruptedResume;
         if (shouldRestore) {
           retryInterruptedResume = false;
           const generation = ++resumeGeneration;
@@ -63,11 +67,13 @@ export const createAppLifecycleController = (
             .then((restored) => {
               if (disposed || generation !== resumeGeneration) return;
               resumeRestoreInFlight = false;
+              if (deps.connectionKey && deps.connectionKey() !== key) return;
               deps.setConnectionStatus(restored ? 'connected' : 'disconnected');
             })
             .catch(() => {
               if (disposed || generation !== resumeGeneration) return;
               resumeRestoreInFlight = false;
+              if (deps.connectionKey && deps.connectionKey() !== key) return;
               deps.setConnectionStatus('reconnecting');
             });
         }
