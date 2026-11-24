@@ -337,6 +337,57 @@ describe('LocalAgentToolGateway', () => {
     },
   );
 
+  it('exposes a trusted local service catalog and rejects stale disclosure revisions', async () => {
+    const selected = gateway(discoveryFixture());
+    const initial = await selected.discoverTools();
+    expect(initial.services).toEqual([{
+      id: 'mira-mobile-local',
+      name: 'Mira Mobile 本机',
+      description: expect.any(String),
+      toolNames: [localTool.name, DESKTOP_HOST_DISCOVERY_TOOL],
+    }]);
+    expect(initial.catalogRevision).toEqual(expect.any(String));
+
+    const disclosed = await selected.discloseTools?.({
+      serviceId: 'mira-mobile-local',
+      toolNames: [localTool.name],
+      catalogRevision: initial.catalogRevision,
+    });
+    expect(disclosed?.tools).toEqual([localTool]);
+
+    await expect(selected.discloseTools?.({
+      serviceId: 'mira-mobile-local',
+      toolNames: [localTool.name],
+      catalogRevision: 'stale-revision',
+    })).rejects.toMatchObject({ code: 'TOOL_DISCLOSURE_STALE' });
+  });
+
+  it('publishes the selected Desktop service without inventing capability groups', async () => {
+    const selected = gateway(discoveryFixture());
+    await selected.discoverTools();
+    const result = await discoverDesktop(selected);
+
+    expect(result.refreshedServices).toEqual([
+      expect.objectContaining({
+        id: 'mira-mobile-local',
+        toolNames: [localTool.name],
+      }),
+      {
+        id: 'mira-desktop',
+        name: 'Mira Desktop',
+        description: expect.any(String),
+        toolNames: [sharedToolName],
+      },
+    ]);
+    expect(result.refreshedCatalogRevision).toEqual(expect.any(String));
+    const disclosed = await selected.discloseTools?.({
+      serviceId: 'mira-desktop',
+      toolNames: [sharedToolName],
+      catalogRevision: result.refreshedCatalogRevision,
+    });
+    expect(disclosed?.tools.map(tool => tool.name)).toEqual([sharedToolName]);
+  });
+
   it('keeps local tools and never falls back to paired credentials when Cloud is signed in', async () => {
     const fixture = discoveryFixture();
     const paired = pairedGateway();

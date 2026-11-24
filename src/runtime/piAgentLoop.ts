@@ -24,14 +24,23 @@ import type { RuntimeEvent } from './conversationRuntime';
 import {
   ToolApprovalRequiredError,
   ToolGatewayError,
-  DESKTOP_HOST_DISCOVERY_TOOL,
+  TOOL_DISCLOSURE_TOOL,
   type ToolApprovalDecision,
   type ToolCallResult,
   type ToolGatewayClient,
   type ToolManifest,
   type ToolDiscoveryHostCandidate,
+  type ToolServiceDescriptor,
 } from '../tools/toolGatewayClient';
 import { limitToolResult, validateToolCall } from '../tools/toolPolicy';
+import {
+  mergeDisclosedTools,
+  parseToolDisclosureArguments,
+  resolveToolDisclosureTarget,
+  toolDisclosureManifest,
+  toolServiceContext,
+  validateToolServiceCatalog,
+} from '../tools/toolDisclosure';
 import {
   allowedMailStageTools,
   hostSelectionPrompt,
@@ -514,11 +523,15 @@ export class PiCoreAgentLoop {
     let manifests: readonly ToolManifest[];
     let hostCandidates: readonly ToolDiscoveryHostCandidate[] = [];
     let notices: RuntimeEvent[] = [];
+    let services: readonly ToolServiceDescriptor[] = [];
+    let catalogRevision: string | undefined;
     try {
       if (this.gateway.discoverTools) {
         const discovery = await this.gateway.discoverTools();
         manifests = discovery.tools;
         hostCandidates = discovery.hostCandidates ?? [];
+        services = discovery.services ?? [];
+        catalogRevision = discovery.catalogRevision;
         notices = discovery.notices.map((notice) => ({
           type: 'notice',
           code: notice.code,
@@ -537,7 +550,9 @@ export class PiCoreAgentLoop {
       manifests = [];
       notices = [{ type: 'notice', code: 'tool-channel-unavailable' }];
     }
-    validateMailManifests(manifests);
+    if (services.length > 0) {
+      validateToolServiceCatalog(services, manifests);
+    }
     const queue = new RuntimeEventQueue();
     const maxToolRounds = options.maxToolRounds ?? DEFAULT_AGENT_EXECUTION_BUDGET.maxToolRounds;
     const maxToolResultBytes = options.maxToolResultBytes;
@@ -547,6 +562,36 @@ export class PiCoreAgentLoop {
     const gateway = this.gateway;
     const requestApproval = options.requestApproval;
 
+    const buildRuntimeManifests = (
+      items: readonly ToolManifest[],
+    ): readonly ToolManifest[] => {
+      const base = items.filter(item => item.name !== TOOL_DISCLOSURE_TOOL);
+      if (services.length === 0) return base;
+      const visible = new Set(base.map(item => item.name));
+      const hasDeferred = services.some(service =>
+        service.toolNames.some(name => !visible.has(name)));
+      if (!gateway.discloseTools) {
+        if (hasDeferred) {
+          throw new ToolGatewayError(
+            'TOOL_DISCLOSURE_UNSUPPORTED',
+            'The tool service declares schemas but the gateway cannot disclose them',
+          );
+        }
+        return base;
+      }
+      if (!hasDeferred) return base;
+      return [...base, toolDisclosureManifest(services)];
+    };
+
+    if (manifests.some(item => item.name === TOOL_DISCLOSURE_TOOL)) {
+      throw new ToolGatewayError(
+        'TOOL_NAME_COLLISION',
+        'A service tool collides with the Mobile disclosure entry',
+      );
+    }
+    manifests = buildRuntimeManifests(manifests);
+    validateMailManifests(manifests);
+    const serviceContext = services.length > 0 ? toolServiceContext(services) : null;
     return (async function* () {
       if (externalSignal?.aborted) {
         yield {
@@ -598,20 +643,13 @@ export class PiCoreAgentLoop {
         abortRun();
       }, Math.max(0, deadline - Date.now()));
 
-      const executeTool = async (
+      const requestGatewayTool = async (
         manifest: ToolManifest,
-        callId: string,
-        params: unknown,
+        request: { callId: string; name: string; arguments: string },
         signal?: AbortSignal,
-      ): Promise<AgentToolResult> => {
-        const request = {
-          callId,
-          name: manifest.name,
-          arguments: JSON.stringify(params ?? {}),
-        };
-        let result: ToolCallResult;
+      ): Promise<ToolCallResult> => {
         try {
-          result = await gateway.callTool(request, { signal });
+          return await gateway.callTool(request, { signal });
         } catch (error) {
           if (signal?.aborted) throw error;
           if (
@@ -682,18 +720,96 @@ export class PiCoreAgentLoop {
               approvalRejected = true;
               throw new PiApprovalRejectedError();
             }
-            result = resolution.result;
-          } else {
-            recordError(error);
-            throw error;
+            return resolution.result;
           }
+          recordError(error);
+          throw error;
         }
+      };
+
+      const executeDisclosure = async (
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<ToolCallResult> => {
+        try {
+          const disclose = gateway.discloseTools;
+          if (!disclose) {
+            throw new ToolGatewayError(
+              'TOOL_DISCLOSURE_UNSUPPORTED',
+              'The active tool gateway does not support schema disclosure',
+            );
+          }
+          const args = parseToolDisclosureArguments(params);
+          const target = resolveToolDisclosureTarget(services, args);
+          const disclosure = await disclose.call(gateway, {
+            serviceId: target.serviceId,
+            ...(target.capabilityId ? { capabilityId: target.capabilityId } : {}),
+            toolNames: target.toolNames,
+            ...(catalogRevision !== undefined ? { catalogRevision } : {}),
+          }, { signal });
+          if (signal?.aborted) throw abortError();
+          validateMailManifests(disclosure.tools);
+          const merged = mergeDisclosedTools({
+            current: manifests.filter(item => item.name !== TOOL_DISCLOSURE_TOOL),
+            services,
+            target,
+            incoming: disclosure.tools,
+          });
+          return {
+            content: disclosure.tools.length > 0
+              ? `已披露 ${disclosure.tools.length} 个工具定义：` +
+                `${disclosure.tools.map(tool => tool.name).join(', ')}。` +
+                '披露只改变本 run 可见的 Schema，实际调用仍检查授权与审批。'
+              : '所需工具定义已在本次运行中可用；披露不改变授权与审批。',
+            refreshedTools: merged,
+            refreshedServices: services,
+            ...(disclosure.catalogRevision !== undefined
+              ? { refreshedCatalogRevision: disclosure.catalogRevision }
+              : {}),
+          };
+        } catch (error) {
+          if (!signal?.aborted) recordError(error);
+          throw error;
+        }
+      };
+
+      const executeTool = async (
+        manifest: ToolManifest,
+        callId: string,
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<AgentToolResult> => {
+        const request = {
+          callId,
+          name: manifest.name,
+          arguments: JSON.stringify(params ?? {}),
+        };
+        const result = manifest.name === TOOL_DISCLOSURE_TOOL
+          ? await executeDisclosure(params, signal)
+          : await requestGatewayTool(manifest, request, signal);
         if (signal?.aborted) throw abortError();
-        if (manifest.name === DESKTOP_HOST_DISCOVERY_TOOL && result.refreshedTools) {
-          validateMailManifests(result.refreshedTools);
-          manifests = result.refreshedTools;
-          // Pi obtains the fresh Host-scoped tool set only after an explicit
-          // authorized discovery call; never invent a Host or its tools.
+        if (result.refreshedTools) {
+          if (result.refreshedTools.some(item => item.name === TOOL_DISCLOSURE_TOOL)) {
+            throw new ToolGatewayError(
+              'TOOL_NAME_COLLISION',
+              'A service tool collides with the Mobile disclosure entry',
+            );
+          }
+          const refreshedTools = result.refreshedTools.filter(
+            item => item.name !== TOOL_DISCLOSURE_TOOL,
+          );
+          const nextServices = result.refreshedServices ?? services;
+          if (nextServices.length > 0) {
+            validateToolServiceCatalog(nextServices, refreshedTools);
+          }
+          services = nextServices;
+          if (result.refreshedCatalogRevision !== undefined) {
+            catalogRevision = result.refreshedCatalogRevision;
+          }
+          validateMailManifests(refreshedTools);
+          // A trusted gateway result may add schemas only through this internal
+          // field. Plain ToolCallResult.content never changes the tool set.
+          manifests = buildRuntimeManifests(refreshedTools);
           agent!.state.tools = buildAgentTools(activeManifests());
         }
         if (result.hostSelectionRequired) {
@@ -823,7 +939,9 @@ export class PiCoreAgentLoop {
         agent = new Agent({
           initialState: {
             model: PI_MODEL,
-            messages: toAgentMessages(initialMessages),
+            messages: toAgentMessages(serviceContext
+              ? [{ role: 'system' as const, content: serviceContext }, ...initialMessages]
+              : initialMessages),
             tools: buildAgentTools(activeManifests()),
           },
           streamFn,

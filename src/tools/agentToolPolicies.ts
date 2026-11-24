@@ -1,5 +1,6 @@
 import {
   DESKTOP_HOST_DISCOVERY_TOOL,
+  TOOL_DISCLOSURE_TOOL,
   ToolGatewayError,
   type ToolDiscoveryHostCandidate,
   type ToolManifest,
@@ -50,10 +51,11 @@ export const validateToolBatch = (
       '邮件数据不能驱动其他工具操作。请另起一轮对话。',
     );
   }
-  if (calls.length > 1 && calls.some((call) => call.name === DESKTOP_HOST_DISCOVERY_TOOL)) {
+  if (calls.length > 1 && calls.some((call) =>
+    call.name === DESKTOP_HOST_DISCOVERY_TOOL || call.name === TOOL_DISCLOSURE_TOOL)) {
     throw new ToolGatewayError(
       'CLOUD_HOST_DISCOVERY_EXCLUSIVE',
-      'Desktop discovery cannot be batched with other tool operations',
+      'Tool disclosure and Desktop discovery cannot be batched with other tool operations',
     );
   }
   if (calls.length > 1 && calls.some((call) => requiredMailRole(call.name) !== null)) {

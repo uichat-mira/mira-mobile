@@ -86,6 +86,8 @@
 - src/tools/localToolGatewayClient.ts 仍在 App 内直接注册 local_weather_current、whoyou_mail_search、whoyou_mail_message_get 三个 Tool；前者直接访问 Open-Meteo，后两者经狐邮的 Streamable HTTP MCP Client。
 - src/tools/localAgentToolGateway.ts 的 Cloud Local Agent 起始工具包含本机工具和 mira_desktop_hosts；发现授权 Desktop 后通过 refreshedTools 替换模型工具集合。src/tools/remoteToolGatewayClient.ts、cloudToolHostClient.ts 通过既有 /remote/v1/tools 和远端 invocation/approval/cancel，而不是直接将 Desktop MCP Server 透传给手机。
 - src/tools/agentToolPolicies.ts 的邮件链限制仍在执行；D9 是产品目标而不是当前执行行为。
+- **MOB-094 / PR #370 的待合并基座变更（2026-11-24）**：`src/tools/toolDisclosure.ts` / `toolGatewayClient.ts` 与 Pi Core 新增受信任的服务目录、可选语义能力、`mira_tools_disclose` 按需获取真实 Schema、运行中动态工具集及版本核对。已知有效工具可直接调用，无固定发现层数或回合；现有 Local Tool Gateway/Host 仍为协议中立基线。**未实现 Who-You Resource 的真实 MCP 消费、Desktop 标准 MCP Server、Relay MCP 转发或 B3 多服务真机验收。** 本项的实际交付状态以 PR #370 合并与测试为准，不能把 Draft PR 当成 dev 已部署事实。
+
 - Desktop dev 的 capability profiles（server/src/harness/profiles/resolver.ts）已把 workspace_lookup、workspace_edit、web、browser 等组织为语义能力；prepare-context、capability-view、progressive-resolution-state、tool-schema-disclosure 实现 compact metadata / on-demand schema / mid-run disclosure，默认披露预算为 8；**这些能力还没有完整作为 Mobile 服务声明接口输出**。
 - Desktop server/src/services/remote-tool-gateway.service.ts 当前仍从 agent_intent Exposure 输出扁平可调用工具清单，带 Schema；不同于 Desktop 自身 Planner 的 progressive resolution。
 - 截至 2026-11-23 的此轮基线核查，**没有宣称 Mobile 已实现三层披露、统一严选出口或 D9 邮件链新策略；也没有新的真机/成本基准测试**。11-24 Who-You 服务端声明合入 `dev` 是随后发生的独立事实，见 D11；不能倒填成 Mobile 已实现或 Desktop 已上线 MCP Server。
