@@ -173,9 +173,15 @@ allowlist or intent classifier.
   those returned addresses, which closes the validate-then-connect gap. iOS
   validates every resolved address before and during redirects, but
   NSURLSession re-resolves internally, so a DNS answer changing between
-  validation and connect remains a residual TOCTOU/rebinding risk. iOS App
+  validation and connect remains a residual TOCTOU/rebinding risk. This is
+  an unresolved MOB-101 implementation blocker, not evidence of the required
+  actual-connection boundary. iOS App
   Transport Security still blocks cleartext HTTP pages; the tool reports the
   platform failure rather than weakening ATS.
+- Expected web-read failures are represented as failed tool results in the
+  same Pi Core run; the model can try another URL without losing context.
+  Approval, authorization, cancellation and unrelated fatal errors retain their
+  existing behavior.
 - Response parsing is synchronous and bounded by the 1 MiB transport cap. The
   30-second network timeout cannot interrupt that parsing phase; the limitation
   is explicit rather than presented as cancellation.

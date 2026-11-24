@@ -191,16 +191,13 @@ export const extractWebPage = (
   const genericHtml = root?.innerHTML ?? '';
   const notes: string[] = [];
 
-  const readabilityDocument = parseHTML(html) as unknown as {
-    document: DomDocument & { defaultView?: unknown };
-  };
   let article: {
     title?: string | null;
     content?: string | null;
     textContent?: string | null;
   } | null = null;
   try {
-    article = new Readability(readabilityDocument.document, {
+    article = new Readability(document, {
       charThreshold: MIN_ARTICLE_CHARS,
       keepClasses: false,
       disableJSONLD: true,
@@ -218,17 +215,11 @@ export const extractWebPage = (
     !(articleLinks === 0 && pageLinks.length >= ARTICLE_MIN_WITHOUT_LINKS),
   );
 
-  let usedArticleExtraction = false;
-  let sourceHtml = genericHtml;
-  if (shouldUseArticle) {
-    const candidate = markdownFromHtml(articleHtml, finalUrl);
-    if (candidate) {
-      sourceHtml = articleHtml;
-      usedArticleExtraction = true;
-    }
-  }
-
-  let markdown = markdownFromHtml(sourceHtml, finalUrl);
+  // Reuse the extracted article and only convert once. The generic HTML and
+  // links were captured before Readability mutated the original DOM.
+  const articleMarkdown = shouldUseArticle ? markdownFromHtml(articleHtml, finalUrl) : '';
+  const usedArticleExtraction = Boolean(articleMarkdown);
+  const markdown = articleMarkdown || markdownFromHtml(genericHtml, finalUrl);
 
   const articleLinkList = usedArticleExtraction
     ? collectLinks(

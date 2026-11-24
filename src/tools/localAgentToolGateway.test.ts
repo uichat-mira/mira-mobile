@@ -1684,14 +1684,14 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
     // A mail result keeps the authorized toolset and can be followed by a
     // schema disclosure for the next legitimate step.
     expect(offered[1]).toEqual(expect.arrayContaining([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       'mira_desktop_hosts',
       TOOL_DISCLOSURE_TOOL,
     ]));
     expect(offered[1]).not.toContain('whoyou_mail_message_get');
     expect(offered[2]).toEqual(expect.arrayContaining([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       'whoyou_mail_message_get',
       'mira_desktop_hosts',

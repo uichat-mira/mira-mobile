@@ -1,5 +1,5 @@
 import type { LocalToolContext, LocalToolDefinition } from '../localToolGatewayClient';
-import { ToolGatewayError } from '../toolGatewayClient';
+import { RecoverableToolCallError, ToolGatewayError } from '../toolGatewayClient';
 import { extractWebPage, type WebPageLink } from '../../web/extractWebPage';
 import { checkPublicWebUrl } from '../../web/urlPolicy';
 import {
@@ -73,9 +73,9 @@ const transportFailure = (error: unknown): never => {
     const retryable = error.code === 'WEB_TIMEOUT' ||
       error.code === 'WEB_UPSTREAM_FAILED' ||
       error.code === 'WEB_DNS_FAILED';
-    throw new ToolGatewayError(error.code, error.message, retryable);
+    throw new RecoverableToolCallError(error.code, error.message, retryable);
   }
-  throw new ToolGatewayError('WEB_UPSTREAM_FAILED', 'Unable to read the web page.', true);
+  throw new RecoverableToolCallError('WEB_UPSTREAM_FAILED', 'Unable to read the web page.', true);
 };
 
 interface WebContentResult {
@@ -116,7 +116,7 @@ const buildFittedResult = (
     links: [],
   } satisfies WebContentResult);
   if (utf8ByteLength(metadataOnly) > RESULT_LIMIT_BYTES) {
-    throw new ToolGatewayError(
+    throw new RecoverableToolCallError(
       'WEB_EXTRACT_FAILED',
       'The page metadata alone exceeds the tool result limit.',
     );
@@ -153,10 +153,10 @@ const queryWeb = async (
   transport: WebTransport,
 ): Promise<{ content: string }> => {
   if (Object.keys(args).some(key => key !== 'url')) {
-    throw new ToolGatewayError('WEB_ARGUMENTS_INVALID', 'The web tool accepts only a url argument.');
+    throw new RecoverableToolCallError('WEB_ARGUMENTS_INVALID', 'The web tool accepts only a url argument.');
   }
   if (typeof args.url !== 'string' || !args.url.trim()) {
-    throw new ToolGatewayError(
+    throw new RecoverableToolCallError(
       'WEB_ARGUMENTS_INVALID',
       'url is required',
       false,
@@ -165,7 +165,7 @@ const queryWeb = async (
   }
   const policy = checkPublicWebUrl(args.url);
   if (!policy.ok) {
-    throw new ToolGatewayError(
+    throw new RecoverableToolCallError(
       'WEB_URL_FORBIDDEN',
       unsupportedReason(policy) ?? 'The URL is not allowed.',
     );
@@ -191,18 +191,23 @@ const queryWeb = async (
     throw new ToolGatewayError('TOOL_CANCELLED', 'Web page read was cancelled.');
   }
   if (response.status >= 400) {
-    throw new ToolGatewayError(
+    throw new RecoverableToolCallError(
       'WEB_HTTP_ERROR',
       `The page returned HTTP ${response.status}.`,
       response.status >= 500,
     );
   }
 
-  const extracted = extractWebPage(
-    response.body,
-    response.finalUrl,
-    isHtmlContentType(response.contentType),
-  );
+  let extracted: ReturnType<typeof extractWebPage>;
+  try {
+    extracted = extractWebPage(
+      response.body,
+      response.finalUrl,
+      isHtmlContentType(response.contentType),
+    );
+  } catch {
+    throw new RecoverableToolCallError('WEB_EXTRACT_FAILED', 'Unable to extract readable page content.');
+  }
 
   const notes = extracted.notes
     .map(note => note.slice(0, MAX_NOTE_CHARS))

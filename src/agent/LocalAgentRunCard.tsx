@@ -11,7 +11,8 @@ export type LocalAgentActivityStatus =
   | 'approved'
   | 'rejected'
   | 'completed'
-  | 'truncated';
+  | 'truncated'
+  | 'failed';
 
 export interface LocalAgentActivity {
   callId: string;
@@ -85,6 +86,7 @@ const activityLabel: Record<LocalAgentActivityStatus, string> = {
   rejected: '已拒绝',
   completed: '已完成',
   truncated: '结果已截断',
+  failed: '调用失败',
 };
 
 /**

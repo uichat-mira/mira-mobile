@@ -1,7 +1,8 @@
 import { PiCoreAgentLoop } from '../../runtime/piAgentLoop';
 import { LocalToolGatewayClient } from '../localToolGatewayClient';
+import { LocalAgentToolGateway } from '../localAgentToolGateway';
 import { createWebTool } from './webTool';
-import type { WebFetchRequest, WebTransport } from '../../web/webTransport';
+import { WebTransportError, type WebFetchRequest, type WebTransport } from '../../web/webTransport';
 
 const page = (title: string, body: string, links = ''): string =>
   `<html><head><title>${title}</title></head><body><main>` +
@@ -43,7 +44,11 @@ describe('web(url) through real Pi Core and Local Tool Gateway', () => {
         redirectCount: 0,
       })),
     };
-    const gateway = new LocalToolGatewayClient([createWebTool(transport)]);
+    const gateway = new LocalAgentToolGateway({
+      local: new LocalToolGatewayClient([createWebTool(transport)]),
+      mcp: null,
+      cloudContext: () => ({ accountId: null, explicitlySignedOut: true, desktopMode: 'none' }),
+    });
     const calls = [
       { callId: 'search-1', url: 'https://search.example.com/s?q=mira+web' },
       { callId: 'source-2', url: 'https://news.example.com/article' },
@@ -96,5 +101,49 @@ describe('web(url) through real Pi Core and Local Tool Gateway', () => {
       type: 'text-delta',
       delta: '已读取搜索结果和两个来源页面。',
     });
+  });
+
+  it('keeps the same Pi Core run alive after a failed page and reports the actual failure', async () => {
+    const transport: WebTransport = {
+      fetch: jest.fn()
+        .mockRejectedValueOnce(new WebTransportError('WEB_TIMEOUT', 'first page timed out'))
+        .mockResolvedValueOnce({
+          status: 200,
+          finalUrl: 'https://news.example.com/article',
+          contentType: 'text/html',
+          body: responses['https://news.example.com/article'],
+          truncated: false,
+          redirectCount: 0,
+        }),
+    };
+    const gateway = new LocalAgentToolGateway({
+      local: new LocalToolGatewayClient([createWebTool(transport)]),
+      mcp: null,
+      cloudContext: () => ({ accountId: null, explicitlySignedOut: true, desktopMode: 'none' }),
+    });
+    const urls = ['https://search.example.com/s?q=mira', 'https://news.example.com/article'];
+    let round = 0;
+    const events = await drain(await new PiCoreAgentLoop(gateway).run(
+      [{ role: 'user', content: '查网页；失败则换一个来源' }],
+      async (messages) => {
+        const current = round++;
+        if (current === 1) expect(JSON.stringify(messages)).toContain('first page timed out');
+        return (async function* () {
+          if (current < urls.length) {
+            yield { type: 'tool-call' as const, callId: `attempt-${current}`, name: 'web', arguments: JSON.stringify({ url: urls[current] }) };
+            yield { type: 'finish' as const, reason: 'tool_calls' };
+          } else {
+            yield { type: 'text-delta' as const, delta: '第二个来源已读取' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          }
+        })();
+      },
+    ));
+    expect(round).toBe(3);
+    expect(transport.fetch).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({ type: 'tool-result', callId: 'attempt-0', name: 'web', content: 'WEB_TIMEOUT: first page timed out', failed: true });
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool-result', callId: 'attempt-1', name: 'web', content: expect.stringContaining('UNTRUSTED_WEB_CONTENT') }));
+    expect(events).toContainEqual({ type: 'text-delta', delta: '第二个来源已读取' });
+    expect(events.at(-1)).toMatchObject({ type: 'finish', reason: 'stop' });
   });
 });

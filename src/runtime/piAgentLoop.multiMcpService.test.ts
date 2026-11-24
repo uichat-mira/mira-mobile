@@ -636,7 +636,7 @@ describe('Pi Core over two independent MCP service bindings', () => {
     // The authorized tool set never shrinks after a mail result; only the
     // model-requested schema disclosure adds the deferred write tool.
     expect(offered[0]).toEqual(expect.arrayContaining([
-      'local_weather_current',
+      'web',
       'whoyou_mail_search',
       'whoyou_mail_message_get',
       'neutral_lookup',

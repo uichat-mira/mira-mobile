@@ -19,6 +19,7 @@ export type RuntimeEvent =
       name: string;
       content: string;
       truncated?: boolean;
+      failed?: boolean;
     }
   | {
       type: 'approval-required';

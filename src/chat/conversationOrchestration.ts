@@ -24,7 +24,8 @@ export type ConversationActivityStatus =
   | 'approved'
   | 'rejected'
   | 'completed'
-  | 'truncated';
+  | 'truncated'
+  | 'failed';
 
 export interface ConversationStreamApproval {
   invocationId: string;
@@ -217,7 +218,7 @@ export class ConversationOrchestrator {
                 sink,
                 event.callId,
                 event.name,
-                event.truncated ? 'truncated' : 'completed',
+                event.failed ? 'failed' : event.truncated ? 'truncated' : 'completed',
                 event.truncated
                   ? `结果超过上下文限制，已截断后继续：${event.content}`
                   : event.content,
