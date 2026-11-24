@@ -255,27 +255,39 @@ export function ChatComposer(props: Props) {
               accessibilityState={{ disabled: !props.running && sendDisabled }}
               disabled={!props.running && sendDisabled}
               onPress={props.running ? props.onStop : props.onSend}
-              style={({ pressed }) => [
-                styles.send,
-                {
-                  backgroundColor: props.running
-                    ? colors.text.ink
-                    : sendDisabled
-                    ? colors.primaryDisabled
-                    : pressed
-                    ? colors.primaryActive
-                    : colors.primary,
-                },
-              ]}
+              style={styles.control}
             >
-              {props.running ? (
-                <Square
-                  size={16}
-                  color={colors.bg.elevated}
-                  fill={colors.bg.elevated}
-                />
-              ) : (
-                <ArrowUp size={23} strokeWidth={2.4} color={colors.onPrimary} />
+              {({ pressed }) => (
+                <View
+                  testID="composer-send-face"
+                  pointerEvents="none"
+                  style={[
+                    styles.sendFace,
+                    {
+                      backgroundColor: props.running
+                        ? colors.text.ink
+                        : sendDisabled
+                        ? colors.primaryDisabled
+                        : pressed
+                        ? colors.primaryActive
+                        : colors.primary,
+                    },
+                  ]}
+                >
+                  {props.running ? (
+                    <Square
+                      size={13}
+                      color={colors.bg.elevated}
+                      fill={colors.bg.elevated}
+                    />
+                  ) : (
+                    <ArrowUp
+                      size={20}
+                      strokeWidth={2.2}
+                      color={colors.onPrimary}
+                    />
+                  )}
+                </View>
               )}
             </Pressable>
           </View>
@@ -487,9 +499,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  send: {
-    width: sizing.touchTarget,
-    height: sizing.touchTarget,
+  // The visible CTA is smaller than its accessible touch area.
+  sendFace: {
+    width: spacing.section,
+    height: spacing.section,
     borderRadius: radius.full,
     alignItems: 'center',
     justifyContent: 'center',

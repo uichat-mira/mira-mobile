@@ -186,6 +186,17 @@ describe('MOB-104 ChatComposer', () => {
     );
     expect(button(tree, '选择模型：未选择')).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
+    const sendTarget = button(tree, '发送消息');
+    expect(StyleSheet.flatten(sendTarget.props.style)).toMatchObject({
+      width: 44,
+      height: 44,
+    });
+    expect(
+      StyleSheet.flatten(
+        tree.root.findAllByProps({ testID: 'composer-send-face' })[0].props
+          .style,
+      ),
+    ).toMatchObject({ width: 32, height: 32 });
     await press(tree, '发送消息');
     expect(send).toHaveBeenCalledTimes(1);
     await act(async () => {
