@@ -113,10 +113,13 @@ describe('McpServiceBinding', () => {
         },
       })]),
     });
-    await expect(binding.discover({ accountId: 'account-a' })).resolves.toEqual({
+    await expect(binding.discover({ accountId: 'account-a' })).resolves.toMatchObject({
       status: 'degraded',
       serviceTypeId: 'fixture-svc',
       notice: 'mcp-service-degraded',
+      error: expect.objectContaining({
+        code: 'MCP_SERVICE_IDENTITY_CHANGED',
+      }),
     });
   });
 
