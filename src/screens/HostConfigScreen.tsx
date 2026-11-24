@@ -29,6 +29,7 @@ import {
 import type { RootStackParamList } from '../types/navigation';
 import { useHostStore } from '../store/hostStore';
 import { useTailscaleConnectivityStore } from '../store/tailscaleConnectivityStore';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import {
   parsePairingUriV1,
   type PairingDescriptorV1,
@@ -86,6 +87,13 @@ export function HostConfigScreen() {
     state => state.setHostUrl,
   );
   const resetConnectivity = useTailscaleConnectivityStore(state => state.reset);
+  const desktopMode = useDesktopConnectionStore(state => state.mode);
+  const disconnectDesktop = useDesktopConnectionStore(state => state.disconnect);
+
+  const connectionBlocked = desktopMode !== 'none';
+  const blockedReason = desktopMode === 'cloud'
+    ? '当前正在使用 Mira Cloud 桌面连接。请先在连接入口断开 Cloud 连接，再扫码配对 Tailscale 直连。'
+    : '当前已有活动的 Tailscale 直连。请先在连接入口断开，再配对新的 Mira Desktop。';
 
   const [pairingDescriptor, setPairingDescriptor] =
     useState<PairingDescriptorV1 | null>(null);
@@ -109,6 +117,16 @@ export function HostConfigScreen() {
 
   const loadPairingUri = useCallback(
     (uri: string) => {
+      if (connectionBlocked) {
+        // A blocked pairing entry must not parse, probe or claim. This covers
+        // QR, paste and deep links while another transport is active.
+        resetPairing();
+        setPairingDescriptor(null);
+        setAuthorizationSheetOpen(false);
+        restoreCurrentConnectivityTarget();
+        setPairingLinkError(blockedReason);
+        return false;
+      }
       try {
         const descriptor = parsePairingUriV1(uri);
         pairedHandledRef.current = false;
@@ -138,7 +156,13 @@ export function HostConfigScreen() {
         return false;
       }
     },
-    [resetPairing, restoreCurrentConnectivityTarget, setConnectivityHostUrl],
+    [
+      blockedReason,
+      connectionBlocked,
+      resetPairing,
+      restoreCurrentConnectivityTarget,
+      setConnectivityHostUrl,
+    ],
   );
 
   useEffect(() => {
@@ -173,6 +197,12 @@ export function HostConfigScreen() {
     setConnectionStatus('connected');
     setAuthorizationSheetOpen(false);
     setSuccessToastVisible(true);
+    // The completed pairing is the explicit user action that activates Direct.
+    // If another transport was explicitly activated while the claim was in
+    // flight, do not let this stale result replace it.
+    if (useDesktopConnectionStore.getState().mode === 'none') {
+      void useDesktopConnectionStore.getState().activateDirect();
+    }
 
     const navigationTimer = setTimeout(() => {
       navigation.reset({ index: 0, routes: [{ name: 'SessionList' }] });
@@ -280,6 +310,11 @@ export function HostConfigScreen() {
   }, [pairingBusy, resetPairing, restoreCurrentConnectivityTarget]);
 
   const handleDisconnect = async () => {
+    // This action removes the Direct pairing. It must not deactivate an
+    // unrelated active Cloud transport (Cloud credentials are untouched here).
+    if (desktopMode === 'direct') {
+      await disconnectDesktop();
+    }
     try {
       await pushBindingService.revokeCurrentBinding();
     } catch (error) {
@@ -383,16 +418,25 @@ export function HostConfigScreen() {
             <Text style={[styles.heroSubtitle, { color: colors.text.muted }]}> 
               仅通过 Tailscale 直连扫描 Mira Desktop 上的配对二维码
             </Text>
+            {connectionBlocked ? (
+              <View style={[styles.blockedNotice, { backgroundColor: colors.bg.soft }]}>
+                <Text style={[styles.blockedNoticeText, { color: colors.text.base }]}>
+                  {blockedReason}
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="扫码配对"
+            accessibilityState={{ disabled: connectionBlocked || pairingBusy }}
+            disabled={connectionBlocked || pairingBusy}
             onPress={() => setScannerOpen(true)}
             style={({ pressed }) => [
               styles.scanBtn,
-              { backgroundColor: colors.primary },
-              pressed && { backgroundColor: colors.primaryActive },
+              { backgroundColor: connectionBlocked ? colors.primaryDisabled : colors.primary },
+              pressed && !connectionBlocked && { backgroundColor: colors.primaryActive },
             ]}
           >
             <ScanLine size={19} color={colors.onPrimary} />
@@ -429,7 +473,7 @@ export function HostConfigScreen() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
-              editable={!pairingBusy}
+              editable={!pairingBusy && !connectionBlocked}
               onSubmitEditing={handlePastePairingUri}
               returnKeyType="go"
             />
@@ -444,7 +488,7 @@ export function HostConfigScreen() {
                 !pairingUriInput.trim() && styles.disabled,
               ]}
               onPress={handlePastePairingUri}
-              disabled={!pairingUriInput.trim() || pairingBusy}
+              disabled={connectionBlocked || !pairingUriInput.trim() || pairingBusy}
             >
               <KeyRound size={18} color={colors.text.ink} />
               <Text style={[styles.continueBtnText, { color: colors.text.ink }]}>继续</Text>
@@ -653,6 +697,17 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     lineHeight: 22,
     marginTop: spacing.sm,
+    textAlign: 'center',
+  },
+  blockedNotice: {
+    marginTop: spacing.lg,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  blockedNoticeText: {
+    fontSize: fontSize.caption,
+    lineHeight: 20,
     textAlign: 'center',
   },
   scanBtn: {

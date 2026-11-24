@@ -1,5 +1,6 @@
 import type { Session, SessionSource } from '../types';
 import { RemoteHostError } from '../api/remoteHttp';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { LocalProviderRuntime } from './localProviderRuntime';
 import { RemoteHostRuntime } from './remoteHostRuntime';
 import { CloudHostRuntime } from './cloudHostRuntime';
@@ -37,11 +38,25 @@ export class RuntimeRegistry {
   }
 
   async listSessions(filter: SessionSourceFilter = 'all'): Promise<Session[]> {
-    if (filter === 'remote-host') return this.remote.listSessions();
-    if (filter === 'cloud-host') return this.cloud.listSessions();
+    const { mode, generation, transitioning } = useDesktopConnectionStore.getState();
+    const selected = !transitioning && mode === 'direct' ? this.remote
+      : !transitioning && mode === 'cloud' ? this.cloud : null;
+    const readSelected = async (): Promise<Session[]> => {
+      if (!selected) return [];
+      const sessions = await selected.listSessions();
+      const current = useDesktopConnectionStore.getState();
+      if (current.generation !== generation || current.mode !== mode || current.transitioning) return [];
+      if (mode === 'cloud') useDesktopConnectionStore.setState({ cloudConnectionStatus: 'connected' });
+      return sessions;
+    };
+    if (filter === 'remote-host' || filter === 'cloud-host') {
+      if ((filter === 'remote-host' && selected !== this.remote) ||
+          (filter === 'cloud-host' && selected !== this.cloud)) return [];
+      return readSelected();
+    }
     if (filter === 'local-provider') return this.local.listSessions();
     const results = await Promise.allSettled([
-      this.remote.listSessions(),
+      readSelected(),
       this.local.listSessions(),
     ]);
     const sessions = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);

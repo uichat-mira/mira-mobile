@@ -2,6 +2,7 @@ import type { Session } from '../types';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { RuntimeRegistry } from './runtimeRegistry';
 import { RemoteHostError } from '../api/remoteHttp';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 
 const session = (id: string, source: 'remote-host' | 'local-provider', updatedAt: string): Session => ({
   id,
@@ -20,6 +21,8 @@ const runtime = (kind: 'remote-host' | 'local-provider', sessions: Session[]): C
 });
 
 describe('RuntimeRegistry', () => {
+  beforeEach(() => useDesktopConnectionStore.setState({ mode: 'direct', transitioning: false }));
+  afterEach(() => useDesktopConnectionStore.setState({ mode: 'none' }));
   it('merges remote and local sessions by updated time', async () => {
     const registry = new RuntimeRegistry(
       runtime('local-provider', [session('local-1', 'local-provider', '2026-09-06T02:00:00.000Z')]) as never,
@@ -71,6 +74,7 @@ describe('RuntimeRegistry', () => {
     const pairedList = jest.spyOn(paired, 'listSessions');
     const registry = new RuntimeRegistry(local as never, paired as never, cloud as never);
 
+    useDesktopConnectionStore.setState({ mode: 'cloud' });
     await expect(registry.listSessions('cloud-host')).resolves.toMatchObject([
       { id: 'cloud-thread', source: 'cloud-host' },
     ]);
@@ -81,8 +85,12 @@ describe('RuntimeRegistry', () => {
     expect(cloudDelete).toHaveBeenCalledWith('cloud-thread');
     expect(registry.runtimeForSession('cloud-thread', 'cloud-host')).toBe(cloud);
     await registry.listSessions('all');
-    expect(cloudList).toHaveBeenCalledTimes(1);
-    expect(pairedList).toHaveBeenCalledTimes(1);
+    expect(cloudList).toHaveBeenCalledTimes(2);
+    expect(pairedList).not.toHaveBeenCalled();
+    useDesktopConnectionStore.setState({ mode: 'none' });
+    await registry.listSessions('all');
+    expect(cloudList).toHaveBeenCalledTimes(2);
+    expect(pairedList).not.toHaveBeenCalled();
   });
 
   it('routes session deletion to the matching runtime only', async () => {

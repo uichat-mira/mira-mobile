@@ -16,6 +16,9 @@ import { FolderOpen, Pin, Search, X } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
 import { miraHostClient } from '../api/miraHostClient';
+import { runtimeRegistry } from '../runtime/runtimeRegistry';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
@@ -58,6 +61,15 @@ export function SearchScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { colors } = useTheme();
   const roleNames = useRoleNameMap();
+  const desktopMode = useDesktopConnectionStore(state => state.mode);
+  const connectionGeneration = useDesktopConnectionStore(state => state.generation);
+  const cloudAccountId = useCloudAccountStore(state => state.account?.id);
+  const listActiveSessions = useCallback(() => {
+    const state = useDesktopConnectionStore.getState();
+    if (state.mode !== desktopMode || state.generation !== connectionGeneration || state.transitioning) return Promise.resolve([]);
+    return desktopMode === 'direct' ? miraHostClient.listSessions()
+      : desktopMode === 'cloud' ? runtimeRegistry.cloud.listSessions() : Promise.resolve([]);
+  }, [desktopMode, connectionGeneration]);
   const pinnedAtByThreadId = useThreadPinStore((state) => state.pinnedAtByThreadId);
   const hydratePins = useThreadPinStore((state) => state.hydrate);
   const progressByThreadId = useThreadReadStore((state) => state.progressByThreadId);
@@ -90,16 +102,22 @@ export function SearchScreen() {
     diagnostic: loadDiagnostic,
     reload: loadSessions,
   } = useSessionCollection({
-    listSessions: () => miraHostClient.listSessions(),
+    listSessions: listActiveSessions,
     syncUnreadSessions,
     hydrateLocalState,
-    filter: 'remote-host',
+    connectionGeneration,
+    filter: desktopMode === 'cloud' ? 'cloud-host' : 'remote-host',
   });
 
   useEffect(() => {
     const controller = new GlobalSearchController({
-      listSessions: () => miraHostClient.listSessions(),
-      getMessages: (sessionId) => miraHostClient.getMessages(sessionId),
+      listSessions: listActiveSessions,
+      getMessages: (sessionId) => {
+        const state = useDesktopConnectionStore.getState();
+        if (state.mode !== desktopMode || state.generation !== connectionGeneration || state.transitioning) return Promise.resolve([]);
+        return desktopMode === 'direct' ? miraHostClient.getMessages(sessionId)
+          : desktopMode === 'cloud' ? runtimeRegistry.cloud.getMessages(sessionId) : Promise.resolve([]);
+      },
       onStateChange: setSearchState,
     });
     searchControllerRef.current = controller;
@@ -107,7 +125,7 @@ export function SearchScreen() {
       searchControllerRef.current = null;
       controller.dispose();
     };
-  }, []);
+  }, [desktopMode, connectionGeneration, listActiveSessions]);
 
   useEffect(() => {
     if (searchState.status !== 'failed' || searchState.error === undefined) {
@@ -132,7 +150,7 @@ export function SearchScreen() {
     }
     const timer = setTimeout(() => controller.search(query), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, connectionGeneration, desktopMode]);
 
   const hasQuery = query.trim().length > 0;
   const threadResults = hasQuery ? searchState.threadMatches : sessions;
@@ -144,7 +162,9 @@ export function SearchScreen() {
       Alert.alert('无法打开会话', target.message);
       return;
     }
-    navigation.navigate('Chat', { sessionId: session.id, title: session.title });
+    navigation.navigate('Chat', { sessionId: session.id, title: session.title, source: session.source ?? (desktopMode === 'cloud' ? 'cloud-host' : 'remote-host'),
+      ...(desktopMode === 'cloud' ? { cloudAccountId } : {}),
+    });
   };
 
   const isImplementedTab = activeTab === 'all' || activeTab === 'conversations';

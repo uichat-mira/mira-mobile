@@ -43,6 +43,7 @@ import { ShiyanOrganizeRulesScreen } from './src/shiyan/ShiyanOrganizeRulesScree
 import { ShiyanTaskDetailWithDeliveryScreen } from './src/shiyan/ShiyanTaskDetailWithDeliveryScreen';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import { TailscaleConnectivityLifecycle } from './src/connectivity/TailscaleConnectivityLifecycle';
+import { useDesktopConnectionBootstrap } from './src/connectivity/useDesktopConnectionBootstrap';
 import { useAppBootstrap } from './src/bootstrap/useAppBootstrap';
 import { useAppLifecycle } from './src/bootstrap/useAppLifecycle';
 import { useCloudAccountBootstrap } from './src/cloud/useCloudAccountBootstrap';
@@ -85,6 +86,7 @@ function AppInner() {
 
   useAppLifecycle();
   useCloudAccountBootstrap();
+  useDesktopConnectionBootstrap();
 
   // SessionList is always the root, even without paired Desktop credentials.
   // A last-opened Chat is pushed above it so Back reaches sessions/Settings.

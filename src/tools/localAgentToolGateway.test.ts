@@ -11,6 +11,7 @@ import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
 import type { RuntimeEvent } from '../runtime/conversationRuntime';
 import { PiCoreAgentLoop } from '../runtime/piAgentLoop';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
 import {
   LocalAgentToolGateway,
@@ -258,6 +259,7 @@ const gateway = (
   cloudContext: cloudContext(options.context ?? {
     accountId: 'account-a',
     explicitlySignedOut: false,
+    desktopMode: 'cloud',
   }),
   json: fixture.json as unknown as typeof requestCloudRelayJson,
   sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
@@ -302,12 +304,16 @@ const previousHostPrompt = (...setups: HostSetup[]): string => [
 ].join('\n');
 
 describe('LocalAgentToolGateway', () => {
-  it('uses the existing Local + paired Host toolset only when explicitly signed out', async () => {
+  it('uses the existing Local + paired Host toolset when Direct is active and Cloud is signed out', async () => {
     const fixture = discoveryFixture();
     const paired = pairedGateway();
     const selected = gateway(fixture, {
       paired,
-      context: { accountId: null, explicitlySignedOut: true },
+      context: {
+        accountId: null,
+        explicitlySignedOut: true,
+        desktopMode: 'direct',
+      },
     });
 
     await expect(selected.listTools()).resolves.toEqual([{
@@ -319,11 +325,81 @@ describe('LocalAgentToolGateway', () => {
     expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
   });
 
+  it('keeps Desktop tools on the active Direct transport while Cloud is signed in', async () => {
+    const fixture = discoveryFixture();
+    const paired = pairedGateway();
+    const selected = gateway(fixture, {
+      paired,
+      context: {
+        accountId: 'account-a',
+        explicitlySignedOut: false,
+        desktopMode: 'direct',
+      },
+    });
+
+    await expect(selected.listTools()).resolves.toEqual([{
+      name: 'paired_tool',
+      description: 'Paired Host tool',
+      parameters: { type: 'object' },
+    }]);
+    expect(paired.listTools).toHaveBeenCalledTimes(1);
+    expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
+  });
+
+  it('stops an already-disclosed Desktop tool after the active mode changes', async () => {
+    const fixture = discoveryFixture();
+    let context: CloudToolAccountContext = {
+      accountId: 'account-a',
+      explicitlySignedOut: false,
+      desktopMode: 'cloud',
+    };
+    const selected = new LocalAgentToolGateway({
+      local: localGateway(),
+      paired: pairedGateway(),
+      entry: fixture.entry,
+      cloudContext: () => context,
+      json: fixture.json as unknown as typeof requestCloudRelayJson,
+      sse: fixture.sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
+    });
+    expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
+      .toContain(sharedToolName);
+
+    context = { ...context, desktopMode: 'direct' };
+    await expect(selected.callTool({
+      callId: 'call-after-switch', name: sharedToolName, arguments: '{}',
+    })).rejects.toMatchObject({ code: 'DESKTOP_CONNECTION_INACTIVE' });
+    expect(fixture.json).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ path: expect.stringContaining('tool-invocations') }),
+    );
+  });
+
+  it('exposes no Desktop tools when no transport is active', async () => {
+    const fixture = discoveryFixture();
+    const paired = pairedGateway();
+    const selected = gateway(fixture, {
+      paired,
+      context: {
+        accountId: 'account-a',
+        explicitlySignedOut: false,
+        desktopMode: 'none',
+      },
+    });
+
+    await expect(selected.listTools()).resolves.toEqual([localTool]);
+    await expect(selected.callTool({ callId: 'local-only', name: localTool.name, arguments: '{}' })).resolves.toMatchObject({ content: 'local-result' });
+    expect(paired.listTools).not.toHaveBeenCalled();
+    expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
+  });
+
   it.each(['session_rejected', 'device_revoked'] as const)(
     'does not fall back to paired tools after Cloud status %s',
     async status => {
       const original = useCloudAccountStore.getState();
+      const originalMode = useDesktopConnectionStore.getState();
       useCloudAccountStore.setState({ status, account: null });
+      useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
       try {
         const paired = pairedGateway();
         const fixture = discoveryFixture();
@@ -342,6 +418,7 @@ describe('LocalAgentToolGateway', () => {
         expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
       } finally {
         useCloudAccountStore.setState(original);
+        useDesktopConnectionStore.setState(originalMode);
       }
     },
   );
@@ -578,7 +655,7 @@ describe('Cloud Local Agent authority changes', () => {
   it('stops a run when the Cloud account switches', async () => {
     const fixture = discoveryFixture();
     let context: CloudToolAccountContext = {
-      accountId: 'account-a', explicitlySignedOut: false,
+      accountId: 'account-a', explicitlySignedOut: false, desktopMode: 'cloud',
     };
     const selected = new LocalAgentToolGateway({
       local: localGateway(),
@@ -590,7 +667,9 @@ describe('Cloud Local Agent authority changes', () => {
     });
     expect((await discoverDesktop(selected)).refreshedTools?.map(tool => tool.name))
       .toContain(sharedToolName);
-    context = { accountId: 'account-b', explicitlySignedOut: false };
+    context = {
+      accountId: 'account-b', explicitlySignedOut: false, desktopMode: 'cloud',
+    };
     await expect(selected.callTool({
       callId: 'call-switched', name: sharedToolName, arguments: '{}',
     })).rejects.toMatchObject({ code: 'CLOUD_TOOL_HOST_CHANGED' });
@@ -1104,6 +1183,66 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
     snapshot: Awaited<ReturnType<WhoYouMcpServiceDiscovery['discover']>>,
   ): WhoYouMcpServiceDiscovery => ({
     discover: jest.fn(async () => snapshot),
+  });
+
+  it.each(['none', 'direct'] as const)(
+    'keeps the independent MCP service usable in %s Desktop mode',
+    async desktopMode => {
+      const local = mcpLocal();
+      const fixture = discoveryFixture();
+      const mcp = mcpDiscovery({
+        service: mcpService, tools: mcpTools, catalogRevision: 'mcp-independent',
+        degradation: 'none', accountId: 'account-a',
+        initialToolNames: ['whoyou_mail_search'], expiresAt: Date.now() + 60_000,
+        assertCurrent: () => undefined,
+      });
+      const selected = gateway(fixture, {
+        local, mcp, context: { accountId: 'account-a', explicitlySignedOut: false, desktopMode },
+        paired: {
+          ...pairedGateway(),
+          listTools: jest.fn(async () => [localTool, ...mcpTools, { name: 'paired_tool', description: 'Desktop tool', parameters: { type: 'object' } }]),
+        },
+      });
+      const discovery = await selected.discoverTools();
+      expect(discovery.services).toContainEqual(mcpService);
+      expect(discovery.tools.filter(tool => tool.name === 'whoyou_mail_search')).toHaveLength(1);
+      expect(discovery.tools.some(tool => tool.name === 'paired_tool')).toBe(desktopMode === 'direct');
+      expect(discovery.tools.some(tool => tool.name === DESKTOP_HOST_DISCOVERY_TOOL)).toBe(false);
+      expect(fixture.entry.listHostCandidates).not.toHaveBeenCalled();
+      await expect(selected.callTool({ callId: 'mail-call-1', name: 'whoyou_mail_search', arguments: '{"query":"mira"}' }))
+        .rejects.toBeInstanceOf(ToolApprovalRequiredError);
+      await expect(selected.resolveApproval(approval, 'approved')).resolves.toMatchObject({ status: 'completed' });
+    },
+  );
+
+  it('keeps MCP service authority and updates the combined catalog when a Cloud Desktop binds', async () => {
+    const fixture = discoveryFixture();
+    const local = mcpLocal();
+    const mcp = mcpDiscovery({
+      service: mcpService, tools: mcpTools, catalogRevision: 'mcp-with-desktop',
+      degradation: 'none', accountId: 'account-a',
+      initialToolNames: ['whoyou_mail_search'], expiresAt: Date.now() + 60_000,
+      assertCurrent: () => undefined,
+    });
+    const selected = gateway(fixture, { local, mcp });
+    const before = await selected.discoverTools();
+    const result = await selected.callTool({
+      callId: 'discover-desktop', name: DESKTOP_HOST_DISCOVERY_TOOL, arguments: '{}',
+    });
+    expect(result.refreshedServices).toContainEqual(mcpService);
+    expect(result.refreshedTools?.map(tool => tool.name)).toContain(sharedToolName);
+    expect(result.refreshedCatalogRevision).not.toBe(before.catalogRevision);
+    expect(mcp.discover).toHaveBeenCalledTimes(1);
+    await expect(selected.discloseTools({
+      serviceId: 'who-you', capabilityId: 'who-you.mail.read',
+      catalogRevision: before.catalogRevision,
+    })).rejects.toMatchObject({ code: 'TOOL_DISCLOSURE_STALE' });
+    const disclosed = await selected.discloseTools({
+      serviceId: 'who-you', capabilityId: 'who-you.mail.read',
+      catalogRevision: result.refreshedCatalogRevision,
+    });
+    expect(disclosed.tools).toEqual(mcpTools);
+    expect(disclosed.catalogRevision).toBe(result.refreshedCatalogRevision);
   });
 
   it('defers the real mail schemas, discloses them, and reuses the existing approval path', async () => {
