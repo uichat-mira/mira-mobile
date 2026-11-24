@@ -3,15 +3,21 @@ import type { ReactTestRenderer } from 'react-test-renderer';
 import renderer, { act } from 'react-test-renderer';
 
 import { CustomDrawer } from './CustomDrawer';
+import { useCloudAccountStore, type CloudAccountStatus } from '../cloud/cloudAccountStore';
 
-let mockCloudState: {
-  status: string;
-  account: { id: string; username: string } | null;
-} = { status: 'signed_out', account: null };
-
-jest.mock('../cloud/cloudAccountStore', () => ({
-  useCloudAccountStore: (selector: (state: typeof mockCloudState) => unknown) =>
-    selector(mockCloudState),
+// Use the real Zustand subscription path. Only remote OAuth I/O is isolated;
+// a hand-crafted selector mock would miss an open drawer that stops updating.
+jest.mock('../cloud/cloudAuthService', () => ({
+  CloudAuthServiceError: class CloudAuthServiceError extends Error {},
+  cloudAuthService: {
+    restoreSession: jest.fn(),
+    beginSignIn: jest.fn(),
+    cancelPendingSignIn: jest.fn(),
+    completeSignIn: jest.fn(),
+    logout: jest.fn(),
+    listDevices: jest.fn(),
+    revokeDevice: jest.fn(),
+  },
 }));
 
 const mockNavigate = jest.fn();
@@ -120,10 +126,10 @@ const renderDrawer = async (
 };
 
 const setCloudAccount = (
-  status: string,
+  status: CloudAccountStatus,
   account: { id: string; username: string } | null,
 ) => {
-  mockCloudState = { status, account };
+  useCloudAccountStore.setState({ status, account, initialized: true });
 };
 
 const collectText = (tree: ReactTestRenderer): string[] =>
@@ -284,14 +290,28 @@ describe('CustomDrawer Cloud account entry', () => {
     const tree = await renderDrawer(onClose);
     expect(collectText(tree)).toContain('alice');
 
-    setCloudAccount('signed_in', { id: 'account-bob', username: 'bob' });
     await act(async () => {
-      tree.update(<CustomDrawer onClose={onClose} />);
+      setCloudAccount('signed_in', { id: 'account-bob', username: 'bob' });
     });
 
+    // Store subscriptions must update the already mounted drawer without
+    // replacing the component or forcing an explicit renderer.update().
     const texts = collectText(tree);
     expect(texts).toContain('bob');
     expect(texts).not.toContain('alice');
+
+    await act(async () => {
+      setCloudAccount('device_revoked', null);
+    });
+    expect(collectText(tree)).toContain('授权已撤销');
+    expect(collectText(tree)).not.toContain('bob');
+
+    await act(async () => {
+      setCloudAccount('signed_out', null);
+    });
+    expect(collectText(tree)).toContain('未登录');
+    expect(collectText(tree)).not.toContain('bob');
+
     await act(async () => tree.unmount());
   });
 });
