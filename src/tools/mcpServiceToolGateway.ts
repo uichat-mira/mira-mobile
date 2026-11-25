@@ -48,6 +48,11 @@ export interface McpServiceToolGatewayOptions {
     decision: ToolApprovalDecision,
     options?: { signal?: AbortSignal },
   ): Promise<ToolApprovalResolution>;
+  /**
+   * Canonical service tool name -> deterministic model-safe alias. The alias
+   * never changes the canonical MCP tool that executes.
+   */
+  toolAliases?: ReadonlyMap<string, string>;
 }
 
 const parseArguments = (value: string): Record<string, unknown> => {
@@ -97,6 +102,26 @@ const asGatewayError = (error: unknown): never => {
   throw error;
 };
 
+const aliasService = (
+  service: ToolServiceDescriptor,
+  aliases: ReadonlyMap<string, string>,
+): ToolServiceDescriptor => {
+  if (aliases.size === 0) return service;
+  const rename = (name: string): string => aliases.get(name) ?? name;
+  return {
+    ...service,
+    toolNames: service.toolNames.map(rename),
+    ...(service.capabilities
+      ? {
+          capabilities: service.capabilities.map((capability) => ({
+            ...capability,
+            toolNames: capability.toolNames.map(rename),
+          })),
+        }
+      : {}),
+  };
+};
+
 /**
  * MOB-094 Tool Gateway adapter for one trusted MCP service.
  *
@@ -110,23 +135,59 @@ export class McpServiceToolGateway implements ToolGatewayClient {
   private readonly snapshot: McpServiceSnapshot;
   private readonly executeTool: McpServiceToolGatewayOptions['executeTool'];
   private readonly resolveToolApproval?: McpServiceToolGatewayOptions['resolveToolApproval'];
-  private readonly byName: ReadonlyMap<string, ToolManifest>;
-  private readonly callableNames: ReadonlySet<string>;
+  private readonly aliases: ReadonlyMap<string, string>;
+  private readonly canonicalByAlias: ReadonlyMap<string, string>;
+  private readonly serviceDescriptor: ToolServiceDescriptor;
+  private readonly byAlias: ReadonlyMap<string, ToolManifest>;
+  private readonly visibleAliases: readonly ToolManifest[];
+  private readonly callableCanonical: ReadonlySet<string>;
 
   constructor(options: McpServiceToolGatewayOptions) {
     this.snapshot = options.snapshot;
     this.executeTool = options.executeTool;
     this.resolveToolApproval = options.resolveToolApproval;
-    this.byName = new Map(options.snapshot.tools.map((tool) => [tool.name, tool]));
-    this.callableNames = new Set(options.snapshot.service.toolNames);
+    this.aliases = options.toolAliases ?? new Map();
+    this.canonicalByAlias = new Map(
+      [...this.aliases.entries()].map(([canonical, alias]) => [alias, canonical]),
+    );
+    this.serviceDescriptor = aliasService(options.snapshot.service, this.aliases);
+    const rename = (tool: ToolManifest): ToolManifest => {
+      const alias = this.aliases.get(tool.name);
+      return alias ? { ...tool, name: alias } : tool;
+    };
+    this.byAlias = new Map(options.snapshot.tools.map((tool) => {
+      const renamed = rename(tool);
+      return [renamed.name, renamed];
+    }));
+    this.visibleAliases = (options.snapshot.visibleTools ?? options.snapshot.tools)
+      .map(rename);
+    this.callableCanonical = new Set(options.snapshot.service.toolNames);
+  }
+
+  /**
+   * Returns a gateway with deterministic aliases for colliding services. The
+   * execution adapter, authority and revision stay owned by this binding.
+   */
+  withToolAliases(aliases: ReadonlyMap<string, string>): McpServiceToolGateway {
+    if (aliases.size === 0) return this;
+    const merged = new Map(this.aliases);
+    for (const [canonical, alias] of aliases) merged.set(canonical, alias);
+    return new McpServiceToolGateway({
+      snapshot: this.snapshot,
+      executeTool: this.executeTool,
+      ...(this.resolveToolApproval
+        ? { resolveToolApproval: this.resolveToolApproval }
+        : {}),
+      toolAliases: merged,
+    });
   }
 
   get serviceId(): string {
-    return this.snapshot.service.id;
+    return this.serviceDescriptor.id;
   }
 
   get service(): ToolServiceDescriptor {
-    return this.snapshot.service;
+    return this.serviceDescriptor;
   }
 
   get catalogRevision(): string {
@@ -134,7 +195,15 @@ export class McpServiceToolGateway implements ToolGatewayClient {
   }
 
   get ownedToolNames(): ReadonlySet<string> {
-    return this.callableNames;
+    return new Set(this.serviceDescriptor.toolNames);
+  }
+
+  private canonicalFor(alias: string): string {
+    return this.canonicalByAlias.get(alias) ?? alias;
+  }
+
+  private aliasFor(canonical: string): string {
+    return this.aliases.get(canonical) ?? canonical;
   }
 
   private async assertCurrent(): Promise<void> {
@@ -143,7 +212,7 @@ export class McpServiceToolGateway implements ToolGatewayClient {
 
   async listTools(): Promise<readonly ToolManifest[]> {
     await this.assertCurrent();
-    return this.snapshot.visibleTools ?? this.snapshot.tools;
+    return this.visibleAliases;
   }
 
   async discoverTools(): Promise<ToolDiscoveryResult> {
@@ -152,8 +221,8 @@ export class McpServiceToolGateway implements ToolGatewayClient {
       this.snapshot.degradation !== 'none' &&
       this.snapshot.degradation !== 'no-resource';
     return {
-      tools: this.snapshot.visibleTools ?? this.snapshot.tools,
-      services: [this.snapshot.service],
+      tools: this.visibleAliases,
+      services: [this.serviceDescriptor],
       notices: degraded ? [{ code: 'mcp-service-degraded' }] : [],
       catalogRevision: this.snapshot.catalogRevision,
     };
@@ -175,9 +244,9 @@ export class McpServiceToolGateway implements ToolGatewayClient {
           'The trusted MCP catalog changed before disclosure',
         );
       }
-      const target = resolveToolDisclosureTarget([this.snapshot.service], request);
+      const target = resolveToolDisclosureTarget([this.serviceDescriptor], request);
       const tools = target.toolNames.map((name) => {
-        const tool = this.byName.get(name);
+        const tool = this.byAlias.get(name);
         if (!tool) {
           throw new ToolGatewayError(
             'TOOL_DISCLOSURE_NOT_AVAILABLE',
@@ -198,19 +267,31 @@ export class McpServiceToolGateway implements ToolGatewayClient {
   ): Promise<ToolCallResult> {
     try {
       await this.assertCurrent();
-      if (!this.callableNames.has(request.name)) {
+      const canonical = this.canonicalFor(request.name);
+      if (!this.callableCanonical.has(canonical)) {
         throw new ToolGatewayError(
           'TOOL_NOT_DECLARED',
           `MCP tool is not declared for this run: ${request.name}`,
         );
       }
       const args = parseArguments(request.arguments);
-      const result = await this.executeTool(
-        { ...request, arguments: JSON.stringify(args) },
-        options,
-      );
-      await this.assertCurrent();
-      return result;
+      try {
+        const result = await this.executeTool(
+          { ...request, name: canonical, arguments: JSON.stringify(args) },
+          options,
+        );
+        await this.assertCurrent();
+        return result;
+      } catch (error) {
+        if (error instanceof ToolApprovalRequiredError &&
+            error.approval.name !== request.name) {
+          throw new ToolApprovalRequiredError({
+            ...error.approval,
+            name: this.aliasFor(canonical),
+          });
+        }
+        throw error;
+      }
     } catch (error) {
       return asGatewayError(error);
     }
@@ -232,13 +313,18 @@ export class McpServiceToolGateway implements ToolGatewayClient {
           'The MCP service gateway does not own this approval',
         );
       }
-      if (!this.callableNames.has(approval.name)) {
+      const canonical = this.canonicalFor(approval.name);
+      if (!this.callableCanonical.has(canonical)) {
         throw new ToolGatewayError(
           'TOOL_APPROVAL_STALE',
           'This approval does not belong to the MCP service binding',
         );
       }
-      const result = await this.resolveToolApproval(approval, decision, options);
+      const result = await this.resolveToolApproval(
+        { ...approval, name: canonical },
+        decision,
+        options,
+      );
       await this.assertCurrent();
       return result;
     } catch (error) {

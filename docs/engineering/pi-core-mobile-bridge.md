@@ -186,6 +186,60 @@ tools already covered by the existing MOB-086 mail disclosure approval.
 
 
 
+### Mira ID service directory consumption (MOB-105 / 0.5.0 A2, 2026-11-25)
+
+MOB-105 consumes the frozen cloud-auth service registry V0 contract
+(`cloud-auth` #198, `docs/service-registry-v0.md`). Registering a service for an
+explicit Mira Account ID is the authorization; Mobile has no second enable
+switch or per-service login.
+
+- `src/mcp/accountServiceRegistry.ts` implements exactly `GET /v1/services` and
+  `POST /v1/services/:serviceId/credential` with the existing device-bound Cloud
+  Session. It validates definition/service ID/project ID/audience/endpoint,
+  HTTPS without userinfo/query/fragment, namespaced scopes, revision, response
+  service/audience/revision/expiry and the signed service-bearer claims. The
+  Cloud Session is sent only to Cloud Auth; only the service bearer is sent to
+  the declared service endpoint.
+- Catalog entries are filtered by `protocol.name === "mcp"` and the exact MCP
+  versions this client can negotiate. Non-MCP or unsupported versions are not
+  rendered or interpreted as MCP. A malformed unrelated registration is skipped
+  instead of removing every sibling service.
+- A complete descriptor + revision + bearer + expiry is reused as one
+  authorization binding. The shared catalog cache is bounded to five minutes;
+  discovery/renewal rechecks the catalog revision, repairs one stale-revision
+  `409 SERVICE_REGISTRATION_CHANGED` from fresh metadata, and invalidates the
+  binding on account/session/device change, logout, expiry, removal or observed
+  revision/endpoint change. Issued service credentials expire naturally offline
+  (contract TTL at most 600 seconds plus bounded skew); Mobile does not claim
+  instantaneous remote revocation of a bearer already issued.
+- Each compatible registration becomes an independent generic MCP binding. Real
+  `tools/list` remains the schema authority, the optional
+  `mira://service/<id>/capabilities` v1 resource only groups permitted real
+  tools, and a missing/unknown resource falls back to a flat standard MCP
+  catalog. There is no per-service business tool list in Mobile and no
+  registration-implied tool approval. Newly registered tools stay deferred
+  behind `mira_tools_disclose` rather than being injected in the first turn.
+- Same-named tools from independent services are deterministically aliased by
+  service identity at the composition boundary; execution maps the alias back to
+  the canonical MCP tool inside the owning binding. One service's failure,
+  revocation or malformed catalog entry does not remove sibling services or
+  local chat.
+- Until A3 completes its real migration, the existing dedicated Who You entry is
+  retained and `who-you` / `mira-desktop` registry IDs are excluded from this
+  generic directory to avoid duplicate discovery or a second binding. Who You's
+  mail disclosure/privacy policy remains scoped to that service and is not
+  copied to every registration. Desktop Cloud Host still uses the existing Host
+  Grant/Relay path; Direct remains independent of Mira ID, and Remote V1 keeps
+  its non-tool responsibilities.
+- **Evidence boundary:** automated coverage in
+  `src/mcp/accountServiceRegistry.test.ts` uses two independent real JSON-RPC MCP
+  fixtures plus one incompatible-protocol registration and a catalog/credential
+  issuer fixture. It exercises the real Pi Core loop and `LocalAgentToolGateway`,
+  counts catalog lookups and proves cache/revision/lifecycle/scope handling.
+  Fixtures are not real production registrations. Real Mira ID accounts, deployed
+  services, Android/iOS devices and A3/Direct/Relay interoperability remain T4
+  validation gaps; no production registration is assumed to exist.
+
 ### Semantic tool-chain blocking removal (MOB-100, 2026-11-24)
 
 MOB-100 removes the MailStage/`MAIL_TOOL_CHAIN_RESTRICTED` mechanism from the

@@ -49,6 +49,18 @@ export interface McpServiceDiscovery {
   }): Promise<McpServiceSnapshot>;
 }
 
+/**
+ * A trusted account-scoped source of independently authorized service
+ * bindings. Implementations own catalog discovery/caching and must return
+ * bindings that degrade separately from one another.
+ */
+export interface McpServiceDirectory {
+  bindings(input: {
+    accountId: string;
+    signal?: AbortSignal;
+  }): Promise<readonly McpServiceBinding[]>;
+}
+
 export interface McpServiceBindingOptions {
   /**
    * Stable service type ID, independent of transport/instance details. Omit only

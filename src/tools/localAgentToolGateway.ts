@@ -14,6 +14,7 @@ import {
 } from '../api/cloudRelay';
 import { RemoteHostError } from '../api/remoteHttp';
 import { defaultMcpServiceBindings } from '../mcp/defaultMcpServiceBindings';
+import { accountMcpServiceDirectory } from '../mcp/accountServiceRegistry';
 import {
   createCloudDesktopMcpDiscovery,
   createDirectDesktopMcpDiscovery,
@@ -22,6 +23,7 @@ import {
 import {
   McpServiceBinding,
   type McpServiceBindingOutcome,
+  type McpServiceDirectory,
   type McpServiceDiscovery,
 } from '../mcp/mcpServiceBinding';
 import { McpProtocolError } from '../mcp/mcpProtocolClient';
@@ -138,6 +140,12 @@ export interface LocalAgentToolGatewayOptions {
    * adapter remains accepted for focused adapters/tests.
    */
   mcp?: McpServiceDiscovery | readonly (McpServiceDiscovery | McpServiceBinding)[] | null;
+  /**
+   * Account-scoped service directory (Mira ID registrations). Discovery is
+   * catalog-driven and each compatible service becomes its own binding. `null`
+   * disables the directory for focused adapters/tests.
+   */
+  mcpDirectory?: McpServiceDirectory | null;
 }
 
 type ActiveMcpBinding = Extract<McpServiceBindingOutcome, { status: 'ready' }> & {
@@ -146,6 +154,29 @@ type ActiveMcpBinding = Extract<McpServiceBindingOutcome, { status: 'ready' }> &
 
 /** Bounds optional cloud discovery so an ordinary Local chat cannot hang. */
 const MCP_DISCOVERY_TIMEOUT_MS = 12_000;
+
+const stableToolHash = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(36).padStart(6, '0').slice(0, 6);
+};
+
+const collidingToolAlias = (
+  serviceId: string,
+  toolName: string,
+  attempt = 1,
+): string => {
+  const safeService = serviceId.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 24);
+  const suffix = attempt === 1 ? '' : `_${attempt}`;
+  const prefix = `svc_${safeService || 'service'}_${stableToolHash(serviceId)}__`;
+  const maxToolName = 64;
+  const safeTool = toolName.replace(/[^A-Za-z0-9_-]/gu, '_');
+  const available = Math.max(1, maxToolName - prefix.length - suffix.length);
+  return `${prefix}${safeTool.slice(0, available)}${suffix}`;
+};
 
 type ProbedHost =
   | { status: 'usable'; candidate: CloudRelayHostCandidate; toolNames: string[] }
@@ -392,6 +423,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly selectionText: string;
   private readonly previousAssistantText: string;
   private readonly mcp: readonly McpServiceBinding[];
+  private readonly mcpDirectory: McpServiceDirectory | null;
   private pendingHostSelectionAccount: string | null = null;
   private active: ToolGatewayClient | null = null;
   private pendingDiscovery: Promise<ToolDiscoveryResult> | null = null;
@@ -419,6 +451,9 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       options.mcp === undefined ? defaultMcpServiceBindings : options.mcp,
       this.local,
     );
+    this.mcpDirectory = options.mcpDirectory === undefined
+      ? accountMcpServiceDirectory
+      : options.mcpDirectory;
   }
 
   async listTools(): Promise<readonly ToolManifest[]> {
@@ -733,6 +768,30 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   }
 
   /**
+   * The Mira ID service directory is optional infrastructure: losing catalog
+   * access must not remove compiled-in MCP services or local tools. A failed
+   * catalog therefore yields no directory bindings, while each real binding
+   * still reports its own degradation.
+   */
+  private async directoryBindings(
+    context: CloudToolAccountContext,
+    signal: AbortSignal,
+  ): Promise<readonly McpServiceBinding[]> {
+    if (!this.mcpDirectory || !context.accountId ||
+        context.explicitlySignedOut || context.cloudSessionInvalid) {
+      return [];
+    }
+    try {
+      return await this.mcpDirectory.bindings({
+        accountId: context.accountId,
+        signal,
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Composes the trusted MCP service collection with the selected Desktop
    * transport. Each binding is discovered and degraded independently: one
    * unavailable/untrusted service must not remove another service or local
@@ -744,19 +803,25 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     additionalBindings: readonly McpServiceBinding[] = [],
   ): Promise<ToolDiscoveryResult> {
     const context = this.cloudContext();
-    const eligible = [...this.mcp, ...additionalBindings].filter((binding) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MCP_DISCOVERY_TIMEOUT_MS);
+    const directoryBindings = await this.directoryBindings(context, controller.signal);
+    const eligible = [
+      ...this.mcp,
+      ...additionalBindings,
+      ...directoryBindings,
+    ].filter((binding) => {
       if (!binding.requiresCloudAccount) return true;
       return Boolean(context.accountId) &&
         !context.explicitlySignedOut &&
         !context.cloudSessionInvalid;
     });
     if (eligible.length === 0) {
+      clearTimeout(timer);
       this.clearMcp();
       return this.withCatalog(discovery, services);
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), MCP_DISCOVERY_TIMEOUT_MS);
     let outcomes: McpServiceBindingOutcome[];
     try {
       outcomes = await Promise.all(eligible.map((binding) =>
@@ -814,7 +879,6 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     });
 
     const serviceIds = new Set<string>();
-    const ownedNames = new Set<string>();
     for (const entry of ready) {
       if (serviceIds.has(entry.gateway.serviceId)) {
         throw new ToolGatewayError(
@@ -823,6 +887,12 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         );
       }
       serviceIds.add(entry.gateway.serviceId);
+    }
+    const aliased = await this.aliasCollidingMcpTools(ready, discovery.tools);
+    ready.splice(0, ready.length, ...aliased);
+
+    const ownedNames = new Set<string>();
+    for (const entry of ready) {
       for (const name of entry.gateway.ownedToolNames) {
         if (ownedNames.has(name)) {
           throw new ToolGatewayError(
@@ -905,6 +975,60 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         ...discoverDesktop,
       ],
     }, [...existing, ...active.map((entry) => entry.gateway.service)], revision);
+  }
+
+  /**
+   * Two independently authorized services may legitimately expose the same
+   * MCP tool name. Deterministically alias only the colliding names by service
+   * identity so neither service shadow-routes the other; execution is mapped
+   * back to the canonical MCP name inside the owning binding.
+   */
+  private async aliasCollidingMcpTools(
+    ready: readonly (ActiveMcpBinding & { visibleTools: readonly ToolManifest[] })[],
+    existingTools: readonly ToolManifest[],
+  ): Promise<Array<ActiveMcpBinding & { visibleTools: readonly ToolManifest[] }>> {
+    const owners = new Map<string, number[]>();
+    ready.forEach((entry, index) => {
+      for (const name of entry.gateway.ownedToolNames) {
+        const indexes = owners.get(name) ?? [];
+        indexes.push(index);
+        owners.set(name, indexes);
+      }
+    });
+    const collisions = [...owners.entries()]
+      .filter(([, indexes]) => indexes.length > 1)
+      .sort(([left], [right]) => left.localeCompare(right));
+    if (collisions.length === 0) return [...ready];
+
+    const taken = new Set(existingTools.map((tool) => tool.name));
+    for (const entry of ready) {
+      for (const name of entry.gateway.ownedToolNames) taken.add(name);
+    }
+    const aliases = ready.map(() => new Map<string, string>());
+    for (const [name, indexes] of collisions) {
+      for (const index of indexes) {
+        const serviceId = ready[index].gateway.serviceId;
+        let alias = collidingToolAlias(serviceId, name);
+        let suffix = 1;
+        while (taken.has(alias)) {
+          suffix += 1;
+          alias = collidingToolAlias(serviceId, name, suffix);
+        }
+        taken.add(alias);
+        aliases[index].set(name, alias);
+      }
+    }
+    return Promise.all(ready.map(async (entry, index) => {
+      const map = aliases[index];
+      if (map.size === 0) return entry;
+      const gateway = entry.gateway.withToolAliases(map);
+      return {
+        ...entry,
+        gateway,
+        visibleTools: await gateway.listTools(),
+        snapshot: { ...entry.snapshot, service: gateway.service },
+      };
+    }));
   }
 
   private clearMcp(): void {

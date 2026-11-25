@@ -1565,7 +1565,7 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
     ]);
   });
 
-  it('rejects colliding tool names deterministically instead of shadow-routing', async () => {
+  it('distinguishes colliding service tool names deterministically instead of shadow-routing', async () => {
     const duplicate = (serviceId: string, revision: string): WhoYouMcpServiceDiscovery => ({
       discover: jest.fn(async () => ({
         service: {
@@ -1583,15 +1583,43 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
         accountId: 'account-a',
         initialToolNames: ['shared_duplicate_tool'],
         expiresAt: Date.now() + 60_000,
+        executionGateway: {
+          listTools: jest.fn(async () => []),
+          callTool: jest.fn(async (request) => ({
+            content: `${serviceId}:${request.name}`,
+          })),
+        },
         assertCurrent: () => undefined,
       })),
     });
     const selected = gateway(discoveryFixture(), {
       mcp: [duplicate('service-a', 'a'), duplicate('service-b', 'b')],
     });
-    await expect(selected.discoverTools()).rejects.toMatchObject({
-      code: 'TOOL_NAME_COLLISION',
-    });
+    const discovered = await selected.discoverTools();
+    const serviceA = discovered.services?.find((service) => service.id === 'service-a');
+    const serviceB = discovered.services?.find((service) => service.id === 'service-b');
+    const aliasA = serviceA?.toolNames[0];
+    const aliasB = serviceB?.toolNames[0];
+    expect(aliasA).toBeDefined();
+    expect(aliasB).toBeDefined();
+    expect(aliasA).not.toBe('shared_duplicate_tool');
+    expect(aliasB).not.toBe('shared_duplicate_tool');
+    expect(aliasA).not.toBe(aliasB);
+    expect(discovered.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([aliasA, aliasB]),
+    );
+    expect(discovered.tools.map((tool) => tool.name))
+      .not.toContain('shared_duplicate_tool');
+    await expect(selected.callTool({
+      callId: 'alias-a',
+      name: aliasA as string,
+      arguments: '{}',
+    })).resolves.toEqual({ content: 'service-a:shared_duplicate_tool' });
+    await expect(selected.callTool({
+      callId: 'alias-b',
+      name: aliasB as string,
+      arguments: '{}',
+    })).resolves.toEqual({ content: 'service-b:shared_duplicate_tool' });
   });
 
   it('runs the complete read-only Who You chain through real Pi Core and the existing approval flow', async () => {
