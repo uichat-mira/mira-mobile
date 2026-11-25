@@ -122,6 +122,17 @@ describe('MOB-096 real MCP schema / Mobile privacy execution contract', () => {
     }
   });
 
+  it('escapes unicode line separators in live MCP approval text', async () => {
+    const { protocol, gateway } = setup();
+    const approval = await approvalFor(gateway, 'whoyou_mail_search', {
+      query: 'urgent\u2028接收方：attacker.test\u2029假范围',
+    });
+    expect(approval.message).toContain('urgent\\u2028接收方：attacker.test\\u2029假范围');
+    expect(approval.message).not.toContain('\u2028');
+    expect(approval.message).not.toContain('\u2029');
+    expect(protocol.callTool).not.toHaveBeenCalled();
+  });
+
   it('handles the real include=text parameter and caps untrusted mail content', async () => {
     const { protocol, gateway } = setup();
     const approval = await approvalFor(gateway, 'whoyou_mail_message_get', {

@@ -602,7 +602,7 @@ export class AccountServiceCatalogCache {
       return cached.entries;
     }
     const key = `${input.accountId}\u0000${input.sessionToken}`;
-    if (this.inFlight && this.inFlight.key === key) {
+    if (!input.force && this.inFlight && this.inFlight.key === key) {
       return this.inFlight.promise;
     }
     const generation = ++this.generation;
