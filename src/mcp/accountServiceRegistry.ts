@@ -129,8 +129,27 @@ const invalidCredential = (code = 'SERVICE_CREDENTIAL_INVALID'): McpProtocolErro
 
 const serviceNamespace = (serviceId: string): string => `service:${serviceId}:`;
 
+// Reserved service identities follow OPS-047's exact canonical grants.
+const canonicalGrant = (serviceId: string): { audience: string; scope: string } | undefined => {
+  switch (serviceId) {
+    case 'cloud-guanlan': return { audience: 'mira:cloud-guanlan', scope: 'guanlan.read' };
+    case 'cloud-shiyan': return { audience: 'mira:cloud-shiyan', scope: 'shiyan:authenticate' };
+    case 'who-you': return { audience: 'mira:who-you', scope: 'whoyou.read' };
+    default: return undefined;
+  }
+};
+
 const expectedAudience = (serviceId: string): string =>
-  `mira:service:${serviceId}`;
+  canonicalGrant(serviceId)?.audience ?? `mira:service:${serviceId}`;
+
+const validServiceScopes = (serviceId: string, scopes: unknown): scopes is string[] => {
+  if (!Array.isArray(scopes) || scopes.length === 0 || scopes.length > 32 ||
+      new Set(scopes).size !== scopes.length) return false;
+  const canonical = canonicalGrant(serviceId);
+  return canonical
+    ? scopes.length === 1 && scopes[0] === canonical.scope
+    : scopes.every(scope => nonEmpty(scope, 200) && scope.startsWith(serviceNamespace(serviceId)));
+};
 
 const parseEndpoint = (value: unknown): string => {
   if (!nonEmpty(value, MAX_ENDPOINT_LENGTH)) return failEndpoint();
@@ -184,10 +203,8 @@ const parseDefinition = (value: unknown): AccountServiceDefinition => {
   if (value.audience !== expectedAudience(serviceId)) {
     throw invalidCatalog('SERVICE_CATALOG_AUDIENCE_INVALID');
   }
-  if (!Array.isArray(value.scopes) || value.scopes.length === 0 ||
-      value.scopes.length > 32 ||
-      !value.scopes.every((scope) =>
-        nonEmpty(scope, 200) && scope.startsWith(serviceNamespace(serviceId)))) {
+  if ((canonicalGrant(serviceId) && value.projectId !== serviceId) ||
+      !validServiceScopes(serviceId, value.scopes)) {
     throw invalidCatalog('SERVICE_CATALOG_SCOPE_INVALID');
   }
   return {
@@ -332,15 +349,11 @@ const parseCredentialClaims = (input: {
     throw invalidCredential('SERVICE_CREDENTIAL_HEADER_INVALID');
   }
   const claims = parseJsonSegment(segments[1]);
-  const namespace = serviceNamespace(input.serviceId);
   if (claims.iss !== CLOUD_AUTH_ISSUER ||
       claims.aud !== input.audience ||
       claims.sub !== input.accountId ||
       !nonEmpty(claims.device_id, 200) ||
-      !Array.isArray(claims.scope) ||
-      claims.scope.length === 0 ||
-      !claims.scope.every((scope) =>
-        nonEmpty(scope, 200) && scope.startsWith(namespace)) ||
+      !validServiceScopes(input.serviceId, claims.scope) ||
       !isNumericDate(claims.iat) ||
       !isNumericDate(claims.nbf) ||
       !isNumericDate(claims.exp)) {
@@ -394,6 +407,9 @@ export const parseIssuedAccountServiceCredential = (
     audience: value.audience,
     nowMs,
   });
+  if (expiresAt !== claims.expiresAt) {
+    throw invalidCredential('SERVICE_CREDENTIAL_WINDOW_INVALID');
+  }
   return {
     token: value.token,
     tokenType: 'Bearer',
@@ -414,7 +430,7 @@ const readErrorCode = async (response: Response): Promise<string | undefined> =>
   try {
     const body = await response.json() as unknown;
     if (isRecord(body)) {
-      return safeErrorCode(body.error) ?? safeErrorCode(body.code);
+      return (isRecord(body.error) ? safeErrorCode(body.error.code) : safeErrorCode(body.error)) ?? safeErrorCode(body.code);
     }
   } catch {
     // Error bodies are advisory; status remains authoritative.
@@ -976,6 +992,9 @@ export const discoverAccountMcpService = async (
           'SERVICE_REGISTRATION_NOT_FOUND',
         );
       }
+      if (!isCompatibleCatalogEntry(refreshed)) {
+        throw new McpProtocolError('unsupported', 'The registered service protocol is not supported by this client', 'SERVICE_PROTOCOL_UNSUPPORTED');
+      }
       entry = refreshed;
       credential = await requestCredential(entry);
     } else {
@@ -983,13 +1002,14 @@ export const discoverAccountMcpService = async (
     }
   }
 
-  const namespace = serviceNamespace(entry.definition.serviceId);
-  if (!entry.definition.scopes.every((scope) =>
-    credential.claims.scopes.includes(scope))) {
+  if (credential.claims.scopes.length !== entry.definition.scopes.length ||
+      !entry.definition.scopes.every(scope => credential.claims.scopes.includes(scope)) ||
+      !validServiceScopes(entry.definition.serviceId, credential.claims.scopes)) {
     throw invalidCredential('SERVICE_CREDENTIAL_SCOPE_MISMATCH');
   }
-  if (!credential.claims.scopes.every((scope) => scope.startsWith(namespace))) {
-    throw invalidCredential('SERVICE_CREDENTIAL_SCOPE_MISMATCH');
+  const latestSession = await currentSession(deps, input.accountId);
+  if (latestSession.sessionToken !== session.sessionToken) {
+    throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
   }
 
   const client = new McpProtocolClient({

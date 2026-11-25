@@ -50,6 +50,13 @@ const credentialToken = (input: {
   ].join('.');
 };
 
+const canonical = (id: string) => {
+  if (id === 'cloud-guanlan') return { audience: 'mira:cloud-guanlan', scopes: ['guanlan.read'] };
+  if (id === 'cloud-shiyan') return { audience: 'mira:cloud-shiyan', scopes: ['shiyan:authenticate'] };
+  if (id === 'who-you') return { audience: 'mira:who-you', scopes: ['whoyou.read'] };
+  return undefined;
+};
+
 const definition = (input: {
   serviceId: string;
   displayName?: string;
@@ -61,15 +68,15 @@ const definition = (input: {
   const serviceId = input.serviceId;
   return {
     serviceId,
-    projectId: 'fixture-project',
+    projectId: canonical(serviceId) ? serviceId : 'fixture-project',
     displayName: input.displayName ?? serviceId,
     protocol: {
       name: input.protocolName ?? 'mcp',
       version: input.protocolVersion ?? MCP_PROTOCOL_VERSION,
       endpoint: input.endpoint ?? `https://${serviceId}.example/mcp`,
     },
-    audience: `mira:service:${serviceId}`,
-    scopes: input.scopes ?? [`service:${serviceId}:read`],
+    audience: canonical(serviceId)?.audience ?? `mira:service:${serviceId}`,
+    scopes: input.scopes ?? canonical(serviceId)?.scopes ?? [`service:${serviceId}:read`],
   };
 };
 
@@ -138,10 +145,11 @@ const fetchFixture = (input: {
       return json(200, {
         token: credentialToken({
           serviceId,
-          scopes: input.tokenScopes?.(serviceId) ?? [`service:${serviceId}:read`],
+          audience: canonical(serviceId)?.audience,
+          scopes: input.tokenScopes?.(serviceId) ?? canonical(serviceId)?.scopes ?? [`service:${serviceId}:read`],
         }),
         tokenType: 'Bearer',
-        audience: `mira:service:${serviceId}`,
+        audience: canonical(serviceId)?.audience ?? `mira:service:${serviceId}`,
         expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
         serviceId,
         revision: body.expectedRevision,
@@ -244,6 +252,26 @@ describe('Mira ID service registry catalog', () => {
       .toEqual([['notes', 2], ['legacy', 1]]);
     expect(() => parseAccountServiceCatalog({ services: 'no' }))
       .toThrow('Mira ID returned an invalid service catalog');
+  });
+
+  it('consumes canonical compatible services without admitting extra scopes or duplicate legacy mail', async () => {
+    const fixture = fetchFixture({
+      catalog: () => catalogBody([
+        { serviceId: 'cloud-guanlan' },
+        { serviceId: 'cloud-shiyan', protocolName: 'http' },
+        { serviceId: 'who-you' },
+      ]),
+      toolsFor,
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl });
+    const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
+    expect(bindings).toHaveLength(1);
+    const parsed = parseAccountServiceCatalog(catalogBody([{ serviceId: 'cloud-guanlan', scopes: ['guanlan.read', 'guanlan.write'] }]));
+    expect(parsed).toEqual([]);
+    const credential = await requestAccountServiceCredential(SESSION_TOKEN, {
+      accountId: ACCOUNT_ID, serviceId: 'cloud-guanlan', expectedRevision: 1,
+    }, { baseUrl: BASE_URL, fetchImpl: fixture.fetchImpl, now: () => NOW });
+    expect(credential.claims.scopes).toEqual(['guanlan.read']);
   });
 
   it('maps only generic compatible MCP registrations and reuses one catalog lookup', async () => {

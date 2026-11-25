@@ -367,3 +367,6 @@ Remaining true-device and cross-service acceptance includes:
 Do not equate JS/Jest green with device execution. Promote to test/prod only
 with explicit release authority. Recovery is by reverting the cutover commit,
 not by retaining two active loop implementations indefinitely.
+
+
+MOB-105 registry consumers validate the OPS-047 canonical service identity/audience/scope triples in addition to derived generic audiences. Compatibility is determined by declared protocol, not the audience spelling. Who You remains on its existing privacy-aware adapter until OPS-048 migration; registry credentials must match the declared scope set and JWT expiry.
