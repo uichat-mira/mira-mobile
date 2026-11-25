@@ -6,7 +6,7 @@ import { WhoYouScreen } from './WhoYouScreen';
 import type {
   WhoYouIdentity,
   WhoYouMailbox,
-} from '../whoYou/whoYouMcpClient';
+} from '../whoYou/whoYouReadContract';
 
 const mockNavigate = jest.fn();
 

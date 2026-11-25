@@ -224,21 +224,26 @@ switch or per-service login.
   the canonical MCP tool inside the owning binding. One service's failure,
   revocation or malformed catalog entry does not remove sibling services or
   local chat.
-- Until A3 completes its real migration, the existing dedicated Who You entry is
-  retained and `who-you` / `mira-desktop` registry IDs are excluded from this
-  generic directory to avoid duplicate discovery or a second binding. Who You's
-  mail disclosure/privacy policy remains scoped to that service and is not
-  copied to every registration. Desktop Cloud Host still uses the existing Host
-  Grant/Relay path; Direct remains independent of Mira ID, and Remote V1 keeps
-  its non-tool responsibilities.
+- MOB-105 cutover candidate: Who You now uses only the account registry;
+  only `mira-desktop` remains reserved for the independent Host Grant/Relay
+  adapter. The old Who You credential client, separate discovery adapter and
+  static Agent mail tools are removed, not used as fallbacks. RFC 9728,
+  identity verification, per-call mail disclosure and bounded projections are
+  kept on the existing service-specific read policy. Settings refreshes the
+  catalog to observe a new facility login immediately; a running binding
+  revalidates at catalog expiry or observed denial. Direct remains independent
+  of Mira ID; Remote V1 retains its non-tool responsibilities.
 - **Evidence boundary:** automated coverage in
   `src/mcp/accountServiceRegistry.test.ts` uses two independent real JSON-RPC MCP
   fixtures plus one incompatible-protocol registration and a catalog/credential
   issuer fixture. It exercises the real Pi Core loop and `LocalAgentToolGateway`,
   counts catalog lookups and proves cache/revision/lifecycle/scope handling.
-  Fixtures are not real production registrations. Real Mira ID accounts, deployed
-  services, Android/iOS devices and A3/Direct/Relay interoperability remain T4
-  validation gaps; no production registration is assumed to exist.
+  Fixtures are not real production registrations. OPS-048 #89 independently
+  proves the actual compiled Cloud Auth OAuth login, directory and workerd MCP
+  journey using isolated accounts; Mobile automated fixtures are separate
+  evidence, not a single deployed end-to-end run. Production activation and
+  Android/iOS + Direct/Relay T4 remain coordinated follow-up; do not release
+  registry-only Mobile until the managed declaration is active and verified.
 
 ### Semantic tool-chain blocking removal (MOB-100, 2026-11-24)
 

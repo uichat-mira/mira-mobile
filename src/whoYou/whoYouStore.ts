@@ -12,8 +12,8 @@ import { accountMcpServiceDirectory } from '../mcp/accountServiceRegistry';
 import {
   type WhoYouIdentity,
   type WhoYouMailbox,
-  type WhoYouMcpClientLike,
-} from './whoYouMcpClient';
+  type WhoYouSnapshotReader,
+} from './whoYouReadContract';
 
 export type WhoYouStatus =
   | 'idle'
@@ -42,7 +42,7 @@ export interface WhoYouCloudSnapshot {
 export interface WhoYouStoreDependencies {
   loadSession: () => Promise<StoredCloudSession | null>;
   getCloudAccount: () => WhoYouCloudSnapshot;
-  client: WhoYouMcpClientLike;
+  client: WhoYouSnapshotReader;
   now?: () => Date;
 }
 

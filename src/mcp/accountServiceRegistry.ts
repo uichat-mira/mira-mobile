@@ -18,7 +18,7 @@ import {
 } from './mcpProtocolClient';
 import { projectMcpService } from './mcpServiceCapabilities';
 import { createWhoYouMcpReadExecutor } from './whoYouMcpReadTools';
-import { discoverWhoYouResource, parseToolStructuredContent, parseIdentity, parseMailboxes, type WhoYouReadSession, type WhoYouSnapshot } from '../whoYou/whoYouMcpClient';
+import { discoverWhoYouResource, parseToolStructuredContent, parseIdentity, parseMailboxes, type WhoYouReadSession, type WhoYouSnapshot } from '../whoYou/whoYouReadContract';
 import { WhoYouError } from '../whoYou/whoYouError';
 import { requiredMailRole } from '../tools/agentToolPolicies';
 import {
@@ -577,6 +577,7 @@ export class AccountServiceCatalogCache {
   private readonly timeoutMs: number;
   private readonly maxAgeMs: number;
   private cached: CachedCatalog | null = null;
+  private generation = 0;
   private inFlight: { key: string; promise: Promise<readonly AccountServiceEntry[]> } | null = null;
 
   constructor(options: AccountServiceCatalogCacheOptions = {}) {
@@ -603,6 +604,8 @@ export class AccountServiceCatalogCache {
 
   invalidate(): void {
     this.cached = null;
+    this.inFlight = null;
+    this.generation += 1;
   }
 
   async load(input: CatalogRequestOptions): Promise<readonly AccountServiceEntry[]> {
@@ -625,7 +628,8 @@ export class AccountServiceCatalogCache {
     if (this.inFlight && this.inFlight.key === key) {
       return this.inFlight.promise;
     }
-    const promise = this.request(input, now).finally(() => {
+    const generation = ++this.generation;
+    const promise = this.request(input, now, generation).finally(() => {
       if (this.inFlight?.promise === promise) this.inFlight = null;
     });
     this.inFlight = { key, promise };
@@ -635,6 +639,7 @@ export class AccountServiceCatalogCache {
   private async request(
     input: CatalogRequestOptions,
     now: number,
+    generation: number,
   ): Promise<readonly AccountServiceEntry[]> {
     const fetchImpl = this.fetchImpl;
     if (typeof fetchImpl !== 'function') {
@@ -677,6 +682,9 @@ export class AccountServiceCatalogCache {
       }
       return parseAccountServiceCatalog(body);
     }, this.timeoutMs, input.signal);
+    if (generation !== this.generation) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID service catalog request was superseded', 'SERVICE_CATALOG_SUPERSEDED');
+    }
     this.cached = {
       accountId: input.accountId,
       sessionToken: input.sessionToken,
@@ -865,7 +873,7 @@ const readCapabilityResource = async (
 
 export interface AccountServiceDiscoveryDeps {
   loadSession(): Promise<StoredCloudSession | null>;
-  currentCloud(): { status: string; accountId: string | null };
+  currentCloud(): { status: string; accountId: string | null; deviceId?: string | null };
   catalog: AccountServiceCatalogCache;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -941,6 +949,7 @@ const connectAccountMcpService = async (
     serviceId: string;
     signal?: AbortSignal;
     expectedSessionToken?: string;
+    forceCatalog?: boolean;
   },
   deps: AccountServiceDiscoveryDeps,
 ) => {
@@ -950,6 +959,7 @@ const connectAccountMcpService = async (
   }
   let entries = await loadCatalogForSession(deps, session, {
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.forceCatalog ? { force: true } : {}),
   });
   let entry = findEntry(entries, input.serviceId);
   if (!entry) {
@@ -1009,10 +1019,23 @@ const connectAccountMcpService = async (
       entry = refreshed;
       credential = await requestCredential(entry);
     } else {
+      if (error instanceof McpProtocolError &&
+          error.code === 'SERVICE_REGISTRATION_NOT_FOUND') {
+        // A denied renewal is authoritative revocation evidence. Drop the stale
+        // catalog immediately; other bindings must revalidate before use.
+        deps.catalog.invalidate();
+      }
       throw error;
     }
   }
 
+  const knownDeviceId = deps.currentCloud().deviceId;
+  if (credential.claims.accountId !== input.accountId ||
+      (knownDeviceId && credential.claims.deviceId !== knownDeviceId) ||
+      credential.serviceId !== entry.definition.serviceId ||
+      credential.revision !== entry.revision || credential.audience !== entry.definition.audience) {
+    throw invalidCredential('SERVICE_CREDENTIAL_IDENTITY_MISMATCH');
+  }
   if (credential.claims.scopes.length !== entry.definition.scopes.length ||
       !entry.definition.scopes.every(scope => credential.claims.scopes.includes(scope)) ||
       !validServiceScopes(entry.definition.serviceId, credential.claims.scopes)) {
@@ -1048,46 +1071,33 @@ const connectAccountMcpService = async (
   const sessionToken = session.sessionToken;
   const now = deps.now ?? (() => Date.now());
   const assertCurrent = async () => {
-  const cloud = deps.currentCloud();
-  if (cloud.status !== 'signed_in' || cloud.accountId !== accountId) {
-    throw new McpProtocolError(
-      'unauthorized',
-      'The Mira ID account changed during the MCP service run',
-      'SERVICE_REGISTRY_ACCOUNT_CHANGED',
-    );
-  }
-  if (!(now() < expiresAt)) {
-    throw new McpProtocolError(
-      'unauthorized',
-      'The service credential expired',
-      'SERVICE_CREDENTIAL_EXPIRED',
-    );
-  }
-  const stored = await deps.loadSession();
-  if (!stored || stored.account.id !== accountId ||
-      stored.sessionToken !== sessionToken ||
-      !(Date.parse(stored.expiresAt) > now())) {
-    throw new McpProtocolError(
-      'unauthorized',
-      'The Mira ID session changed during the MCP service run',
-      'SERVICE_REGISTRY_SESSION_CHANGED',
-    );
-  }
-  // If another binding refreshed the catalog and this service is gone or
-  // its revision changed, this cached authorization is no longer current.
-  const observed = deps.catalog.peek({ accountId, sessionToken });
-  if (observed) {
-    const current = findEntry(observed, entry.definition.serviceId);
-    if (!current || current.revision !== revision ||
-        current.definition.protocol.version !== entry.definition.protocol.version ||
-        current.definition.protocol.endpoint !== entry.definition.protocol.endpoint) {
-      throw new McpProtocolError(
-        'unauthorized',
-        'The service registration changed or was revoked',
-        'SERVICE_REGISTRATION_CHANGED',
-      );
+    const cloud = deps.currentCloud();
+    if (cloud.status !== 'signed_in' || cloud.accountId !== accountId ||
+        (cloud.deviceId && cloud.deviceId !== credential.claims.deviceId)) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID account or device changed during the MCP service run', 'SERVICE_REGISTRY_ACCOUNT_CHANGED');
     }
-  }
+    if (!(now() < expiresAt)) {
+      throw new McpProtocolError('unauthorized', 'The service credential expired', 'SERVICE_CREDENTIAL_EXPIRED');
+    }
+    const stored = await currentSession(deps, accountId);
+    if (stored.sessionToken !== sessionToken) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during the MCP service run', 'SERVICE_REGISTRY_SESSION_CHANGED');
+    }
+    // Reuse the shared catalog within its bounded window. If it expired or a
+    // renewal observed revocation, revalidate even inside an existing run.
+    const observed = deps.catalog.peek({ accountId, sessionToken }) ??
+      await loadCatalogForSession(deps, stored);
+    const current = findEntry(observed, entry.definition.serviceId);
+    const latest = await currentSession(deps, accountId);
+    if (latest.sessionToken !== sessionToken || !(now() < expiresAt) ||
+        !current || current.revision !== revision ||
+        current.definition.protocol.version !== entry.definition.protocol.version ||
+        current.definition.protocol.endpoint !== entry.definition.protocol.endpoint ||
+        current.definition.audience !== entry.definition.audience ||
+        current.definition.scopes.length !== entry.definition.scopes.length ||
+        !current.definition.scopes.every(scope => entry.definition.scopes.includes(scope))) {
+      throw new McpProtocolError('unauthorized', 'The service registration or session changed', 'SERVICE_REGISTRATION_CHANGED');
+    }
   };
   await assertCurrent();
   const serverInfo = await client.initialize(input.signal);
@@ -1170,7 +1180,7 @@ export const createAccountMcpServiceDiscovery = (
 
 export interface AccountMcpServiceDirectoryOptions {
   loadSession?: () => Promise<StoredCloudSession | null>;
-  currentCloud?: () => { status: string; accountId: string | null };
+  currentCloud?: () => { status: string; accountId: string | null; deviceId?: string | null };
   catalog?: AccountServiceCatalogCache;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -1187,13 +1197,14 @@ export interface AccountMcpServiceDirectoryOptions {
 export class AccountMcpServiceDirectory implements McpServiceDirectory {
   private readonly deps: AccountServiceDiscoveryDeps;
   private readonly bindingsByRevision = new Map<string, McpServiceBinding>();
+  private bindingSession: { accountId: string; sessionToken: string } | null = null;
 
   constructor(options: AccountMcpServiceDirectoryOptions = {}) {
     this.deps = {
       loadSession: options.loadSession ?? (() => cloudSessionStore.load()),
       currentCloud: options.currentCloud ?? (() => {
         const cloud = useCloudAccountStore.getState();
-        return { status: cloud.status, accountId: cloud.account?.id ?? null };
+        return { status: cloud.status, accountId: cloud.account?.id ?? null, deviceId: cloud.currentDeviceId };
       }),
       catalog: options.catalog ?? new AccountServiceCatalogCache({
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
@@ -1215,7 +1226,7 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     try {
       const connection = await connectAccountMcpService({
         accountId: input.accountId, serviceId: 'who-you',
-        expectedSessionToken: input.sessionToken, signal: input.signal,
+        expectedSessionToken: input.sessionToken, signal: input.signal, forceCatalog: true,
       }, this.deps);
       if (!connection.identity) {
         throw new WhoYouError('invalid_response', '狐邮未确认当前 Mira ID 身份。');
@@ -1251,6 +1262,14 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     const entries = await loadCatalogForSession(this.deps, session, {
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    const latest = await currentSession(this.deps, input.accountId);
+    if (latest.sessionToken !== session.sessionToken) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
+    }
+    if (this.bindingSession?.accountId !== input.accountId || this.bindingSession.sessionToken !== session.sessionToken) {
+      this.bindingsByRevision.clear();
+      this.bindingSession = { accountId: input.accountId, sessionToken: session.sessionToken };
+    }
     const compatible = entries.filter((entry) =>
       isCompatibleCatalogEntry(entry) &&
       !LEGACY_SERVICE_IDS.has(entry.definition.serviceId));

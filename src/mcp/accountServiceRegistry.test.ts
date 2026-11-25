@@ -382,6 +382,51 @@ describe('Mira ID service registry catalog', () => {
 
   });
 
+  it('refreshes a previously empty settings catalog after active facility login and revokes an in-flight binding at the catalog deadline', async () => {
+    let active = false;
+    let now = NOW;
+    const fixture = fetchFixture({
+      catalog: () => catalogBody(active ? [{ serviceId: 'who-you' }] : []),
+      toolsFor: () => ['whoyou_mail_search', 'whoyou_mail_message_get'].map(name => ({
+        name, description: name, inputSchema: { type: 'object' },
+      })),
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
+    expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
+    active = true;
+    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
+      .resolves.toMatchObject({ identity: { accountId: ACCOUNT_ID } });
+    const [binding] = await registry.bindings({ accountId: ACCOUNT_ID });
+    const ready = await binding.discover({ accountId: ACCOUNT_ID });
+    expect(ready.status).toBe('ready');
+    if (ready.status !== 'ready') throw new Error('binding unavailable');
+    active = false;
+    now += 5 * 60_000 + 1;
+    // No other run or settings refresh is needed to invalidate an old gateway.
+    const before = fixture.mcpCalls.length;
+    await expect(ready.gateway.callTool({callId:'revoked', name:'whoyou_mail_search', arguments:'{}'}))
+      .rejects.toMatchObject({code:'MCP_SERVICE_UNAUTHORIZED'});
+    expect(fixture.mcpCalls).toHaveLength(before);
+  });
+
+  it('does not let an invalidated in-flight catalog restore stale service authorization', async () => {
+    let release: (response: Response) => void = () => undefined;
+    const first = new Promise<Response>(resolve => { release = resolve; });
+    const fetchImpl = jest.fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce(json(200, catalogBody([]))) as unknown as typeof fetch;
+    const cache = new AccountServiceCatalogCache({baseUrl:BASE_URL,fetchImpl,now:()=>NOW});
+    const input = {accountId:ACCOUNT_ID,sessionToken:SESSION_TOKEN};
+    const pending = cache.load(input);
+    const rejected = expect(pending).rejects.toMatchObject({code:'SERVICE_CATALOG_SUPERSEDED'});
+    await Promise.resolve();
+    cache.invalidate();
+    await expect(cache.load(input)).resolves.toEqual([]);
+    release(json(200,catalogBody([{serviceId:'who-you'}])));
+    await rejected;
+    expect(cache.peek(input)).toEqual([]);
+  });
+
   it('repairs a stale service revision once from a forced catalog refresh', async () => {
     let revision = 1;
     const fixture = fetchFixture({

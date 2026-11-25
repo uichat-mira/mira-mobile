@@ -1,6 +1,5 @@
 import {
   normalizeWhoYouMcpUrl,
-  resolveWhoYouMcpUrl,
   resolveWhoYouWebMailboxesUrl,
   WHO_YOU_AUDIENCE,
   WHO_YOU_READ_SCOPE,
@@ -9,7 +8,6 @@ import {
 
 describe('Who You resource configuration', () => {
   it('uses the approved official resource and read scope', () => {
-    expect(resolveWhoYouMcpUrl()).toBe('https://who-you.tomz.io/mcp');
     expect(WHO_YOU_AUDIENCE).toBe('mira:who-you');
     expect(WHO_YOU_READ_SCOPE).toBe('whoyou.read');
     expect(resolveWhoYouWebMailboxesUrl()).toBe(

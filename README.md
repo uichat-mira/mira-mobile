@@ -95,12 +95,12 @@ Desktop Host/设备和连接代际，换线程、账号或 Host 不会串用。
 
 ## 狐邮 Who You · 移动端只读接入
 
-在 Mira Cloud 登录后，Mobile 可以独立通过狐邮 MCP 查看当前账号的已绑定邮箱，
+用户通过 Mira ID 主动登录已登记的狐邮应用后，Mobile 通过账号服务目录独立发现狐邮 MCP，并查看当前账号的已绑定邮箱，
 并由用户主动搜索、阅读**已同步**邮件的纯文本正文，不依赖 Desktop 或 Relay。
 同步不完整时，搜索不到不代表 Gmail 中没有这封邮件；同步、重授权、解绑继续由狐邮网页管理。
 
-Local Provider 的 Agent 工具注册不止狐邮两项：内置 `web` 与
-`whoyou_mail_search`、`whoyou_mail_message_get`；在具备相应云账号身份与权限时，
+Local Provider 的 Agent 内置工具为 `web`；狐邮两项受保护读工具
+`whoyou_mail_search`、`whoyou_mail_message_get` 来自已授权目录及真实 MCP Schema，不再静态注册。具备相应云账号身份与权限时，
 还可通过 `mira_desktop_hosts` 按需发现授权的 Desktop 工具。工具**被注册**不代表
 当前账号已获权、Host 已就绪或 Provider 本轮已经看见对应 Schema。
 `web(url)` 只读取公开 HTTP(S) 网页：模型可自行构造普通搜索引擎 URL、读取结果并沿链接继续，
@@ -113,7 +113,7 @@ Local Provider 的 Agent 工具注册不止狐邮两项：内置 `web` 与
 不自动加入未来的模型请求上下文或自动记忆整理。
 
 行为与验收合同以 [MOB-086](https://github.com/uichat-mira/mira-mobile/issues/337) 为准。
-此段描述代码能力，不代表 Android 真机完整链路已经验收。
+此段描述代码能力，不代表生产狐邮声明已激活或 Android/iOS 真机完整链路已经验收。生产迁移必须按 OPS-049/OPS-048 约定协调激活，不能先升级生产客户端使存量用户失去旧入口。
 
 ## 分支流程
 
