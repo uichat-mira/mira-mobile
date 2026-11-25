@@ -195,7 +195,7 @@ export const discoverWhoYouMcpService = async (
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
   });
-  const serverInfo = await client.initialize(options.signal);
+  const serverInfo = await client.discover(options.signal);
   validateWhoYouIdentity(
     await client.callTool('whoyou_whoami', {}, options.signal),
     options.accountId,

@@ -101,8 +101,8 @@ const json = (status: number, body: unknown): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
-const mcpRpc = (id: unknown, result: unknown): Response =>
-  json(200, { jsonrpc: '2.0', id, result });
+const mcpRpc = (id: unknown, result: Record<string, unknown>): Response =>
+  json(200, { jsonrpc: '2.0', id, result: { resultType: 'complete', ...result } });
 
 const parseRequest = (init?: RequestInit): {
   id?: number;
@@ -157,15 +157,17 @@ const fetchFixture = (input: {
     }
     const serviceId = new URL(url).hostname.split('.')[0];
     const request = parseRequest(init);
-    if (request.method === 'initialize') {
+    if (request.method === 'server/discover') {
       return mcpRpc(request.id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
+        supportedVersions: [MCP_PROTOCOL_VERSION],
         capabilities: { tools: {} },
-        serverInfo: { name: `${serviceId}-server`, version: '1.0.0' },
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: `${serviceId}-server`,
+            version: '1.0.0',
+          },
+        },
       });
-    }
-    if (request.method === 'notifications/initialized') {
-      return new Response(null, { status: 202 });
     }
     if (request.method === 'tools/list') {
       return mcpRpc(request.id, { tools: input.toolsFor(serviceId) });

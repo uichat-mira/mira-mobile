@@ -135,11 +135,14 @@ This is the first real OPS-046 consumer, still limited to the read-only mail
 tools already covered by the existing MOB-086 mail disclosure approval.
 
 - `src/mcp/mcpProtocolClient.ts` is a protocol-neutral Streamable HTTP MCP
-  client. It performs `initialize`, paginated `tools/list`, optional
+  client. It performs `server/discover`, paginated `tools/list`, optional
   `resources/list` / `resources/read` and `tools/call` against one
-  caller-authorized endpoint. It rejects target changes, unmatched JSON-RPC
-  ids, duplicate tool/resource names, oversized schemas and unsupported
-  protocol versions. The bearer only travels in the Authorization header.
+  caller-authorized endpoint. Every request carries its protocol version,
+  client identity and client capabilities in `_meta`, with `Mcp-Method` and
+  the applicable `Mcp-Name` routing headers. It rejects target changes,
+  unmatched JSON-RPC ids, duplicate tool/resource names, oversized schemas,
+  non-`2026-07-28` servers and legacy `initialize` handshakes. The bearer only
+  travels in the Authorization header; there is no MCP session.
 - `src/mcp/whoYouMcpService.ts` reuses the existing RFC 9728 resource check,
   short-lived `whoyou.read` Cloud Auth credential, `whoyou_whoami` identity
   confirmation and `tools/list`. It then reads the optional
@@ -155,9 +158,10 @@ tools already covered by the existing MOB-086 mail disclosure approval.
   groups. The catalog revision covers real schemas and capability mapping.
 - The `McpServiceToolGateway` exposes deferred authoritative `tools/list`
   schemas through `mira_tools_disclose`. The two approved read tools execute
-  via the authenticated MCP session behind a per-run `LocalToolGatewayClient`
-  one-shot consent adapter. Search honors real MCP filters within the Mobile
-  inbox/10-message scope; body reads permit plain text only. Existing bounded
+  via the authenticated MCP request path behind a per-run
+  `LocalToolGatewayClient` one-shot consent adapter. Search honors real MCP
+  filters within the Mobile inbox/10-message scope; body reads permit plain
+  text only. Existing bounded
   untrusted-data result projections are reused, with no unapproved mail sent
   to Pi. The Cloud account, exact session-token identity and read credential
   are revalidated before and after approval or execution. A mail result may
@@ -183,6 +187,43 @@ tools already covered by the existing MOB-086 mail disclosure approval.
   `src/tools/localAgentToolGateway.test.ts`. The last two execute the real Pi
   Agent, the real Mobile Tool Gateway and the MCP adapter; only the external
   model stream, Cloud credential issuer and MCP HTTP fixture are substituted.
+
+
+
+### MCP 2026-07-28 protocol client (MOB-107, 2026-11-25)
+
+`src/mcp/mcpProtocolClient.ts` speaks only the `2026-07-28` revision. The
+client no longer keeps a version negotiation state machine or a fallback
+switch:
+
+- every request sends `params._meta` with
+  `io.modelcontextprotocol/protocolVersion`, `clientInfo` and
+  `clientCapabilities`;
+- the Streamable HTTP binding sends `MCP-Protocol-Version` and `Mcp-Method` on
+  every POST, plus `Mcp-Name` for `tools/call` and `resources/read` (using the
+  specification's Base64 sentinel for values that are not header-safe);
+- `discover()` calls `server/discover` and rejects servers whose
+  `supportedVersions` do not include `2026-07-28`;
+- list, read and call results accept `resultType: "complete"` (or its absence
+  per the revision's forward-compatibility rule); unknown types and the
+  unsupported `input_required` MRTR flow fail explicitly, and protocol errors
+  such as `-32022` keep an observable client error code;
+- `initialize`, `notifications/initialized`, `Mcp-Session-Id`, the
+  2025-06-18 / 2025-11-25 constants and all legacy negotiation are removed.
+
+`accountServiceRegistry.ts`, `whoYouMcpService.ts` and `desktopMcpService.ts`
+were updated at their direct `McpProtocolClient` call sites to use
+`discover()`. The Desktop Direct/Relay fetches forward the MCP routing headers
+(`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*`) to
+`POST /mcp` while continuing to own the transport credential; the client's
+placeholder Authorization header is never forwarded. The Desktop custom
+transport stays JSON-only, so it does not advertise the generic client's SSE
+`Accept` capability. Service registry/catalog filtering, credentials, caches,
+approval, Tool Gateway authority and Pi Core scheduling are unchanged.
+Who-You and Desktop production services must also speak `2026-07-28`; a
+service that only offers the legacy handshake is rejected rather than
+downgraded. Cross-repository runtime acceptance remains with OPS-053 and the
+maintainer's real-device check.
 
 
 

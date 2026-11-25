@@ -1,27 +1,24 @@
 /**
- * Protocol-neutral Streamable HTTP MCP client.
+ * Protocol-neutral Streamable HTTP MCP client for the 2026-07-28 revision.
  *
- * It speaks the standard JSON-RPC methods Mobile needs for trusted discovery
- * (`initialize`, paginated `tools/list`, optional `resources/list` /
- * `resources/read`, `tools/call`). Authentication, provider selection and
- * business authority stay outside: callers supply one already-authorized
- * endpoint + short-lived bearer and keep ownership of error mapping.
+ * The revision is stateless: every request carries its protocol version,
+ * client identity and client capabilities in `_meta`, and the HTTP binding
+ * mirrors the method/name into routing headers. There is no `initialize`
+ * handshake, no session and no legacy version negotiation. Authentication,
+ * provider selection and business authority stay outside: callers supply one
+ * already-authorized endpoint + short-lived bearer and keep ownership of
+ * error mapping.
  */
 
-/** Legacy stateless revision with explicit Who You compatibility evidence. */
-export const MCP_PROTOCOL_VERSION = '2025-06-18';
+/** The only MCP revision this client speaks. */
+export const MCP_PROTOCOL_VERSION = '2026-07-28';
 
-/**
- * Protocol revisions this client can negotiate. The registry contract is
- * independent of MCP; callers filter catalog entries by this exact set instead
- * of guessing from a display name.
- */
-export const MCP_SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([
-  '2026-07-28',
-  '2025-11-25',
-  '2025-06-18',
-]);
-const SUPPORTED_PROTOCOL_VERSIONS = MCP_SUPPORTED_PROTOCOL_VERSIONS;
+const CLIENT_INFO = { name: 'mira-mobile', version: '1' };
+const REQUEST_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion';
+const REQUEST_CLIENT_INFO_KEY = 'io.modelcontextprotocol/clientInfo';
+const REQUEST_CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const RESPONSE_SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo';
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_LIST_PAGES = 8;
 const MAX_TOOLS = 512;
@@ -31,6 +28,11 @@ const MAX_DESCRIPTION_LENGTH = 4_000;
 const MAX_SCHEMA_BYTES = 64 * 1024;
 const MAX_RESOURCE_URI_LENGTH = 2_048;
 const MAX_RESOURCE_TEXT_BYTES = 256 * 1024;
+
+const BASE64_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const HEADER_UNSAFE = /[^\t\x20-\x7e]/u;
+const BASE64_SENTINEL = /^=\?base64\?[\s\S]*\?=$/u;
 
 export type McpErrorKind =
   | 'network'
@@ -85,15 +87,13 @@ export interface McpProtocolClientOptions {
   token: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  /** Test/recovery override; production keeps the documented default. */
-  protocolVersion?: string;
 }
 
 interface JsonRpcRequest extends Record<string, unknown> {
   jsonrpc: '2.0';
   id: number;
   method: string;
-  params?: Record<string, unknown>;
+  params: Record<string, unknown>;
 }
 
 type SecureRequestInit = RequestInit & { redirect: 'error' };
@@ -136,6 +136,66 @@ const transportFailure = (status: number): McpProtocolError => {
     status,
   );
 };
+
+/* eslint-disable no-bitwise -- UTF-8 and Base64 encoding require byte-level masks. */
+/** UTF-8 bytes without relying on Buffer/TextEncoder in the RN runtime. */
+const utf8Bytes = (value: string): number[] => {
+  const bytes: number[] = [];
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint === undefined) continue;
+    if (codePoint <= 0x7f) {
+      bytes.push(codePoint);
+    } else if (codePoint <= 0x7ff) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint <= 0xffff) {
+      bytes.push(
+        0xe0 | (codePoint >> 12),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    }
+  }
+  return bytes;
+};
+
+const base64 = (bytes: readonly number[]): string => {
+  let encoded = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    encoded += BASE64_ALPHABET[first >> 2];
+    encoded += BASE64_ALPHABET[((first & 0x03) << 4) | ((second ?? 0) >> 4)];
+    encoded += second === undefined
+      ? '='
+      : BASE64_ALPHABET[((second & 0x0f) << 2) | ((third ?? 0) >> 6)];
+    encoded += third === undefined ? '=' : BASE64_ALPHABET[third & 0x3f];
+  }
+  return encoded;
+};
+
+/**
+ * `Mcp-Name` must be a plain HTTP field value. Non-ASCII, control characters,
+ * leading/trailing whitespace and the sentinel pattern itself use the
+ * 2026-07-28 Base64 sentinel format.
+ */
+const mcpNameHeaderValue = (value: string): string => {
+  const unsafe =
+    value.length === 0 ||
+    HEADER_UNSAFE.test(value) ||
+    /^[ \t]|[ \t]$/u.test(value) ||
+    BASE64_SENTINEL.test(value);
+  return unsafe ? `=?base64?${base64(utf8Bytes(value))}?=` : value;
+};
+/* eslint-enable no-bitwise */
 
 const withDeadline = async <T>(
   operation: (signal: AbortSignal) => Promise<T>,
@@ -217,6 +277,25 @@ const assertResponseTarget = (
   }
 };
 
+const protocolErrorCode = (code: number): string | undefined => {
+  switch (code) {
+    case -32020:
+      return 'MCP_HEADER_MISMATCH';
+    case -32021:
+      return 'MCP_CLIENT_CAPABILITY_MISSING';
+    case -32022:
+      return 'MCP_PROTOCOL_UNSUPPORTED';
+    case -32601:
+      return 'MCP_METHOD_NOT_FOUND';
+    case -32602:
+      return 'MCP_PARAMS_INVALID';
+    case -32603:
+      return 'MCP_INTERNAL_ERROR';
+    default:
+      return undefined;
+  }
+};
+
 const jsonRpcResult = (value: unknown, expectedId: number): unknown => {
   if (!isRecord(value) || value.jsonrpc !== '2.0' || value.id !== expectedId) {
     throw new McpProtocolError(
@@ -232,11 +311,17 @@ const jsonRpcResult = (value: unknown, expectedId: number): unknown => {
     const dataCode = error && isRecord(error.data)
       ? safeCode(error.data.code)
       : undefined;
-    const code = dataCode ?? (error ? safeCode(error.code) : undefined);
+    const numericCode = error && typeof error.code === 'number'
+      ? error.code
+      : undefined;
+    const code = dataCode ??
+      (numericCode !== undefined ? protocolErrorCode(numericCode) : undefined) ??
+      (error ? safeCode(error.code) : undefined) ??
+      'MCP_RPC_ERROR';
     throw new McpProtocolError(
-      'rejected',
+      numericCode === -32022 || numericCode === -32021 ? 'unsupported' : 'rejected',
       'The MCP service rejected the request',
-      code ?? 'MCP_RPC_ERROR',
+      code,
     );
   }
   if (!('result' in value)) {
@@ -247,6 +332,64 @@ const jsonRpcResult = (value: unknown, expectedId: number): unknown => {
     );
   }
   return value.result;
+};
+
+/**
+ * 2026-07-28 results are polymorphic. An absent `resultType` is treated as
+ * `complete` per the revision's forward-compatibility rule, while unknown
+ * types are invalid. This client does not implement MRTR, so
+ * `input_required` is surfaced explicitly instead of being mistaken for data.
+ */
+const completeResult = (value: unknown): Record<string, unknown> => {
+  if (!isRecord(value)) {
+    throw new McpProtocolError(
+      'invalid_response',
+      'The MCP service returned an invalid result',
+      'MCP_RESULT_INVALID',
+    );
+  }
+  if (value.resultType === undefined) return value;
+  if (value.resultType === 'input_required') {
+    throw new McpProtocolError(
+      'unsupported',
+      'The MCP service requires an unsupported multi-round-trip input exchange',
+      'MCP_INPUT_REQUIRED_UNSUPPORTED',
+    );
+  }
+  if (value.resultType !== 'complete') {
+    throw new McpProtocolError(
+      'invalid_response',
+      'The MCP service did not return a complete result',
+      'MCP_RESULT_TYPE_INVALID',
+    );
+  }
+  return value;
+};
+
+const rpcErrorFromBody = (
+  text: string,
+  expectedId: number,
+): McpProtocolError | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (
+    !isRecord(parsed) ||
+    parsed.jsonrpc !== '2.0' ||
+    parsed.id !== expectedId ||
+    parsed.error === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    jsonRpcResult(parsed, expectedId);
+  } catch (error) {
+    if (error instanceof McpProtocolError) return error;
+  }
+  return undefined;
 };
 
 const parseSse = (text: string, expectedId: number): unknown => {
@@ -278,8 +421,15 @@ const parseResponse = async (
   response: Response,
   expectedId: number,
 ): Promise<unknown> => {
-  if (!response.ok) throw transportFailure(response.status);
   const text = await response.text();
+  if (!response.ok) {
+    // A 2026 server reports version/capability/header failures as a JSON-RPC
+    // error body on 400. Preserve that observable code instead of flattening
+    // every rejection into the transport status.
+    const protocolError = rpcErrorFromBody(text, expectedId);
+    if (protocolError) throw protocolError;
+    throw transportFailure(response.status);
+  }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.toLowerCase().includes('text/event-stream')) {
     return parseSse(text, expectedId);
@@ -347,32 +497,29 @@ const parseResource = (value: unknown): McpResourceDescriptor => {
 };
 
 /**
- * One stateless MCP session over the caller's already-authorized endpoint.
- * The bearer is only ever placed in the Authorization header.
+ * One stateless MCP request target over the caller's already-authorized
+ * endpoint. No connection, session or negotiated version is retained.
  */
 export class McpProtocolClient {
   private readonly endpoint: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly timeoutMs: number;
-  private readonly requestedVersion: string;
   private nextRequestId = 1;
-  private negotiatedVersion: string | null = null;
 
   constructor(options: McpProtocolClientOptions) {
     this.endpoint = options.endpoint;
     this.token = options.token;
     this.fetchImpl = options.fetchImpl;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.requestedVersion = options.protocolVersion ?? MCP_PROTOCOL_VERSION;
   }
 
   private async post(
     payload: Record<string, unknown>,
-    expectedId: number | null,
-    protocolHeader: string | undefined,
+    extraHeaders: Record<string, string>,
+    expectedId: number,
     callerSignal?: AbortSignal,
-  ): Promise<unknown | null> {
+  ): Promise<unknown> {
     const fetchImpl = this.fetchImpl ?? globalThis.fetch;
     if (typeof fetchImpl !== 'function') {
       throw new McpProtocolError(
@@ -390,7 +537,8 @@ export class McpProtocolClient {
             'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
             authorization: `Bearer ${this.token}`,
-            ...(protocolHeader ? { 'MCP-Protocol-Version': protocolHeader } : {}),
+            'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+            ...extraHeaders,
           },
           body: JSON.stringify(payload),
           redirect: 'error',
@@ -406,10 +554,6 @@ export class McpProtocolClient {
           'MCP_UNREACHABLE',
         );
       }
-      if (expectedId === null) {
-        if (!response.ok) throw transportFailure(response.status);
-        return null;
-      }
       return parseResponse(response, expectedId);
     }, this.timeoutMs, callerSignal);
   }
@@ -417,74 +561,84 @@ export class McpProtocolClient {
   private async request(
     method: string,
     params: Record<string, unknown> | undefined,
+    mcpName?: string,
     callerSignal?: AbortSignal,
-  ): Promise<unknown> {
+  ): Promise<Record<string, unknown>> {
     const id = this.nextRequestId++;
     const payload: JsonRpcRequest = {
       jsonrpc: '2.0',
       id,
       method,
-      ...(params ? { params } : {}),
-    };
-    return this.post(
-      payload,
-      id,
-      this.negotiatedVersion ?? undefined,
-      callerSignal,
-    );
-  }
-
-  private async notify(
-    method: string,
-    callerSignal?: AbortSignal,
-  ): Promise<void> {
-    await this.post(
-      { jsonrpc: '2.0', method },
-      null,
-      this.negotiatedVersion ?? undefined,
-      callerSignal,
-    );
-  }
-
-  async initialize(callerSignal?: AbortSignal): Promise<McpServerInfo> {
-    const id = this.nextRequestId++;
-    const result = await this.post(
-      {
-        jsonrpc: '2.0',
-        id,
-        method: 'initialize',
-        params: {
-          protocolVersion: this.requestedVersion,
-          capabilities: { tools: {}, resources: {} },
-          clientInfo: { name: 'mira-mobile', version: '1' },
+      params: {
+        ...(params ?? {}),
+        _meta: {
+          [REQUEST_VERSION_KEY]: MCP_PROTOCOL_VERSION,
+          [REQUEST_CLIENT_INFO_KEY]: CLIENT_INFO,
+          [REQUEST_CLIENT_CAPABILITIES_KEY]: {},
         },
       },
+    };
+    const result = await this.post(
+      payload,
+      {
+        'Mcp-Method': method,
+        ...(mcpName !== undefined
+          ? { 'Mcp-Name': mcpNameHeaderValue(mcpName) }
+          : {}),
+      },
       id,
-      undefined,
       callerSignal,
     );
-    if (!isRecord(result) || !nonEmpty(result.protocolVersion) ||
-        !SUPPORTED_PROTOCOL_VERSIONS.has(result.protocolVersion)) {
+    return completeResult(result);
+  }
+
+  /**
+   * Optional discovery call. It is the only way to learn the server's
+   * capabilities before a feature request; it does not establish a session.
+   */
+  async discover(callerSignal?: AbortSignal): Promise<McpServerInfo> {
+    const result = await this.request('server/discover', undefined, undefined, callerSignal);
+    const supported = result.supportedVersions;
+    if (
+      !Array.isArray(supported) ||
+      supported.length === 0 ||
+      supported.length > 32 ||
+      !supported.every((version) => typeof version === 'string')
+    ) {
+      throw new McpProtocolError(
+        'invalid_response',
+        'The MCP service returned an invalid protocol version list',
+        'MCP_PROTOCOL_VERSIONS_INVALID',
+      );
+    }
+    if (!supported.includes(MCP_PROTOCOL_VERSION)) {
       throw new McpProtocolError(
         'unsupported',
-        'The MCP service did not negotiate a supported protocol version',
+        `The MCP service does not support protocol ${MCP_PROTOCOL_VERSION}`,
         'MCP_PROTOCOL_UNSUPPORTED',
       );
     }
-    const serverInfo = isRecord(result.serverInfo) ? result.serverInfo : null;
-    const capabilities = isRecord(result.capabilities) ? result.capabilities : null;
-    this.negotiatedVersion = result.protocolVersion;
-    await this.notify('notifications/initialized', callerSignal);
+    if (!isRecord(result.capabilities)) {
+      throw new McpProtocolError(
+        'invalid_response',
+        'The MCP service returned invalid capabilities',
+        'MCP_CAPABILITIES_INVALID',
+      );
+    }
+    const meta = isRecord(result._meta) ? result._meta : null;
+    const serverInfo = meta && isRecord(meta[RESPONSE_SERVER_INFO_KEY])
+      ? meta[RESPONSE_SERVER_INFO_KEY]
+      : null;
     return {
-      protocolVersion: result.protocolVersion,
+      protocolVersion: MCP_PROTOCOL_VERSION,
       serverName: serverInfo && nonEmpty(serverInfo.name)
         ? serverInfo.name.slice(0, 160)
         : null,
       serverVersion: serverInfo && nonEmpty(serverInfo.version)
         ? serverInfo.version.slice(0, 160)
         : null,
-      tools: Boolean(capabilities && capabilities.tools !== undefined),
-      resources: Boolean(capabilities && capabilities.resources !== undefined),
+      tools: result.capabilities.tools !== undefined,
+      resources: result.capabilities.resources !== undefined,
     };
   }
 
@@ -496,9 +650,10 @@ export class McpProtocolClient {
       const result = await this.request(
         'tools/list',
         cursor ? { cursor } : undefined,
+        undefined,
         callerSignal,
       );
-      if (!isRecord(result) || !Array.isArray(result.tools)) {
+      if (!Array.isArray(result.tools)) {
         throw new McpProtocolError(
           'invalid_response',
           'The MCP service returned an invalid tools list',
@@ -555,9 +710,10 @@ export class McpProtocolClient {
       const result = await this.request(
         'resources/list',
         cursor ? { cursor } : undefined,
+        undefined,
         callerSignal,
       );
-      if (!isRecord(result) || !Array.isArray(result.resources)) {
+      if (!Array.isArray(result.resources)) {
         throw new McpProtocolError(
           'invalid_response',
           'The MCP service returned an invalid resources list',
@@ -618,9 +774,10 @@ export class McpProtocolClient {
     const result = await this.request(
       'resources/read',
       { uri },
+      uri,
       callerSignal,
     );
-    if (!isRecord(result) || !Array.isArray(result.contents) ||
+    if (!Array.isArray(result.contents) ||
         result.contents.length === 0 || result.contents.length > 32) {
       throw new McpProtocolError(
         'invalid_response',
@@ -665,6 +822,7 @@ export class McpProtocolClient {
     return this.request(
       'tools/call',
       { name, arguments: args },
+      name,
       callerSignal,
     );
   }

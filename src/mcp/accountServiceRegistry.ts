@@ -13,7 +13,7 @@ import type { ToolGatewayClient, ToolManifest } from '../tools/toolGatewayClient
 import {
   McpProtocolClient,
   McpProtocolError,
-  MCP_SUPPORTED_PROTOCOL_VERSIONS,
+  MCP_PROTOCOL_VERSION,
   type McpResourceContent,
 } from './mcpProtocolClient';
 import { projectMcpService } from './mcpServiceCapabilities';
@@ -760,7 +760,7 @@ export const requestAccountServiceCredential = async (
 
 const isCompatibleCatalogEntry = (entry: AccountServiceEntry): boolean =>
   entry.definition.protocol.name === SERVICE_REGISTRY_PROTOCOL_NAME &&
-  MCP_SUPPORTED_PROTOCOL_VERSIONS.has(entry.definition.protocol.version);
+  entry.definition.protocol.version === MCP_PROTOCOL_VERSION;
 
 const capabilityResourceUri = (serviceId: string): string =>
   `mira://service/${serviceId}/capabilities`;
@@ -1015,11 +1015,10 @@ export const discoverAccountMcpService = async (
   const client = new McpProtocolClient({
     endpoint: entry.definition.protocol.endpoint,
     token: credential.token,
-    protocolVersion: entry.definition.protocol.version,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
-  const serverInfo = await client.initialize(input.signal);
+  const serverInfo = await client.discover(input.signal);
   const toolDescriptors = await client.listTools(input.signal);
   const capabilityResource = serverInfo.resources
     ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)

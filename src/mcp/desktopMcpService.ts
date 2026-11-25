@@ -141,6 +141,66 @@ const errorResponse = (error: unknown): Response | null => {
 const isNotification = (payload: Record<string, unknown>): boolean =>
   !Object.hasOwn(payload, 'id');
 
+const MCP_ROUTING_HEADER_NAMES = new Set([
+  'mcp-protocol-version',
+  'mcp-method',
+  'mcp-name',
+]);
+
+const isMcpRoutingHeader = (name: string): boolean => {
+  const normalized = name.toLowerCase();
+  return MCP_ROUTING_HEADER_NAMES.has(normalized) ||
+    normalized.startsWith('mcp-param-');
+};
+
+const canonicalMcpHeaderName = (name: string): string => {
+  switch (name.toLowerCase()) {
+    case 'mcp-protocol-version':
+      return 'MCP-Protocol-Version';
+    case 'mcp-method':
+      return 'Mcp-Method';
+    case 'mcp-name':
+      return 'Mcp-Name';
+    default:
+      return name;
+  }
+};
+
+/**
+ * The custom Direct/Relay fetches own authentication and envelope framing, so
+ * they must forward the MCP routing headers explicitly. Authorization is
+ * intentionally excluded: the transport credential is the only bearer.
+ */
+const mcpRoutingHeaders = (
+  init?: RequestInit,
+): Record<string, string> | undefined => {
+  const source = init?.headers;
+  if (!source) return undefined;
+  const selected: Record<string, string> = {};
+  if (Array.isArray(source)) {
+    for (const [name, value] of source) {
+      if (isMcpRoutingHeader(name)) {
+        selected[canonicalMcpHeaderName(name)] = value;
+      }
+    }
+  } else if (typeof (source as { get?: unknown }).get === 'function') {
+    (source as Headers).forEach((value, name) => {
+      if (isMcpRoutingHeader(name)) {
+        selected[canonicalMcpHeaderName(name)] = value;
+      }
+    });
+  } else {
+    for (const [name, value] of Object.entries(
+      source as Record<string, string>,
+    )) {
+      if (isMcpRoutingHeader(name)) {
+        selected[canonicalMcpHeaderName(name)] = value;
+      }
+    }
+  }
+  return Object.keys(selected).length > 0 ? selected : undefined;
+};
+
 const assertDesktopMode = (
   mode: 'direct' | 'cloud',
   generation: number,
@@ -204,12 +264,14 @@ const createDirectFetch = (
         expected,
         store,
       );
+      const mcpHeaders = mcpRoutingHeaders(init);
       const result = await request({
         hostUrl: credential.hostUrl,
         path: '/mcp',
         method: 'POST',
         credential: credential.credential,
         body: payload,
+        ...(mcpHeaders ? { headers: mcpHeaders } : {}),
         signal: init?.signal ?? undefined,
         raw: true,
         parse: value => value,
@@ -262,15 +324,19 @@ const createCloudFetch = (
       assertCloudBinding(access, accountId, hostId, generation, entry);
       // Remote Thread Workspace V1 accepts the header only for official Cloud
       // MCP tool execution; discovery and other MCP services must not see it.
-      const headers = threadId && payload.method === 'tools/call'
-        ? { [REMOTE_THREAD_CONTEXT_HEADER]: threadId }
-        : undefined;
+      const mcpHeaders = mcpRoutingHeaders(init);
+      const headers = {
+        ...(mcpHeaders ?? {}),
+        ...(threadId && payload.method === 'tools/call'
+          ? { [REMOTE_THREAD_CONTEXT_HEADER]: threadId }
+          : {}),
+      };
       const result = await json(access.target, access.tickets, {
         hostUrl: access.target.endpoint,
         path: '/mcp',
         method: 'POST',
         body: payload,
-        ...(headers ? { headers } : {}),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
         signal: init?.signal ?? undefined,
         raw: true,
         parse: value => value,
@@ -551,7 +617,7 @@ const projectDesktop = async (input: {
   threadBinding?: Parameters<typeof createDesktopExecutionGateway>[2];
   signal?: AbortSignal;
 }): Promise<McpServiceSnapshot> => {
-  const serverInfo = await input.client.initialize(input.signal);
+  const serverInfo = await input.client.discover(input.signal);
   if (serverInfo.serverName !== DESKTOP_MCP_SERVICE_ID) {
     throw new McpProtocolError(
       'invalid_response',

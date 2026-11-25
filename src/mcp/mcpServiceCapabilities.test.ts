@@ -48,7 +48,7 @@ const resource = {
       serverName: 'fixture-server',
       serverVersion: '1.2.3',
       sdk: '@modelcontextprotocol/server@2.4.0',
-      protocolVersions: ['2025-06-18'],
+      protocolVersions: ['2026-07-28'],
     },
   },
   capabilities: [
@@ -79,7 +79,7 @@ const project = (overrides: Partial<Parameters<typeof projectMcpService>[0]> = {
       'fixture_unclassified_e',
     ],
     serverInfo: {
-      protocolVersion: '2025-06-18',
+      protocolVersion: '2026-07-28',
       serverName: 'fixture-server',
       serverVersion: '1.2.3',
       tools: true,

@@ -6,6 +6,7 @@ import {
   WHO_YOU_MCP_SERVICE_ID,
   discoverWhoYouMcpService,
 } from './whoYouMcpService';
+import { MCP_PROTOCOL_VERSION } from './mcpProtocolClient';
 
 const MCP_URL = 'https://who-you.example.test/mcp';
 const METADATA_URL =
@@ -87,7 +88,7 @@ const manifest = {
       serverName: 'who-you',
       serverVersion: '0.1.0',
       sdk: '@modelcontextprotocol/server@2.4.0',
-      protocolVersions: ['2025-06-18'],
+      protocolVersions: [MCP_PROTOCOL_VERSION],
     },
   },
   capabilities: [
@@ -112,8 +113,8 @@ const json = (status: number, body: unknown): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
-const rpc = (id: unknown, result: unknown): Response =>
-  json(200, { jsonrpc: '2.0', id, result });
+const rpc = (id: unknown, result: Record<string, unknown>): Response =>
+  json(200, { jsonrpc: '2.0', id, result: { resultType: 'complete', ...result } });
 
 const fixtureFetch = (options: {
   resource?: unknown | null;
@@ -128,15 +129,17 @@ const fixtureFetch = (options: {
       method: string;
       params?: { name?: string; uri?: string };
     };
-    if (body.method === 'initialize') {
+    if (body.method === 'server/discover') {
       return rpc(body.id, {
-        protocolVersion: '2025-06-18',
+        supportedVersions: [MCP_PROTOCOL_VERSION],
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { name: 'who-you', version: '0.1.0' },
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: 'who-you',
+            version: '0.1.0',
+          },
+        },
       });
-    }
-    if (body.method === 'notifications/initialized') {
-      return new Response(null, { status: 202 });
     }
     if (body.method === 'tools/list') {
       return rpc(body.id, { tools: options.tools ?? tools });
