@@ -476,6 +476,76 @@ const parseTool = (value: unknown): McpToolDescriptor => {
   };
 };
 
+type HeaderBinding = {
+  name: string;
+  path: string[];
+  type: 'string' | 'boolean' | 'integer';
+};
+
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
+
+/** Only annotations on a static properties path are legal. Inspect schema
+ * positions, not arbitrary data (examples, defaults or enum values). */
+const collectHeaderBindings = (schema: Record<string, unknown>): HeaderBinding[] => {
+  const bindings: HeaderBinding[] = [];
+  const names = new Set<string>();
+  const invalid = () => new McpProtocolError(
+    'invalid_response', 'Invalid x-mcp-header annotation', 'MCP_TOOL_HEADER_INVALID',
+  );
+  const walk = (node: unknown, path: string[] | null, depth: number) => {
+    if (!isRecord(node)) return;
+    if (depth > 128) throw invalid();
+    if (Object.hasOwn(node, 'x-mcp-header')) {
+      const name = node['x-mcp-header'];
+      const type = node.type;
+      if (!path?.length || typeof name !== 'string' || !HEADER_NAME.test(name) ||
+          names.has(name.toLowerCase()) ||
+          (type !== 'string' && type !== 'boolean' && type !== 'integer')) throw invalid();
+      names.add(name.toLowerCase());
+      bindings.push({ name, path, type });
+    }
+    if (isRecord(node.properties)) {
+      for (const [key, child] of Object.entries(node.properties)) {
+        walk(child, path === null ? null : [...path, key], depth + 1);
+      }
+    }
+    for (const key of ['$defs', 'definitions', 'patternProperties', 'dependentSchemas', 'dependencies']) {
+      const value = node[key];
+      if (isRecord(value)) {
+        for (const child of Object.values(value)) walk(child, null, depth + 1);
+      }
+    }
+    for (const key of ['items', 'prefixItems', 'contains', 'additionalItems', 'additionalProperties',
+      'unevaluatedProperties', 'unevaluatedItems', 'propertyNames', 'not', 'if', 'then', 'else',
+      'allOf', 'anyOf', 'oneOf', 'contentSchema']) {
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const child of value) walk(child, null, depth + 1);
+      } else walk(value, null, depth + 1);
+    }
+  };
+  walk(schema, [], 0);
+  return bindings;
+};
+
+const mirrorArguments = (bindings: readonly HeaderBinding[], args: Record<string, unknown>) => {
+  const headers: Record<string, string> = {};
+  for (const binding of bindings) {
+    let value: unknown = args;
+    for (const key of binding.path) {
+      value = isRecord(value) && Object.hasOwn(value, key) ? value[key] : undefined;
+    }
+    if (value === undefined || value === null) continue;
+    if (binding.type === 'integer'
+      ? typeof value !== 'number' || !Number.isSafeInteger(value)
+      : typeof value !== binding.type) {
+      throw new McpProtocolError('rejected', 'Invalid mirrored tool parameter', 'MCP_TOOL_HEADER_VALUE_INVALID');
+    }
+    headers['Mcp-Param-' + binding.name] = mcpNameHeaderValue(String(value));
+  }
+  return headers;
+};
+
 const parseResource = (value: unknown): McpResourceDescriptor => {
   if (!isRecord(value) || !nonEmpty(value.uri) ||
       value.uri.length > MAX_RESOURCE_URI_LENGTH ||
@@ -506,6 +576,8 @@ export class McpProtocolClient {
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly timeoutMs: number;
   private nextRequestId = 1;
+  private headerBindings = new Map<string, HeaderBinding[]>();
+  private rejectedTools = new Set<string>();
 
   constructor(options: McpProtocolClientOptions) {
     this.endpoint = options.endpoint;
@@ -563,6 +635,7 @@ export class McpProtocolClient {
     params: Record<string, unknown> | undefined,
     mcpName?: string,
     callerSignal?: AbortSignal,
+    parameterHeaders: Record<string, string> = {},
   ): Promise<Record<string, unknown>> {
     const id = this.nextRequestId++;
     const payload: JsonRpcRequest = {
@@ -581,6 +654,7 @@ export class McpProtocolClient {
     const result = await this.post(
       payload,
       {
+        ...parameterHeaders,
         'Mcp-Method': method,
         ...(mcpName !== undefined
           ? { 'Mcp-Name': mcpNameHeaderValue(mcpName) }
@@ -645,6 +719,8 @@ export class McpProtocolClient {
   async listTools(callerSignal?: AbortSignal): Promise<McpToolDescriptor[]> {
     const tools: McpToolDescriptor[] = [];
     const names = new Set<string>();
+    const bindings = new Map<string, HeaderBinding[]>();
+    const rejected = new Set<string>();
     let cursor: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const result = await this.request(
@@ -670,14 +746,18 @@ export class McpProtocolClient {
           );
         }
         names.add(tool.name);
-        tools.push(tool);
-        if (tools.length > MAX_TOOLS) {
-          throw new McpProtocolError(
-            'invalid_response',
-            'The MCP tool list exceeds the accepted bound',
-            'MCP_TOOLS_TOO_MANY',
-          );
+        if (names.size > MAX_TOOLS) {
+          throw new McpProtocolError('invalid_response', 'The MCP tool list exceeds the accepted bound', 'MCP_TOOLS_TOO_MANY');
         }
+        try {
+          bindings.set(tool.name, collectHeaderBindings(tool.inputSchema));
+        } catch (error) {
+          if (!(error instanceof McpProtocolError)) throw error;
+          rejected.add(tool.name);
+          // Keep unrelated tools usable; do not log the annotation or argument values.
+          continue;
+        }
+        tools.push(tool);
       }
       const next = result.nextCursor;
       if (next === undefined || next === null) break;
@@ -697,6 +777,8 @@ export class McpProtocolClient {
         );
       }
     }
+    this.headerBindings = bindings;
+    this.rejectedTools = rejected;
     return tools;
   }
 
@@ -819,11 +901,15 @@ export class McpProtocolClient {
         'MCP_TOOL_NAME_INVALID',
       );
     }
+    if (this.rejectedTools.has(name)) {
+      throw new McpProtocolError('rejected', 'Tool definition was rejected', 'MCP_TOOL_HEADER_INVALID');
+    }
     return this.request(
       'tools/call',
       { name, arguments: args },
       name,
       callerSignal,
+      mirrorArguments(this.headerBindings.get(name) ?? [], args),
     );
   }
 }

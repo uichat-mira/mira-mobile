@@ -212,6 +212,53 @@ describe('generic MCP 2026-07-28 protocol client', () => {
     expect(headersOf(init)['Mcp-Name']).toBe(expected);
   });
 
+  it('mirrors nested annotated primitive arguments and isolates invalid tool definitions', async () => {
+    const fetchMock = fixtureFetch();
+    const routingTool = {
+      name: 'route', inputSchema: { type: 'object', properties: {
+        target: { type: 'object', properties: {
+          region: { type: 'string', 'x-mcp-header': 'Region' },
+          count: { type: 'integer', 'x-mcp-header': 'Count' },
+          enabled: { type: 'boolean', 'x-mcp-header': 'Enabled' },
+          optional: { type: 'string', 'x-mcp-header': 'Optional' },
+        }},
+      }},
+    };
+    const invalidSchemas = [
+      { properties: { x: { type: 'number', 'x-mcp-header': 'X' } } },
+      { properties: { x: { type: 'string', 'x-mcp-header': 'bad name' } } },
+      { properties: { x: { type: 'string', 'x-mcp-header': 'X' }, y: { type: 'string', 'x-mcp-header': 'x' } } },
+      { properties: { x: { items: { type: 'string', 'x-mcp-header': 'X' } } } },
+      { allOf: [{ properties: { x: { type: 'string', 'x-mcp-header': 'X' } } }] },
+      { $defs: { x: { type: 'string', 'x-mcp-header': 'X' } } },
+      { 'x-mcp-header': 'X', type: 'string' },
+    ];
+    fetchMock.mockImplementation(async (_url, init) => {
+      const body = bodyOf(init!);
+      if (body.method === 'tools/list') {
+        return rpc(body.id, { tools: [routingTool, ...invalidSchemas.map((inputSchema, index) => ({
+          name: 'invalid_' + index, inputSchema,
+        })), tools[0]] });
+      }
+      return rpc(body.id, { content: [{ type: 'text', text: 'ok' }] });
+    });
+    const api = client(fetchMock as unknown as typeof fetch);
+    expect((await api.listTools()).map(tool => tool.name)).toEqual(['route', tools[0].name]);
+    const args = { target: { region: ' 中文 ', count: -7, enabled: false, optional: null }, unrelated: 'never mirror' };
+    await api.callTool('route', args);
+    const [, init] = captured(fetchMock)[1];
+    expect(headersOf(init)).toMatchObject({
+      'Mcp-Param-Region': '=?base64?' + Buffer.from(args.target.region).toString('base64') + '?=',
+      'Mcp-Param-Count': '-7', 'Mcp-Param-Enabled': 'false',
+    });
+    expect(headersOf(init)['Mcp-Param-Optional']).toBeUndefined();
+    expect(headersOf(init)['Mcp-Param-unrelated']).toBeUndefined();
+    expect(bodyOf(init).params?.arguments).toEqual(args);
+    await expect(api.callTool('route', { target: { count: Number.MAX_SAFE_INTEGER + 1 } })).rejects.toMatchObject({ code: 'MCP_TOOL_HEADER_VALUE_INVALID' });
+    await expect(api.callTool('invalid_0', {})).rejects.toMatchObject({ code: 'MCP_TOOL_HEADER_INVALID' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects duplicate tools and servers without the 2026-07-28 revision', async () => {
     const duplicate = fixtureFetch();
     duplicate.mockImplementation(async (_url, init) => {

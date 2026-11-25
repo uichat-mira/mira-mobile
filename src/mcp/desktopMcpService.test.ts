@@ -390,8 +390,8 @@ describe('Mira Desktop MCP Mobile binding', () => {
       'Mcp-Method': 'server/discover',
     });
     expect(discover?.headers?.['X-Mira-Thread-Id']).toBeUndefined();
-    // The Relay transport remains JSON-only and does not claim SSE support.
-    expect(toolsCall?.headers).not.toHaveProperty('Accept');
+    // The Desktop MCP server chooses a JSON response; the client advertises both standard response types.
+    expect(toolsCall?.headers?.Accept).toBe('application/json, text/event-stream');
     expect(threadWorkspace.assertBindingCompatible).toHaveBeenCalledWith({
       threadId: 'local-thread-1',
       accountId: 'account-a',

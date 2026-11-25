@@ -142,6 +142,7 @@ const isNotification = (payload: Record<string, unknown>): boolean =>
   !Object.hasOwn(payload, 'id');
 
 const MCP_ROUTING_HEADER_NAMES = new Set([
+  'accept',
   'mcp-protocol-version',
   'mcp-method',
   'mcp-name',
@@ -155,6 +156,8 @@ const isMcpRoutingHeader = (name: string): boolean => {
 
 const canonicalMcpHeaderName = (name: string): string => {
   switch (name.toLowerCase()) {
+    case 'accept':
+      return 'Accept';
     case 'mcp-protocol-version':
       return 'MCP-Protocol-Version';
     case 'mcp-method':
