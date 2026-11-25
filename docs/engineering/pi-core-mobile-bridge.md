@@ -331,6 +331,31 @@ allowlist or intent classifier.
   provider readiness and current Host authority. A registered Desktop tool
   is not necessarily exposed to a given Mobile session.
 
+### Desktop remote thread workspace and end (MOB-106, 2026-11-25)
+
+- A Local Provider Agent run passes the existing session id to its per-run tool
+  gateway. The Desktop Cloud MCP adapter sends it as `X-Mira-Thread-Id` only on
+  official Cloud MCP `tools/call` and the matching Remote V1 approval/cancel
+  request. Direct pairing, Who You and other MCP services never receive it.
+- The thread adapter records only trusted routing identity (Cloud account,
+  Desktop Host, Desktop device and connection generation). A thread is never
+  silently rebound to another Host, and cached Desktop bindings are keyed by
+  conversation id so one thread cannot reuse another thread's approval adapter.
+- Workspace state comes from
+  `GET /remote/v1/threads/:threadId/workspace`; Desktop returns an opaque ref or
+  `not_started`. Mobile never derives a path from the thread id. Ordinary chat
+  and non-workspace tools do not create a directory.
+- Explicit end uses `POST /remote/v1/threads/:threadId/end` with
+  `tools:control`. Only a confirmed `ended` response clears the local binding;
+  transport loss and `thread_cleanup_incomplete` keep it retryable. A discovery
+  read of `ended` is not treated as proof of completed cleanup. Single-turn
+  completion, backgrounding, disconnects and app close never call end.
+- Regression coverage lives in `src/protocol/remoteThreadWorkspaceV1.test.ts`,
+  `src/mcp/desktopThreadWorkspace.test.ts`, `src/mcp/desktopMcpService.test.ts`,
+  `src/tools/cloudToolHostClient.test.ts`, `src/runtime/piAgentLoop.test.ts` and
+  `src/runtime/runtimeRegistry.test.ts`. Real Desktop + Mobile persistent-task
+  termination and result inspection remain #258 T4.
+
 ## Validation and rollout
 
 Node 26 typecheck, lint and Jest are the source-level gates, including migrated

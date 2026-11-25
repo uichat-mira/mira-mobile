@@ -38,6 +38,12 @@ import {
 import { miraHostClient } from '../api/miraHostClient';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { RemoteHostError } from '../api/remoteHttp';
+import {
+  desktopThreadWorkspaceService,
+  DesktopThreadWorkspaceError,
+  type DesktopThreadBinding,
+} from '../mcp/desktopThreadWorkspace';
+import type { RemoteThreadWorkspaceProjection } from '../protocol/remoteThreadWorkspaceV1';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
 import { useThreadPinStore } from '../store/threadPinStore';
@@ -263,6 +269,13 @@ export function ChatScreen() {
     top: number;
     right: number;
   }>({ top: 0, right: spacing.sm });
+  const [desktopThreadBinding, setDesktopThreadBinding] =
+    useState<DesktopThreadBinding | null>(null);
+  const [threadWorkspace, setThreadWorkspace] =
+    useState<RemoteThreadWorkspaceProjection | null>(null);
+  const [isLoadingThreadWorkspace, setIsLoadingThreadWorkspace] =
+    useState(false);
+  const [isEndingThread, setIsEndingThread] = useState(false);
   const [failedMessages, setFailedMessages] = useState<Map<string, string>>(
     new Map(),
   );
@@ -351,6 +364,10 @@ export function ChatScreen() {
     setAgentPauseReason(null);
     setAgentError(null);
     setAgentNotice(null);
+    setDesktopThreadBinding(null);
+    setThreadWorkspace(null);
+    setIsLoadingThreadWorkspace(false);
+    setIsEndingThread(false);
   }, [runtime, sessionId]);
 
   useEffect(() => {
@@ -394,6 +411,23 @@ export function ChatScreen() {
     }
   }, [isCloudHost, isLocalProvider, runtime, sessionId]);
 
+  const refreshDesktopThreadBinding = useCallback(async () => {
+    if (!isLocalProvider) {
+      setDesktopThreadBinding(null);
+      setThreadWorkspace(null);
+      return;
+    }
+    try {
+      setDesktopThreadBinding(
+        await desktopThreadWorkspaceService.getBinding(sessionId),
+      );
+    } catch {
+      // A local storage read failure must not fabricate a remote workspace or
+      // block ordinary Local chat.
+      setDesktopThreadBinding(null);
+    }
+  }, [isLocalProvider, sessionId]);
+
   const loadMessages = useCallback(async (): Promise<ChatMessage[] | null> => {
     setHistoryError(null);
     try {
@@ -428,13 +462,17 @@ export function ChatScreen() {
     useCallback(() => {
       let active = true;
       setIsLoadingHistory(true);
-      void Promise.all([loadMessages(), refreshSessionTitle()]).finally(() => {
+      void Promise.all([
+        loadMessages(),
+        refreshSessionTitle(),
+        refreshDesktopThreadBinding(),
+      ]).finally(() => {
         if (active) setIsLoadingHistory(false);
       });
       return () => {
         active = false;
       };
-    }, [loadMessages, refreshSessionTitle]),
+    }, [loadMessages, refreshDesktopThreadBinding, refreshSessionTitle]),
   );
 
   const retryHistory = useCallback(() => {
@@ -548,7 +586,7 @@ export function ChatScreen() {
   const handleDelete = useCallback(() => {
     if (isDeleting || !canDelete) return;
     const message = isLocalProvider
-      ? `确定删除“${sessionTitle}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      ? `确定删除“${sessionTitle}”吗？会先结束该线程在 Mira Desktop 上的远程任务（若有），已有文件保留；随后仅删除当前设备上的本地对话。`
       : `确定删除“${sessionTitle}”吗？此操作会同步删除桌面端线程。`;
     Alert.alert('删除会话', message, [
       { text: '取消', style: 'cancel' },
@@ -560,6 +598,8 @@ export function ChatScreen() {
           void (async () => {
             try {
               await runtimeRegistry.deleteSession(sessionId, source);
+              setDesktopThreadBinding(null);
+              setThreadWorkspace(null);
               void removeLastOpenedSession(sessionId).catch(() => undefined);
               const cleanup = await Promise.allSettled([
                 removePinnedThread(sessionId),
@@ -573,11 +613,18 @@ export function ChatScreen() {
               }
               navigation.goBack();
             } catch (error) {
-              const failure =
-                error instanceof Error && error.message
-                  ? error.message
-                  : '无法删除该会话，请重试。';
-              Alert.alert('删除失败', failure);
+              if (error instanceof DesktopThreadWorkspaceError) {
+                Alert.alert(
+                  '无法确认远程线程已结束',
+                  `${error.message} 本机会话未删除；请检查 Mira Desktop 连接后重试。`,
+                );
+              } else {
+                const failure =
+                  error instanceof Error && error.message
+                    ? error.message
+                    : '无法删除该会话，请重试。';
+                Alert.alert('删除失败', failure);
+              }
             } finally {
               setIsDeleting(false);
             }
@@ -871,7 +918,114 @@ export function ChatScreen() {
     }
   }, [agentEnabled, runtime, supportsLocalAgent]);
 
+  const showDesktopThreadWorkspace = useCallback(() => {
+    if (!isLocalProvider || isLoadingThreadWorkspace) return;
+    setIsLoadingThreadWorkspace(true);
+    void (async () => {
+      try {
+        const projection =
+          await desktopThreadWorkspaceService.getWorkspace(sessionId);
+        setThreadWorkspace(projection);
+        if (projection.status === 'active' && projection.workspace) {
+          Alert.alert(
+            '远程工作空间',
+            [
+              'Mira Desktop 已为当前线程创建私有工作空间。',
+              `引用：${projection.workspace.ref}`,
+              `目录当前可用：${projection.workspace.available ? '是' : '否'}`,
+              '成果文件保留在 Mira Desktop；手机端不会虚构本机目录。',
+            ].join('\n'),
+          );
+          return;
+        }
+        if (projection.status === 'ended') {
+          // A discovery read can show `ended` while an earlier end request was
+          // never confirmed. Do not present that as proven cleanup success.
+          Alert.alert(
+            '远程线程已标记结束',
+            projection.workspace
+              ? 'Mira Desktop 已把该线程标记为结束，已有文件仍保留。手机端尚未确认清理是否完成，可使用「重试结束远程线程」再次确认。'
+              : 'Mira Desktop 已把该线程标记为结束，没有已生成的远程工作空间。可使用「重试结束远程线程」再次确认清理结果。',
+          );
+          return;
+        }
+        Alert.alert(
+          '尚无远程工作空间',
+          '当前线程还没有实际执行需要 Mira Desktop 工作空间的工具，因此没有生成目录。',
+        );
+      } catch (error) {
+        if (error instanceof DesktopThreadWorkspaceError) {
+          Alert.alert(
+            '无法读取远程工作空间',
+            `${error.message}${error.retryable ? ' 请检查连接后重试。' : ''}`,
+          );
+          return;
+        }
+        Alert.alert('无法读取远程工作空间', '请检查 Mira Desktop 连接后重试。');
+      } finally {
+        setIsLoadingThreadWorkspace(false);
+      }
+    })();
+  }, [isLoadingThreadWorkspace, isLocalProvider, sessionId]);
+
+  const endDesktopThread = useCallback(() => {
+    if (!isLocalProvider || isEndingThread) return;
+    Alert.alert(
+      '结束远程线程',
+      '这会停止该线程在 Mira Desktop 上仍在运行的远程任务和终端会话。已有文件与成果会保留，不会删除本机聊天。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '结束',
+          style: 'destructive',
+          onPress: () => {
+            setIsEndingThread(true);
+            void (async () => {
+              try {
+                const result =
+                  await desktopThreadWorkspaceService.endThread(sessionId);
+                if (result.kind === 'no_remote_work') {
+                  setDesktopThreadBinding(null);
+                  setThreadWorkspace(null);
+                  Alert.alert(
+                    '无需结束',
+                    '当前线程还没有绑定 Mira Desktop 的远程工作。',
+                  );
+                  return;
+                }
+                setThreadWorkspace(result.projection);
+                setDesktopThreadBinding(null);
+                Alert.alert(
+                  '远程线程已结束',
+                  [
+                    'Mira Desktop 已确认该线程结束。',
+                    `停止进行中的调用：${result.projection.stoppedInvocations ?? '未提供'}；停止终端会话：${result.projection.stoppedTerminalSessions ?? '未提供'}。`,
+                    '已有文件与成果仍保留。',
+                    ...(result.localBindingCleared === false
+                      ? ['本机线程绑定记录未能清理，后续可能需要再次确认结束。']
+                      : []),
+                  ].join('\n'),
+                );
+              } catch (error) {
+                const message = error instanceof DesktopThreadWorkspaceError
+                  ? error.message
+                  : '无法确认 Mira Desktop 已结束该线程。';
+                Alert.alert(
+                  '结束未确认',
+                  `${message} 本机聊天未被删除；请检查连接后重试。`,
+                );
+              } finally {
+                setIsEndingThread(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [isEndingThread, isLocalProvider, sessionId]);
+
   const openMenu = useCallback(() => {
+    void refreshDesktopThreadBinding();
     menuButtonRef.current?.measureInWindow((x, y, width, height) => {
       setMenuAnchor({
         top: y + height + spacing.xs,
@@ -879,7 +1033,7 @@ export function ChatScreen() {
       });
       setIsMenuVisible(true);
     });
-  }, [windowWidth]);
+  }, [refreshDesktopThreadBinding, windowWidth]);
 
   const handleRetry = useCallback(
     (msg: ChatMessage) => {
@@ -1109,6 +1263,22 @@ export function ChatScreen() {
         onShare={() => void handleShare()}
         shareDisabled={shareDisabled}
         shareDisabledAccessibilityLabel={shareAccessibilityLabel}
+        {...(isLocalProvider && desktopThreadBinding
+          ? {
+              onViewWorkspace: showDesktopThreadWorkspace,
+              viewWorkspaceDisabled: isLoadingThreadWorkspace,
+              viewWorkspaceDisabledAccessibilityLabel:
+                '查看远程工作空间，正在读取',
+              onEndThread: endDesktopThread,
+              endThreadDisabled: isEndingThread,
+              endThreadDisabledAccessibilityLabel:
+                '结束远程线程，正在处理',
+              endThreadLabel:
+                threadWorkspace?.status === 'ended'
+                  ? '重试结束远程线程'
+                  : '结束远程线程',
+            }
+          : {})}
         onFindInChat={openSearch}
         onDelete={handleDelete}
         deleteDisabled={isDeleting || !canDelete}

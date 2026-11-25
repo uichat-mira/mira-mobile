@@ -73,6 +73,26 @@ Session 仍然撤销。中途取消或重试使用已持久化的新身份，不
 本地聊天、Local Provider、独立 Remote Host/Tailscale 及 Push 身份均不改变。
 服务端错误契约见 [Cloud Auth OAuth](https://github.com/uichat-mira/cloud-auth/blob/dev/docs/oauth-authorization-v0.md)。
 
+## Desktop 远程线程工作空间
+
+使用 Local Provider 会话调用官方 Mira Cloud MCP 的 Mira Desktop 工具时，Mobile
+把本机会话 ID 作为 `X-Mira-Thread-Id` 只发送给官方 Cloud MCP `tools/call` 及其对应
+Remote V1 审批/取消请求。实际的 Desktop 工作空间由 Desktop 按 C2
+[Remote Thread Workspace V1](https://github.com/uichat-mira/mira-desktop/blob/b3015ff86366832b543db72181987e3b9270d158/docs/remote-access/remote-thread-workspace-v1.md)
+权威创建；手机端不会根据线程 ID 虚构目录，也不会要求用户先选择目录。
+
+线程菜单里的「查看远程工作空间」读取真实 `GET /remote/v1/threads/:threadId/workspace`
+结果，只有存在 `active` 空间时才展示 Desktop 返回的 opaque 引用。普通聊天、狐邮
+和不需要 Desktop 工作空间的任务不会创建空间。线程绑定本机会话、Cloud 账号、
+Desktop Host/设备和连接代际，换线程、账号或 Host 不会串用。
+
+「结束远程线程」或删除该本机会话时，Mobile 调用
+`POST /remote/v1/threads/:threadId/end`（`tools:control`）。只有 Desktop 明确确认
+`ended` 后才算结束；断线、清理未完成或响应不确定时保留本机会话并如实提示可重试，
+不会把单轮回答完成、退到后台或关闭 App 当作线程结束。结束时只停止该线程仍在运行
+的调用和终端会话，已有成果文件保留。真实 Desktop + Mobile 的持久任务终止与成果
+检查仍以 #258 T4 为准。
+
 ## 狐邮 Who You · 移动端只读接入
 
 在 Mira Cloud 登录后，Mobile 可以独立通过狐邮 MCP 查看当前账号的已绑定邮箱，

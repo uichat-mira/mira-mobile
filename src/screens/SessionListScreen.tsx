@@ -13,6 +13,7 @@ import { useThreadReadStore } from '../store/threadReadStore';
 import { miraHostClient } from '../api/miraHostClient';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
+import { DesktopThreadWorkspaceError } from '../mcp/desktopThreadWorkspace';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
@@ -285,6 +286,13 @@ export function SessionListScreen() {
         );
       }
     } catch (error) {
+      if (error instanceof DesktopThreadWorkspaceError) {
+        Alert.alert(
+          '无法确认远程线程已结束',
+          `${error.message} 本机会话未删除；请检查 Mira Desktop 连接后重试。`,
+        );
+        return;
+      }
       const message =
         error instanceof Error && error.message
           ? error.message
@@ -295,7 +303,7 @@ export function SessionListScreen() {
 
   const confirmDelete = (session: Session) => {
     const message = session.source === 'local-provider'
-      ? `确定删除“${session.title}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      ? `确定删除“${session.title}”吗？会先结束该线程在 Mira Desktop 上的远程任务（若有），已有文件保留；随后仅删除当前设备上的本地对话。`
       : `确定删除“${session.title}”吗？此操作会同步删除桌面端线程。`;
     Alert.alert('删除会话', message, [
       { text: '取消', style: 'cancel' },

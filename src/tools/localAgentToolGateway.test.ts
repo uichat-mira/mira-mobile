@@ -443,6 +443,34 @@ describe('Desktop MCP binding metadata reuse', () => {
     await repaired.discover({ accountId: null });
     expect(discover).toHaveBeenCalledTimes(2);
   });
+
+  it('never reuses one Cloud Desktop binding across different threads', () => {
+    const seen: Array<string | undefined> = [];
+    const factory = createDesktopMcpBindingFactory({
+      cloudDiscovery: (input) => {
+        seen.push(input.threadId);
+        return {
+          serviceTypeId: 'mira-desktop',
+          async discover() {
+            throw new Error('not used in this test');
+          },
+        };
+      },
+    });
+    const bind = (threadId: string) => factory.cloud({
+      accountId: 'account-a',
+      hostId: 'host-a',
+      generation: 3,
+      threadId,
+      entry: {} as never,
+      json: (() => Promise.reject(new Error('unused'))) as never,
+      sse: (() => { throw new Error('unused'); }) as never,
+    });
+
+    expect(bind('local-thread-1')).toBe(bind('local-thread-1'));
+    expect(bind('local-thread-1')).not.toBe(bind('local-thread-2'));
+    expect(seen).toEqual(['local-thread-1', 'local-thread-2']);
+  });
 });
 
 describe('LocalAgentToolGateway', () => {

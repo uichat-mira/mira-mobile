@@ -33,6 +33,8 @@ export interface LocalAgentRunInput {
   strength: AgentExecutionStrengthId;
   initialMessages: readonly OpenAiMessage[];
   approvalRecipient?: string;
+  /** Local Provider conversation id used as the Desktop MCP thread context. */
+  threadId?: string;
   /** Current user turn used only to bind an explicitly named Cloud Host. */
   selectionText?: string;
   previousAssistantText?: string;
@@ -47,14 +49,21 @@ export interface LocalAgentRun {
 
 export type LocalAgentToolGatewaySource =
   | ToolGatewayClient
-  | ((selectionText?: string, previousAssistantText?: string) => ToolGatewayClient);
+  | ((
+      selectionText?: string,
+      previousAssistantText?: string,
+      threadId?: string,
+    ) => ToolGatewayClient);
 
 const resolveToolGateway = (
   source: LocalAgentToolGatewaySource,
   selectionText?: string,
   previousAssistantText?: string,
+  threadId?: string,
 ): ToolGatewayClient =>
-  typeof source === 'function' ? source(selectionText, previousAssistantText) : source;
+  typeof source === 'function'
+    ? source(selectionText, previousAssistantText, threadId)
+    : source;
 
 /**
  * A configured execution strength is a user safety boundary. If the effective
@@ -94,6 +103,7 @@ export class LocalAgentRunController {
         this.toolGateway,
         input.selectionText,
         input.previousAssistantText,
+        input.threadId,
       );
       const strength = getAgentExecutionStrength(input.strength);
       const loop = new PiCoreAgentLoop(gateway);

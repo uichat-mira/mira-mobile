@@ -140,6 +140,8 @@ export interface PostSseRequest<T> {
   path: string;
   credential: string;
   body: unknown;
+  /** Contract-scoped transport headers; never business credentials. */
+  headers?: Record<string, string>;
   parse: (value: unknown) => T;
   allowInsecureDevelopment?: boolean;
 }
@@ -205,6 +207,9 @@ export const openPostSse = <T>(request: PostSseRequest<T>): PostSseSession<T> =>
   xhr.setRequestHeader('Accept', 'text/event-stream');
   xhr.setRequestHeader('Content-Type', 'application/json');
   xhr.setRequestHeader('Authorization', `Bearer ${request.credential}`);
+  for (const [key, value] of Object.entries(request.headers ?? {})) {
+    xhr.setRequestHeader(key, value);
+  }
 
   xhr.onprogress = () => {
     if (settled) return;

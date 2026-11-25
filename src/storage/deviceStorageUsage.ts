@@ -73,7 +73,11 @@ const KEY_VALUE_CATEGORIES: readonly KeyValueCategorySpec[] = [
     id: 'thread-state',
     label: '线程本地状态',
     description: '设备级线程置顶与未读进度（不会上传 Host）',
-    keys: ['thread-pins-v1', 'thread-read-progress-v1'],
+    keys: [
+      'thread-pins-v1',
+      'thread-read-progress-v1',
+      'mira.mobile.desktop-thread-workspaces.v1',
+    ],
   },
   {
     id: 'local-provider',

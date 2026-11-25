@@ -228,6 +228,9 @@ describe('Mira Desktop MCP Mobile binding', () => {
       call.path === '/remote/v1/tools' ||
       call.path === '/remote/v1/tool-invocations/stream'
     )).toBe(false);
+    // Direct paired Desktop never opts into the Cloud thread workspace header.
+    expect(request.mock.calls.every(([call]) => call.headers === undefined))
+      .toBe(true);
 
     await expect(snapshot.executionGateway?.callTool({
       callId: 'call-direct',
@@ -267,6 +270,128 @@ describe('Mira Desktop MCP Mobile binding', () => {
         args: { path: 'AGENTS.md' },
       }),
     );
+  });
+
+  it('sends the Local thread header only on official Cloud tools/call and its approval', async () => {
+    useDesktopConnectionStore.setState({
+      mode: 'cloud',
+      generation: 11,
+      transitioning: false,
+      hydrated: true,
+    });
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: { id: 'account-a', displayName: 'Tomz' },
+    } as never);
+    const access: CloudRelayAccess = {
+      accountId: 'account-a',
+      target: {
+        endpoint: 'https://relay.example.test',
+        room: 'room-host-a',
+        hostId: 'host-a',
+      },
+      tickets: {
+        acquireClientTicket: jest.fn(async () => 'ticket-a'),
+      },
+    };
+    const entry = {
+      discoverHost: jest.fn(async () => access),
+      assertCurrentAccess: jest.fn(),
+    };
+    let toolMode: 'completed' | 'approval' = 'completed';
+    const json = jest.fn(async <T>(
+      _target: CloudRelayAccess['target'],
+      _tickets: CloudRelayAccess['tickets'],
+      request: RemoteJsonRequest<T>,
+    ): Promise<T> => {
+      if (request.path === '/remote/v1/manifest') {
+        return request.parse(remoteManifest);
+      }
+      if (request.path === '/mcp') {
+        return request.parse(
+          rpcResult(parseBody(request as RemoteJsonRequest<unknown>), toolMode),
+        );
+      }
+      if (request.path.endsWith('/approval')) {
+        return request.parse({
+          invocationId: 'inv-1',
+          toolId: 'tool-read',
+          status: 'completed',
+          content: 'approved-desktop-content',
+        });
+      }
+      throw new Error('Unexpected Relay path ' + request.path);
+    });
+    const threadWorkspace = {
+      assertBindingCompatible: jest.fn(),
+      rememberBinding: jest.fn(async () => undefined),
+    };
+    const snapshot = await createCloudDesktopMcpDiscovery({
+      accountId: 'account-a',
+      hostId: 'host-a',
+      generation: 11,
+      threadId: 'local-thread-1',
+      entry,
+      json: json as never,
+      threadWorkspace,
+    }).discover({ accountId: 'account-a' });
+
+    await expect(snapshot.executionGateway?.callTool({
+      callId: 'call-relay',
+      name: 'read',
+      arguments: '{"path":"README.md"}',
+    })).resolves.toEqual({ content: 'desktop-content' });
+
+    const mcpCalls = json.mock.calls
+      .map(([, , request]) => request)
+      .filter((request) => request.path === '/mcp');
+    const toolsCall = mcpCalls.find(
+      (request) =>
+        (request.body as { method?: string }).method === 'tools/call',
+    );
+    const initialize = mcpCalls.find(
+      (request) =>
+        (request.body as { method?: string }).method === 'initialize',
+    );
+    expect(toolsCall?.headers).toEqual({
+      'X-Mira-Thread-Id': 'local-thread-1',
+    });
+    expect(initialize?.headers).toBeUndefined();
+    expect(threadWorkspace.assertBindingCompatible).toHaveBeenCalledWith({
+      threadId: 'local-thread-1',
+      accountId: 'account-a',
+      hostId: 'host-a',
+      deviceId: 'mobile-device-a',
+    });
+    expect(threadWorkspace.rememberBinding).toHaveBeenCalledWith({
+      threadId: 'local-thread-1',
+      accountId: 'account-a',
+      hostId: 'host-a',
+      deviceId: 'mobile-device-a',
+      generation: 11,
+    });
+
+    toolMode = 'approval';
+    let approval: ToolApprovalRequest | null = null;
+    try {
+      await snapshot.executionGateway?.callTool({
+        callId: 'call-approval',
+        name: 'read',
+        arguments: '{"path":"AGENTS.md"}',
+      });
+    } catch (error) {
+      approval = (error as ToolApprovalRequiredError).approval;
+    }
+    await snapshot.executionGateway?.resolveApproval?.(
+      approval as ToolApprovalRequest,
+      'approved',
+    );
+    const approvalCall = json.mock.calls
+      .map(([, , request]) => request)
+      .find((request) => request.path.endsWith('/approval'));
+    expect(approvalCall?.headers).toEqual({
+      'X-Mira-Thread-Id': 'local-thread-1',
+    });
   });
 
   it('uses the same MCP protocol over official Relay and binds the exact selected Host', async () => {

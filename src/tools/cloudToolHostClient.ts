@@ -22,6 +22,11 @@ import {
   type RemoteToolInvocationProjection,
   type RemoteToolManifest,
 } from '../protocol/remoteHostV1';
+import {
+  parseRemoteThreadWorkspace,
+  REMOTE_THREAD_CONTEXT_HEADER,
+  type RemoteThreadWorkspaceProjection,
+} from '../protocol/remoteThreadWorkspaceV1';
 
 const REMOTE_TOOL_ROUTES = {
   list: 'GET /remote/v1/tools',
@@ -82,6 +87,32 @@ const hostChanged = (): RemoteHostError =>
     403,
   );
 
+const assertToolScope = (
+  manifest: RemoteManifest,
+  scope: RemoteDeviceScope,
+): void => {
+  if (!manifest.device.scopes.includes(scope)) {
+    throw new RemoteHostError(
+      'CLOUD_TOOL_GRANT_REQUIRED',
+      `Mira Desktop has not granted this Cloud device the ${scope} scope`,
+      403,
+    );
+  }
+};
+
+const assertExpectedDevice = (
+  manifest: RemoteManifest,
+  expectedDeviceId: string | undefined,
+): void => {
+  if (expectedDeviceId && manifest.device.id !== expectedDeviceId) {
+    throw new RemoteHostError(
+      'CLOUD_TOOL_HOST_CHANGED',
+      'The authorized Cloud device changed for this remote thread',
+      403,
+    );
+  }
+};
+
 const assertToolGrant = (
   manifest: RemoteManifest,
   route: ToolRoute,
@@ -121,7 +152,18 @@ export class CloudToolHostClient {
     private readonly json: CloudJsonTransport = requestCloudRelayJson,
     private readonly sse: CloudSseTransport = openCloudRelayPostSse,
     private readonly accountIsCurrent: (accountId: string) => boolean = () => true,
+    /**
+     * The official Desktop MCP thread context. It is intentionally scoped to
+     * this client instance and only attached to Remote V1 approval/cancel.
+     */
+    private readonly threadId?: string,
   ) {}
+
+  private threadHeaders(): Record<string, string> | undefined {
+    return this.threadId
+      ? { [REMOTE_THREAD_CONTEXT_HEADER]: this.threadId }
+      : undefined;
+  }
 
   private assertOwner(): void {
     if (!this.accountIsCurrent(this.accountId)) throw hostChanged();
@@ -225,6 +267,7 @@ export class CloudToolHostClient {
         path: `/remote/v1/tool-invocations/${encodeURIComponent(input.invocationId)}/approval`,
         method: 'POST',
         signal: input.signal,
+        headers: this.threadHeaders(),
         body: {
           decision: input.decision,
           toolId: input.toolId,
@@ -256,6 +299,7 @@ export class CloudToolHostClient {
       return await this.requestJson(access, {
         path: `/remote/v1/tool-invocations/${encodeURIComponent(invocationId)}/cancel`,
         method: 'POST',
+        headers: this.threadHeaders(),
         parse: parseCancellation,
       });
     } catch (error) {
@@ -269,5 +313,58 @@ export class CloudToolHostClient {
       }
       throw error;
     }
+  }
+
+  /**
+   * Reads Desktop's authoritative workspace projection for this thread.
+   * A local thread id alone never proves a workspace exists.
+   */
+  async getThreadWorkspace(
+    threadId: string,
+    expectedDeviceId?: string,
+  ): Promise<RemoteThreadWorkspaceProjection> {
+    const access = await this.currentAccess();
+    const manifest = await this.manifest(access);
+    assertToolScope(manifest, 'tools:read');
+    assertExpectedDevice(manifest, expectedDeviceId);
+    const result = await this.requestJson(access, {
+      path: `/remote/v1/threads/${encodeURIComponent(threadId)}/workspace`,
+      parse: parseRemoteThreadWorkspace,
+    });
+    if (result.threadId !== threadId) {
+      throw new RemoteHostError(
+        'INVALID_RESPONSE',
+        'Mira Desktop returned a workspace for a different thread',
+        502,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Explicitly ends one remote thread. Desktop keeps retained files; this call
+   * only stops invocations and persistent Terminal sessions owned by it.
+   */
+  async endThreadWorkspace(
+    threadId: string,
+    expectedDeviceId?: string,
+  ): Promise<RemoteThreadWorkspaceProjection> {
+    const access = await this.currentAccess();
+    const manifest = await this.manifest(access);
+    assertToolScope(manifest, 'tools:control');
+    assertExpectedDevice(manifest, expectedDeviceId);
+    const result = await this.requestJson(access, {
+      path: `/remote/v1/threads/${encodeURIComponent(threadId)}/end`,
+      method: 'POST',
+      parse: parseRemoteThreadWorkspace,
+    });
+    if (result.threadId !== threadId || result.status !== 'ended') {
+      throw new RemoteHostError(
+        'INVALID_RESPONSE',
+        'Mira Desktop did not confirm the remote thread ended',
+        502,
+      );
+    }
+    return result;
   }
 }

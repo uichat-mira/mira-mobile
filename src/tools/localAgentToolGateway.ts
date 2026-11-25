@@ -73,6 +73,8 @@ export interface DesktopMcpBindingFactory {
     accountId: string;
     hostId: string;
     generation: number;
+    /** Local conversation id, forwarded only to official Cloud MCP calls. */
+    threadId?: string;
     entry: CloudToolEntry;
     json: typeof requestCloudRelayJson;
     sse: typeof openCloudRelayPostSse;
@@ -101,7 +103,11 @@ export const createDesktopMcpBindingFactory = (deps: {
       return binding;
     },
     cloud: input => {
-      const key = `${input.accountId}:${input.hostId}:${input.generation}`;
+      // The Desktop MCP adapter captures its Local thread id for Remote V1
+      // approvals, so a binding must never be reused by another thread.
+      const key =
+        `${input.accountId}:${input.hostId}:${input.generation}:` +
+        `${input.threadId ?? ''}`;
       const cached = cachedCloud.get(key);
       if (cached) return cached;
       if (cachedCloud.size >= 8) cachedCloud.clear();
@@ -127,6 +133,8 @@ export interface LocalAgentToolGatewayOptions {
   sse?: typeof openCloudRelayPostSse;
   /** Desktop MCP is transport-bound here; Pi Core stays service-generic. */
   desktopMcp?: DesktopMcpBindingFactory;
+  /** Local conversation id used as the official Desktop MCP thread context. */
+  threadId?: string;
   /**
    * The current user turn only. It lets the Mobile side bind an explicitly
    * named Host; absence is never an instruction to pick a recent one.
@@ -420,6 +428,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
   private readonly json: typeof requestCloudRelayJson;
   private readonly sse: typeof openCloudRelayPostSse;
   private readonly desktopMcp: DesktopMcpBindingFactory;
+  private readonly threadId: string | undefined;
   private readonly selectionText: string;
   private readonly previousAssistantText: string;
   private readonly mcp: readonly McpServiceBinding[];
@@ -445,6 +454,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
     this.json = options.json ?? requestCloudRelayJson;
     this.sse = options.sse ?? openCloudRelayPostSse;
     this.desktopMcp = options.desktopMcp ?? defaultDesktopMcpBindingFactory;
+    this.threadId = options.threadId;
     this.selectionText = normalizeMatchText(options.selectionText ?? '');
     this.previousAssistantText = options.previousAssistantText ?? '';
     this.mcp = normalizeMcpBindings(
@@ -1124,6 +1134,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
         accountId,
         hostId: candidate.hostId,
         generation: this.desktopGeneration,
+        ...(this.threadId ? { threadId: this.threadId } : {}),
         entry: this.entry,
         json: this.json,
         sse: this.sse,
@@ -1201,6 +1212,7 @@ export class LocalAgentToolGateway implements ToolGatewayClient {
       accountId,
       hostId,
       generation: this.desktopGeneration,
+      ...(this.threadId ? { threadId: this.threadId } : {}),
       entry: this.entry,
       json: this.json,
       sse: this.sse,
@@ -1238,5 +1250,10 @@ const hostChanged = (): RemoteHostError =>
 export const createLocalAgentToolGateway = (
   selectionText?: string,
   previousAssistantText?: string,
+  threadId?: string,
 ): ToolGatewayClient =>
-  new LocalAgentToolGateway({ selectionText, previousAssistantText });
+  new LocalAgentToolGateway({
+    selectionText,
+    previousAssistantText,
+    ...(threadId ? { threadId } : {}),
+  });
