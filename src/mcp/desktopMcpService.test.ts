@@ -371,6 +371,13 @@ describe('Mira Desktop MCP Mobile binding', () => {
       generation: 11,
     });
 
+    threadWorkspace.rememberBinding.mockRejectedValueOnce(new Error('storage unavailable'));
+    const before = json.mock.calls.length;
+    await expect(snapshot.executionGateway?.callTool({
+      callId: 'storage-failed', name: 'read', arguments: '{"path":"README.md"}',
+    })).rejects.toMatchObject({ code: 'THREAD_BINDING_STORAGE_FAILED' });
+    expect(json.mock.calls).toHaveLength(before);
+
     toolMode = 'approval';
     let approval: ToolApprovalRequest | null = null;
     try {

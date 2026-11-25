@@ -30,12 +30,11 @@ export interface DesktopThreadBinding {
   deviceId: string;
   generation: number;
   boundAt: string;
+  endState?: 'pending' | 'confirmed';
 }
 
 export const DESKTOP_THREAD_WORKSPACE_STORAGE_KEY =
   'mira.mobile.desktop-thread-workspaces.v1';
-
-const MAX_BINDINGS = 256;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -49,6 +48,7 @@ const parseBinding = (value: unknown): DesktopThreadBinding | null => {
     deviceId,
     generation,
     boundAt,
+    endState,
   } = value;
   if (
     typeof threadId !== 'string' || threadId.length === 0 ||
@@ -57,27 +57,30 @@ const parseBinding = (value: unknown): DesktopThreadBinding | null => {
     typeof deviceId !== 'string' || deviceId.length === 0 ||
     typeof generation !== 'number' || !Number.isInteger(generation) ||
     generation < 0 ||
-    typeof boundAt !== 'string' || boundAt.length === 0
+    typeof boundAt !== 'string' || boundAt.length === 0 ||
+    (endState !== undefined && endState !== 'pending' && endState !== 'confirmed')
   ) {
     return null;
   }
-  return { threadId, accountId, hostId, deviceId, generation, boundAt };
+  return { threadId, accountId, hostId, deviceId, generation, boundAt, ...(endState ? { endState } : {}) };
 };
 
 const parseBindings = (raw: string | null): DesktopThreadBinding[] => {
-  if (!raw) return [];
+  if (raw === null) return [];
   let value: unknown;
   try {
     value = JSON.parse(raw) as unknown;
   } catch {
-    return [];
+    throw bindingStorageError();
   }
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.bindings)) {
-    return [];
+    throw bindingStorageError();
   }
-  return value.bindings
-    .map(parseBinding)
-    .filter((binding): binding is DesktopThreadBinding => binding !== null);
+  const bindings = value.bindings.map(parseBinding);
+  if (bindings.some(binding => binding === null) || new Set(bindings.map(binding => binding?.threadId)).size !== bindings.length) {
+    throw bindingStorageError();
+  }
+  return bindings as DesktopThreadBinding[];
 };
 
 /**
@@ -103,16 +106,29 @@ export class DesktopThreadWorkspaceRepository {
       const existing = parseBindings(
         await this.store.get(DESKTOP_THREAD_WORKSPACE_STORAGE_KEY),
       );
-      const next = [
-        binding,
-        ...existing.filter(item => item.threadId !== binding.threadId),
-      ]
-        .sort((left, right) => right.boundAt.localeCompare(left.boundAt))
-        .slice(0, MAX_BINDINGS);
+      const current = existing.find(item => item.threadId === binding.threadId);
+      if (current) {
+        assertCompatible(current, binding);
+        return;
+      }
+      const next = [binding, ...existing];
       await this.store.set(
         DESKTOP_THREAD_WORKSPACE_STORAGE_KEY,
         JSON.stringify({ version: 1, bindings: next }),
       );
+    });
+  }
+
+  async markEnd(threadId: string, endState: 'pending' | 'confirmed'): Promise<void> {
+    await this.enqueue(async () => {
+      const existing = parseBindings(await this.store.get(DESKTOP_THREAD_WORKSPACE_STORAGE_KEY));
+      const current = existing.find(item => item.threadId === threadId);
+      if (!current) throw bindingStorageError();
+      if (current.endState === 'confirmed') return;
+      await this.store.set(DESKTOP_THREAD_WORKSPACE_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        bindings: existing.map(item => item.threadId === threadId ? { ...item, endState } : item),
+      }));
     });
   }
 
@@ -145,6 +161,8 @@ export class DesktopThreadWorkspaceRepository {
 
 export type DesktopThreadWorkspaceErrorCode =
   | 'THREAD_BINDING_CHANGED'
+  | 'THREAD_BINDING_STORAGE_FAILED'
+  | 'THREAD_ALREADY_ENDING'
   | 'THREAD_WORKSPACE_UNAVAILABLE'
   | 'THREAD_END_NOT_CONFIRMED';
 
@@ -160,6 +178,22 @@ export class DesktopThreadWorkspaceError extends Error {
   }
 }
 
+const bindingStorageError = () => new DesktopThreadWorkspaceError(
+  'THREAD_BINDING_STORAGE_FAILED', '无法读取或保存远程线程绑定，请重试。', true,
+);
+
+const assertCompatible = (
+  existing: DesktopThreadBinding,
+  input: Pick<DesktopThreadBinding, 'accountId' | 'hostId' | 'deviceId'>,
+) => {
+  if (existing.accountId !== input.accountId || existing.hostId !== input.hostId || existing.deviceId !== input.deviceId) {
+    throw new DesktopThreadWorkspaceError('THREAD_BINDING_CHANGED', 'This thread is already bound to another Mira Desktop Host');
+  }
+  if (existing.endState) {
+    throw new DesktopThreadWorkspaceError('THREAD_ALREADY_ENDING', '该线程远程工作已结束或正在确认结束。');
+  }
+};
+
 export type DesktopThreadEndResult =
   | { kind: 'no_remote_work'; threadId: string }
   | {
@@ -167,7 +201,7 @@ export type DesktopThreadEndResult =
       threadId: string;
       projection: RemoteThreadWorkspaceProjection;
       /** False when the confirmed remote end could not be recorded locally. */
-      localBindingCleared?: boolean;
+      localEndRecorded?: boolean;
     };
 
 type ThreadWorkspaceClient = Pick<
@@ -281,24 +315,8 @@ export class DesktopThreadWorkspaceService {
     deviceId: string;
     generation: number;
   }): Promise<void> {
-    const existing = await this.repository.get(input.threadId);
-    if (existing) {
-      if (
-        existing.accountId !== input.accountId ||
-        existing.hostId !== input.hostId ||
-        existing.deviceId !== input.deviceId
-      ) {
-        throw new DesktopThreadWorkspaceError(
-          'THREAD_BINDING_CHANGED',
-          'This thread is already bound to another Mira Desktop Host',
-        );
-      }
-      return;
-    }
-    await this.repository.remember({
-      ...input,
-      boundAt: new Date().toISOString(),
-    });
+    // Compare and insert in one serialized repository operation, before RPC.
+    await this.repository.remember({ ...input, boundAt: new Date().toISOString() });
   }
 
   async assertBindingCompatible(input: {
@@ -309,16 +327,7 @@ export class DesktopThreadWorkspaceService {
   }): Promise<void> {
     const existing = await this.repository.get(input.threadId);
     if (!existing) return;
-    if (
-      existing.accountId !== input.accountId ||
-      existing.hostId !== input.hostId ||
-      existing.deviceId !== input.deviceId
-    ) {
-      throw new DesktopThreadWorkspaceError(
-        'THREAD_BINDING_CHANGED',
-        'This thread is already bound to another Mira Desktop Host',
-      );
-    }
+    assertCompatible(existing, input);
   }
 
   async getWorkspace(
@@ -359,6 +368,8 @@ export class DesktopThreadWorkspaceService {
       // invent a Host to notify.
       return { kind: 'no_remote_work', threadId };
     }
+    // Persist the intent first: an uncertain end must not allow new remote work.
+    await this.repository.markEnd(threadId, 'pending');
     const client = this.makeClient(binding);
     let projection: RemoteThreadWorkspaceProjection;
     try {
@@ -372,17 +383,17 @@ export class DesktopThreadWorkspaceService {
     // Only a confirmed end response proves both the lifecycle and cleanup.
     // A discovery-style `ended` read is not enough. A local bookkeeping failure
     // must not downgrade the confirmed remote result.
-    let localBindingCleared = true;
+    let localEndRecorded = true;
     try {
-      await this.repository.forget(threadId);
+      await this.repository.markEnd(threadId, 'confirmed');
     } catch {
-      localBindingCleared = false;
+      localEndRecorded = false;
     }
     return {
       kind: 'ended',
       threadId,
       projection,
-      ...(localBindingCleared ? {} : { localBindingCleared: false }),
+      ...(localEndRecorded ? {} : { localEndRecorded: false }),
     };
   }
 

@@ -346,8 +346,11 @@ allowlist or intent classifier.
   `not_started`. Mobile never derives a path from the thread id. Ordinary chat
   and non-workspace tools do not create a directory.
 - Explicit end uses `POST /remote/v1/threads/:threadId/end` with
-  `tools:control`. Only a confirmed `ended` response clears the local binding;
-  transport loss and `thread_cleanup_incomplete` keep it retryable. A discovery
+  `tools:control`. Persist routing identity before the first execution and serialize
+  its assignment. Never evict a live binding. Persist end intent before the end
+  request, blocking new remote execution. Keep the original Host binding after
+  confirmed end to locate retained files; transport loss and
+  `thread_cleanup_incomplete` keep it retryable. A discovery
   read of `ended` is not treated as proof of completed cleanup. Single-turn
   completion, backgrounding, disconnects and app close never call end.
 - Regression coverage lives in `src/protocol/remoteThreadWorkspaceV1.test.ts`,

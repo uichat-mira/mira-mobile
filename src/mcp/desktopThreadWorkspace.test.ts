@@ -65,11 +65,11 @@ describe('DesktopThreadWorkspaceRepository', () => {
       .resolves.toBeNull();
   });
 
-  test('ignores corrupted local records instead of inventing a Host', async () => {
+  test('fails closed on corrupted local records instead of losing a Host', async () => {
     const store = new MemoryLocalKeyValueStore();
     await store.set(DESKTOP_THREAD_WORKSPACE_STORAGE_KEY, '{not-json');
     const repository = new DesktopThreadWorkspaceRepository(store);
-    await expect(repository.get(binding.threadId)).resolves.toBeNull();
+    await expect(repository.get(binding.threadId)).rejects.toMatchObject({ code: 'THREAD_BINDING_STORAGE_FAILED' });
   });
 });
 
@@ -117,6 +117,17 @@ describe('DesktopThreadWorkspaceService', () => {
     );
   });
 
+  test('concurrent first bindings cannot assign one thread to two Hosts', async () => {
+    const { repository } = await repositoryWith();
+    const service = new DesktopThreadWorkspaceService({ repository });
+    const results = await Promise.allSettled([
+      service.rememberBinding(binding),
+      service.rememberBinding({ ...binding, hostId: 'host-b' }),
+    ]);
+    expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);
+    expect((await repository.get(binding.threadId))?.hostId).toBe('host-a');
+  });
+
   test('keeps a thread on its original account/Host/device', async () => {
     const { repository } = await repositoryWith(binding);
     const service = new DesktopThreadWorkspaceService({ repository });
@@ -144,7 +155,7 @@ describe('DesktopThreadWorkspaceService', () => {
     })).rejects.toMatchObject({ code: 'THREAD_BINDING_CHANGED' });
   });
 
-  test('removes the binding only after Desktop confirms the explicit end', async () => {
+  test('retains the original Host and confirmed end to locate retained results', async () => {
     const { repository } = await repositoryWith(binding);
     const endThreadWorkspace = jest.fn(async () => endedProjection);
     const service = new DesktopThreadWorkspaceService({
@@ -164,7 +175,8 @@ describe('DesktopThreadWorkspaceService', () => {
       binding.threadId,
       binding.deviceId,
     );
-    await expect(repository.get(binding.threadId)).resolves.toBeNull();
+    await expect(repository.get(binding.threadId)).resolves.toEqual({ ...binding, endState: 'confirmed' });
+    await expect(service.rememberBinding({ ...binding, generation: 8 })).rejects.toMatchObject({ code: 'THREAD_ALREADY_ENDING' });
   });
 
   test('keeps an unconfirmed end retryable and idempotent', async () => {
@@ -192,12 +204,13 @@ describe('DesktopThreadWorkspaceService', () => {
     await expect(service.endThread(binding.threadId)).rejects.toMatchObject({
       code: 'THREAD_END_NOT_CONFIRMED',
     });
-    await expect(repository.get(binding.threadId)).resolves.toEqual(binding);
+    await expect(repository.get(binding.threadId)).resolves.toEqual({ ...binding, endState: 'pending' });
+    await expect(service.rememberBinding(binding)).rejects.toMatchObject({ code: 'THREAD_ALREADY_ENDING' });
 
     await expect(service.endThread(binding.threadId)).resolves.toMatchObject({
       kind: 'ended',
     });
-    await expect(repository.get(binding.threadId)).resolves.toBeNull();
+    await expect(repository.get(binding.threadId)).resolves.toEqual({ ...binding, endState: 'confirmed' });
     expect(endThreadWorkspace).toHaveBeenCalledTimes(2);
   });
 
@@ -223,7 +236,7 @@ describe('DesktopThreadWorkspaceService', () => {
       code: 'THREAD_END_NOT_CONFIRMED',
       retryable: true,
     });
-    await expect(repository.get(binding.threadId)).resolves.toEqual(binding);
+    await expect(repository.get(binding.threadId)).resolves.toEqual({ ...binding, endState: 'pending' });
   });
 
   test('surfaces workspace read failures as unavailable, not not_started', async () => {

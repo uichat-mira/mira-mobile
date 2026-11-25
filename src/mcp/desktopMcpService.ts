@@ -447,12 +447,11 @@ const createDesktopExecutionGateway = (
     try {
       await threadBinding.remember();
     } catch (error) {
-      // A persisted binding mismatch is a real routing error. Local storage
-      // failure must not turn an already-executed Desktop call into a failed
-      // tool result; the next successful call can rebuild the binding.
+      // No side-effecting call may start without a durable routing identity.
       if (error instanceof DesktopThreadWorkspaceError) {
         throw new ToolGatewayError(error.code, error.message);
       }
+      throw new ToolGatewayError('THREAD_BINDING_STORAGE_FAILED', 'Unable to persist the remote thread binding');
     }
   };
   return {

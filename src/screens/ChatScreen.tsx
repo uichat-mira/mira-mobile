@@ -944,7 +944,7 @@ export function ChatScreen() {
           Alert.alert(
             '远程线程已标记结束',
             projection.workspace
-              ? 'Mira Desktop 已把该线程标记为结束，已有文件仍保留。手机端尚未确认清理是否完成，可使用「重试结束远程线程」再次确认。'
+              ? ['Mira Desktop 已把该线程标记为结束，已有文件仍保留。', `引用：${projection.workspace.ref}`, desktopThreadBinding?.endState === 'confirmed' ? '清理已确认。' : '清理尚未确认，可重试结束。'].join('\n')
               : 'Mira Desktop 已把该线程标记为结束，没有已生成的远程工作空间。可使用「重试结束远程线程」再次确认清理结果。',
           );
           return;
@@ -966,7 +966,7 @@ export function ChatScreen() {
         setIsLoadingThreadWorkspace(false);
       }
     })();
-  }, [isLoadingThreadWorkspace, isLocalProvider, sessionId]);
+  }, [desktopThreadBinding, isLoadingThreadWorkspace, isLocalProvider, sessionId]);
 
   const endDesktopThread = useCallback(() => {
     if (!isLocalProvider || isEndingThread) return;
@@ -994,15 +994,15 @@ export function ChatScreen() {
                   return;
                 }
                 setThreadWorkspace(result.projection);
-                setDesktopThreadBinding(null);
+                await refreshDesktopThreadBinding();
                 Alert.alert(
                   '远程线程已结束',
                   [
                     'Mira Desktop 已确认该线程结束。',
                     `停止进行中的调用：${result.projection.stoppedInvocations ?? '未提供'}；停止终端会话：${result.projection.stoppedTerminalSessions ?? '未提供'}。`,
                     '已有文件与成果仍保留。',
-                    ...(result.localBindingCleared === false
-                      ? ['本机线程绑定记录未能清理，后续可能需要再次确认结束。']
+                    ...(result.localEndRecorded === false
+                      ? ['本机结束状态未能保存，后续可能需要再次确认结束。']
                       : []),
                   ].join('\n'),
                 );
@@ -1022,7 +1022,7 @@ export function ChatScreen() {
         },
       ],
     );
-  }, [isEndingThread, isLocalProvider, sessionId]);
+  }, [isEndingThread, isLocalProvider, refreshDesktopThreadBinding, sessionId]);
 
   const openMenu = useCallback(() => {
     void refreshDesktopThreadBinding();
@@ -1270,11 +1270,13 @@ export function ChatScreen() {
               viewWorkspaceDisabledAccessibilityLabel:
                 '查看远程工作空间，正在读取',
               onEndThread: endDesktopThread,
-              endThreadDisabled: isEndingThread,
+              endThreadDisabled: isEndingThread || desktopThreadBinding.endState === 'confirmed',
               endThreadDisabledAccessibilityLabel:
                 '结束远程线程，正在处理',
               endThreadLabel:
-                threadWorkspace?.status === 'ended'
+                desktopThreadBinding.endState === 'confirmed'
+                  ? '结束远程线程'
+                  : desktopThreadBinding.endState === 'pending' || threadWorkspace?.status === 'ended'
                   ? '重试结束远程线程'
                   : '结束远程线程',
             }
