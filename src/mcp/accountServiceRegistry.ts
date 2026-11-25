@@ -1,3 +1,4 @@
+import { bytesToBase64Url, sha256, utf8Bytes } from '../cloud/pkce';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import {
   cloudAuthServiceCredentialUrl,
@@ -17,6 +18,10 @@ import {
   type McpResourceContent,
 } from './mcpProtocolClient';
 import { projectMcpService } from './mcpServiceCapabilities';
+import { createWhoYouMcpReadExecutor } from './whoYouMcpReadTools';
+import { discoverWhoYouResource, parseToolStructuredContent, parseIdentity, parseMailboxes, type WhoYouReadSession, type WhoYouSnapshot } from '../whoYou/whoYouReadContract';
+import { WhoYouError } from '../whoYou/whoYouError';
+import { requiredMailRole } from '../tools/agentToolPolicies';
 import {
   McpServiceBinding,
   type McpServiceDiscovery,
@@ -25,7 +30,7 @@ import {
 } from './mcpServiceBinding';
 
 /**
- * Mira ID service registry V0 (cloud-auth OPS-047 / MOB-105 A2).
+ * Mira ID instance service directory V1 (cloud-auth OPS-052 / MOB-105).
  *
  * A registration is an account-scoped authorization binding. The catalog is
  * metadata only: a service bearer is requested for one exact revision and is
@@ -39,15 +44,14 @@ export const SERVICE_REGISTRY_CREDENTIAL_MAX_TTL_MS = 11 * 60_000;
 export const SERVICE_REGISTRY_MAX_SERVICES = 128;
 
 const CLOUD_AUTH_ISSUER = 'mira:cloud-auth';
-const SERVICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
-const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const SERVICE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;
+const PROJECT_ID_PATTERN = SERVICE_ID_PATTERN;
+const APP_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/u;
 const BASE64URL_ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const MAX_ENDPOINT_LENGTH = 2_048;
 const MAX_TEXT_RESULT_BYTES = 256 * 1024;
 
-/** Reserved identities owned by an existing, separately authorized path. */
-const LEGACY_SERVICE_IDS = new Set(['who-you', 'mira-desktop']);
 
 export interface AccountServiceProtocol {
   name: string;
@@ -56,17 +60,21 @@ export interface AccountServiceProtocol {
 }
 
 export interface AccountServiceDefinition {
+  appId: string;
   serviceId: string;
   projectId: string;
   displayName: string;
   protocol: AccountServiceProtocol;
-  audience: string;
+  resource: string;
   scopes: readonly string[];
+  targets?: readonly string[];
+  capabilities?: readonly { id: string; title: string; description?: string; toolRefs: string[] }[];
 }
 
 export interface AccountServiceEntry {
   definition: AccountServiceDefinition;
   revision: number;
+  manifestRevision: number;
 }
 
 export interface AccountServiceCredentialClaims {
@@ -79,7 +87,8 @@ export interface AccountServiceCredentialClaims {
 export interface IssuedAccountServiceCredential {
   token: string;
   tokenType: 'Bearer';
-  audience: string;
+  appId: string;
+  resource: string;
   expiresAt: string;
   serviceId: string;
   revision: number;
@@ -127,29 +136,15 @@ const invalidCredential = (code = 'SERVICE_CREDENTIAL_INVALID'): McpProtocolErro
     code,
   );
 
-const serviceNamespace = (serviceId: string): string => `service:${serviceId}:`;
+const validServiceScopes = (scopes: unknown): scopes is string[] =>
+  Array.isArray(scopes) && scopes.length <= 32 &&
+  new Set(scopes).size === scopes.length && scopes.every(scope => nonEmpty(scope, 140));
 
-// Reserved service identities follow OPS-047's exact canonical grants.
-const canonicalGrant = (serviceId: string): { audience: string; scope: string } | undefined => {
-  switch (serviceId) {
-    case 'cloud-guanlan': return { audience: 'mira:cloud-guanlan', scope: 'guanlan.read' };
-    case 'cloud-shiyan': return { audience: 'mira:cloud-shiyan', scope: 'shiyan:authenticate' };
-    case 'who-you': return { audience: 'mira:who-you', scope: 'whoyou.read' };
-    default: return undefined;
-  }
-};
-
-const expectedAudience = (serviceId: string): string =>
-  canonicalGrant(serviceId)?.audience ?? `mira:service:${serviceId}`;
-
-const validServiceScopes = (serviceId: string, scopes: unknown): scopes is string[] => {
-  if (!Array.isArray(scopes) || scopes.length === 0 || scopes.length > 32 ||
-      new Set(scopes).size !== scopes.length) return false;
-  const canonical = canonicalGrant(serviceId);
-  return canonical
-    ? scopes.length === 1 && scopes[0] === canonical.scope
-    : scopes.every(scope => nonEmpty(scope, 200) && scope.startsWith(serviceNamespace(serviceId)));
-};
+// Full exact tuple remains authoritative. The bounded digest is a local UI/disclosure ID.
+export const accountServiceIdentity = (definition: Pick<AccountServiceDefinition, 'appId' | 'serviceId' | 'resource'>): string =>
+  'app-' + bytesToBase64Url(sha256(utf8Bytes(JSON.stringify([
+    definition.appId, definition.serviceId, definition.resource,
+  ]))));
 
 const parseEndpoint = (value: unknown): string => {
   if (!nonEmpty(value, MAX_ENDPOINT_LENGTH)) return failEndpoint();
@@ -164,12 +159,11 @@ const parseEndpoint = (value: unknown): string => {
     !url.hostname ||
     url.username ||
     url.password ||
-    url.search ||
-    url.hash
+    url.hash || /[\s\\*]/u.test(value) || value !== value.trim()
   ) {
     return failEndpoint();
   }
-  return url.toString();
+  return value;
 };
 
 const failEndpoint = (): never => {
@@ -190,66 +184,48 @@ const parseProtocol = (value: unknown): AccountServiceProtocol => {
 };
 
 const parseDefinition = (value: unknown): AccountServiceDefinition => {
-  if (!isRecord(value) ||
-      !nonEmpty(value.serviceId, 128) ||
-      !SERVICE_ID_PATTERN.test(value.serviceId) ||
-      !nonEmpty(value.projectId, 128) ||
-      !PROJECT_ID_PATTERN.test(value.projectId) ||
-      !nonEmpty(value.displayName, 160) ||
-      !nonEmpty(value.audience, 200)) {
-    throw invalidCatalog('SERVICE_CATALOG_DEFINITION_INVALID');
-  }
-  const serviceId = value.serviceId;
-  if (value.audience !== expectedAudience(serviceId)) {
-    throw invalidCatalog('SERVICE_CATALOG_AUDIENCE_INVALID');
-  }
-  if ((canonicalGrant(serviceId) && value.projectId !== serviceId) ||
-      !validServiceScopes(serviceId, value.scopes)) {
-    throw invalidCatalog('SERVICE_CATALOG_SCOPE_INVALID');
-  }
-  return {
-    serviceId,
-    projectId: value.projectId,
-    displayName: value.displayName,
-    protocol: parseProtocol(value.protocol),
-    audience: value.audience,
-    scopes: [...new Set(value.scopes as string[])],
-  };
+  if (!isRecord(value) || !nonEmpty(value.appId, 160) || !APP_ID_PATTERN.test(value.appId) ||
+      !nonEmpty(value.serviceId, 64) || !SERVICE_ID_PATTERN.test(value.serviceId) ||
+      !nonEmpty(value.projectId, 64) || !PROJECT_ID_PATTERN.test(value.projectId) ||
+      !nonEmpty(value.name, 100) || value.type !== 'mcp' ||
+      !validServiceScopes(value.scopes)) throw invalidCatalog('SERVICE_CATALOG_DEFINITION_INVALID');
+  const protocol = parseProtocol(value.protocol);
+  const resource = parseEndpoint(value.resource);
+  if (new URL(protocol.endpoint).origin !== new URL(resource).origin) throw invalidCatalog('SERVICE_CATALOG_ENDPOINT_INVALID');
+  const targets = value.targets;
+  if (targets !== undefined && (!Array.isArray(targets) || targets.length > 2 ||
+      !targets.every(target => target === 'mobile' || target === 'desktop'))) throw invalidCatalog();
+  const capabilities = Array.isArray(value.capabilities)
+    ? value.capabilities.slice(0, 128).flatMap(cap => {
+      if (!isRecord(cap) || !nonEmpty(cap.id, 64) || !/^[a-z][a-z0-9.-]{0,63}$/u.test(cap.id) ||
+          !nonEmpty(cap.title, 100) || !Array.isArray(cap.toolRefs) || cap.toolRefs.length > 256 ||
+          !cap.toolRefs.every(name => nonEmpty(name, 200))) return [];
+      return [{ id: cap.id, title: cap.title,
+        ...(nonEmpty(cap.description, 500) ? { description: cap.description } : {}),
+        toolRefs: cap.toolRefs as string[] }];
+    }) : undefined;
+  return { appId: value.appId, serviceId: value.serviceId, projectId: value.projectId,
+    displayName: value.name, protocol, resource, scopes: [...value.scopes],
+    ...(Array.isArray(targets) ? { targets } : {}), ...(capabilities ? { capabilities } : {}) };
 };
 
-/**
- * Parses one catalog response. A single malformed registration is isolated and
- * skipped so a defect in an unrelated service cannot remove every authorized
- * sibling; a malformed envelope is still a hard protocol failure.
- */
-export const parseAccountServiceCatalog = (
-  value: unknown,
-): AccountServiceEntry[] => {
+export const parseAccountServiceCatalog = (value: unknown): AccountServiceEntry[] => {
   if (!isRecord(value) || !Array.isArray(value.services) ||
-      value.services.length > SERVICE_REGISTRY_MAX_SERVICES) {
-    throw invalidCatalog();
-  }
+      value.services.length > SERVICE_REGISTRY_MAX_SERVICES) throw invalidCatalog();
   const entries: AccountServiceEntry[] = [];
   const seen = new Set<string>();
+  const conflicts = new Set<string>();
   for (const raw of value.services) {
-    if (!isRecord(raw) ||
-        !isRecord(raw.definition) ||
-        typeof raw.revision !== 'number' ||
-        !Number.isSafeInteger(raw.revision) ||
-        raw.revision < 1) {
-      continue;
-    }
+    if (!isRecord(raw) || typeof raw.revision !== 'number' || !Number.isSafeInteger(raw.revision) || raw.revision < 1 ||
+        typeof raw.manifestRevision !== 'number' || !Number.isSafeInteger(raw.manifestRevision) || raw.manifestRevision < 1) continue;
     let definition: AccountServiceDefinition;
-    try {
-      definition = parseDefinition(raw.definition);
-    } catch {
-      continue;
-    }
-    if (seen.has(definition.serviceId)) continue;
-    seen.add(definition.serviceId);
-    entries.push({ definition, revision: raw.revision });
+    try { definition = parseDefinition(raw); } catch { continue; }
+    const identity = JSON.stringify([definition.appId, definition.serviceId]);
+    if (seen.has(identity)) { conflicts.add(identity); continue; }
+    seen.add(identity);
+    entries.push({ definition, revision: raw.revision, manifestRevision: raw.manifestRevision });
   }
-  return entries;
+  return entries.filter(entry => !conflicts.has(JSON.stringify([entry.definition.appId, entry.definition.serviceId])));
 };
 
 const decodeBase64UrlBytes = (segment: string): number[] => {
@@ -335,8 +311,9 @@ const isNumericDate = (value: unknown): value is number =>
 const parseCredentialClaims = (input: {
   token: string;
   accountId: string;
+  appId: string;
   serviceId: string;
-  audience: string;
+  resource: string;
   nowMs: number;
 }): AccountServiceCredentialClaims => {
   const segments = input.token.split('.');
@@ -350,16 +327,18 @@ const parseCredentialClaims = (input: {
   }
   const claims = parseJsonSegment(segments[1]);
   if (claims.iss !== CLOUD_AUTH_ISSUER ||
-      claims.aud !== input.audience ||
+      claims.aud !== input.resource || claims.resource !== input.resource ||
+      claims.app_id !== input.appId || claims.service_id !== input.serviceId ||
       claims.sub !== input.accountId ||
+      Object.keys(claims).some(key => !['iss','sub','aud','device_id','app_id','service_id','resource','scope','iat','nbf','exp'].includes(key)) ||
       !nonEmpty(claims.device_id, 200) ||
-      !validServiceScopes(input.serviceId, claims.scope) ||
+      !validServiceScopes(claims.scope) ||
       !isNumericDate(claims.iat) ||
       !isNumericDate(claims.nbf) ||
       !isNumericDate(claims.exp)) {
     throw invalidCredential('SERVICE_CREDENTIAL_CLAIMS_INVALID');
   }
-  if (claims.nbf < claims.iat || claims.exp <= claims.nbf) {
+  if (claims.nbf < claims.iat || claims.exp <= claims.nbf || claims.exp - claims.iat > 600) {
     throw invalidCredential('SERVICE_CREDENTIAL_WINDOW_INVALID');
   }
   const nowSeconds = Math.floor(input.nowMs / 1000);
@@ -378,7 +357,9 @@ export const parseIssuedAccountServiceCredential = (
   value: unknown,
   expected: {
     accountId: string;
+    appId: string;
     serviceId: string;
+    resource: string;
     revision: number;
     nowMs?: number;
   },
@@ -387,9 +368,9 @@ export const parseIssuedAccountServiceCredential = (
   if (!isRecord(value) ||
       !nonEmpty(value.token, 16_384) ||
       value.tokenType !== 'Bearer' ||
-      value.serviceId !== expected.serviceId ||
-      value.revision !== expected.revision ||
-      value.audience !== expectedAudience(expected.serviceId) ||
+      value.appId !== expected.appId || value.serviceId !== expected.serviceId ||
+      value.revision !== expected.revision || value.resource !== expected.resource ||
+      !validServiceScopes(value.scopes) ||
       !nonEmpty(value.expiresAt, 80) ||
       !Number.isFinite(Date.parse(value.expiresAt))) {
     throw invalidCredential();
@@ -403,17 +384,20 @@ export const parseIssuedAccountServiceCredential = (
   const claims = parseCredentialClaims({
     token: value.token,
     accountId: expected.accountId,
+    appId: expected.appId,
     serviceId: expected.serviceId,
-    audience: value.audience,
+    resource: expected.resource,
     nowMs,
   });
-  if (expiresAt !== claims.expiresAt) {
+  if (expiresAt !== claims.expiresAt || value.scopes.length !== claims.scopes.length ||
+      !value.scopes.every(scope => claims.scopes.includes(scope))) {
     throw invalidCredential('SERVICE_CREDENTIAL_WINDOW_INVALID');
   }
   return {
     token: value.token,
     tokenType: 'Bearer',
-    audience: value.audience,
+    appId: expected.appId,
+    resource: expected.resource,
     expiresAt,
     serviceId: value.serviceId,
     revision: value.revision,
@@ -570,6 +554,7 @@ export class AccountServiceCatalogCache {
   private readonly timeoutMs: number;
   private readonly maxAgeMs: number;
   private cached: CachedCatalog | null = null;
+  private generation = 0;
   private inFlight: { key: string; promise: Promise<readonly AccountServiceEntry[]> } | null = null;
 
   constructor(options: AccountServiceCatalogCacheOptions = {}) {
@@ -596,6 +581,8 @@ export class AccountServiceCatalogCache {
 
   invalidate(): void {
     this.cached = null;
+    this.inFlight = null;
+    this.generation += 1;
   }
 
   async load(input: CatalogRequestOptions): Promise<readonly AccountServiceEntry[]> {
@@ -618,7 +605,8 @@ export class AccountServiceCatalogCache {
     if (this.inFlight && this.inFlight.key === key) {
       return this.inFlight.promise;
     }
-    const promise = this.request(input, now).finally(() => {
+    const generation = ++this.generation;
+    const promise = this.request(input, now, generation).finally(() => {
       if (this.inFlight?.promise === promise) this.inFlight = null;
     });
     this.inFlight = { key, promise };
@@ -628,6 +616,7 @@ export class AccountServiceCatalogCache {
   private async request(
     input: CatalogRequestOptions,
     now: number,
+    generation: number,
   ): Promise<readonly AccountServiceEntry[]> {
     const fetchImpl = this.fetchImpl;
     if (typeof fetchImpl !== 'function') {
@@ -670,6 +659,9 @@ export class AccountServiceCatalogCache {
       }
       return parseAccountServiceCatalog(body);
     }, this.timeoutMs, input.signal);
+    if (generation !== this.generation) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID service catalog request was superseded', 'SERVICE_CATALOG_SUPERSEDED');
+    }
     this.cached = {
       accountId: input.accountId,
       sessionToken: input.sessionToken,
@@ -693,7 +685,9 @@ export const requestAccountServiceCredential = async (
   sessionToken: string,
   input: {
     accountId: string;
+    appId: string;
     serviceId: string;
+    resource: string;
     expectedRevision: number;
   },
   options: RequestAccountServiceCredentialOptions = {},
@@ -717,7 +711,7 @@ export const requestAccountServiceCredential = async (
       'SERVICE_REGISTRY_FETCH_UNAVAILABLE',
     );
   }
-  const endpoint = cloudAuthServiceCredentialUrl(baseUrl, input.serviceId);
+  const endpoint = cloudAuthServiceCredentialUrl(baseUrl, input.appId, input.serviceId);
   const body = await withDeadline(async (signal) => {
     let response: Response;
     try {
@@ -728,7 +722,7 @@ export const requestAccountServiceCredential = async (
           'content-type': 'application/json',
           authorization: `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify({ expectedRevision: input.expectedRevision }),
+        body: JSON.stringify({ resource: input.resource, expectedRevision: input.expectedRevision }),
         redirect: 'error',
         signal,
       });
@@ -752,7 +746,9 @@ export const requestAccountServiceCredential = async (
   }, options.timeoutMs ?? 12_000, options.signal);
   return parseIssuedAccountServiceCredential(body, {
     accountId: input.accountId,
+    appId: input.appId,
     serviceId: input.serviceId,
+    resource: input.resource,
     revision: input.expectedRevision,
     nowMs: now,
   });
@@ -760,7 +756,8 @@ export const requestAccountServiceCredential = async (
 
 const isCompatibleCatalogEntry = (entry: AccountServiceEntry): boolean =>
   entry.definition.protocol.name === SERVICE_REGISTRY_PROTOCOL_NAME &&
-  entry.definition.protocol.version === MCP_PROTOCOL_VERSION;
+  entry.definition.protocol.version === MCP_PROTOCOL_VERSION &&
+  (entry.definition.targets === undefined || entry.definition.targets.includes('mobile'));
 
 const capabilityResourceUri = (serviceId: string): string =>
   `mira://service/${serviceId}/capabilities`;
@@ -858,7 +855,7 @@ const readCapabilityResource = async (
 
 export interface AccountServiceDiscoveryDeps {
   loadSession(): Promise<StoredCloudSession | null>;
-  currentCloud(): { status: string; accountId: string | null };
+  currentCloud(): { status: string; accountId: string | null; deviceId?: string | null };
   catalog: AccountServiceCatalogCache;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -921,24 +918,30 @@ const findEntry = (
   entries: readonly AccountServiceEntry[],
   serviceId: string,
 ): AccountServiceEntry | undefined =>
-  entries.find((entry) => entry.definition.serviceId === serviceId);
+  entries.find((entry) => accountServiceIdentity(entry.definition) === serviceId);
 
 /**
  * One generic, catalog-driven MCP discovery. It never invents a business tool
  * list: `tools/list` is the schema authority and registration never implies a
  * tool approval.
  */
-export const discoverAccountMcpService = async (
+const connectAccountMcpService = async (
   input: {
     accountId: string;
     serviceId: string;
     signal?: AbortSignal;
+    expectedSessionToken?: string;
+    forceCatalog?: boolean;
   },
   deps: AccountServiceDiscoveryDeps,
-): Promise<McpServiceSnapshot> => {
+) => {
   const session = await currentSession(deps, input.accountId);
+  if (input.expectedSessionToken !== undefined && input.expectedSessionToken !== session.sessionToken) {
+    throw new McpProtocolError('unauthorized', 'The Mira ID session changed', 'SERVICE_REGISTRY_SESSION_CHANGED');
+  }
   let entries = await loadCatalogForSession(deps, session, {
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.forceCatalog ? { force: true } : {}),
   });
   let entry = findEntry(entries, input.serviceId);
   if (!entry) {
@@ -961,7 +964,9 @@ export const discoverAccountMcpService = async (
       session.sessionToken,
       {
         accountId: input.accountId,
+        appId: target.definition.appId,
         serviceId: target.definition.serviceId,
+        resource: target.definition.resource,
         expectedRevision: target.revision,
       },
       {
@@ -979,7 +984,7 @@ export const discoverAccountMcpService = async (
   } catch (error) {
     // A stale revision is repaired from fresh authoritative metadata once.
     if (error instanceof McpProtocolError &&
-        error.code === 'SERVICE_REGISTRATION_CHANGED') {
+        error.code === 'APPLICATION_SERVICE_CHANGED') {
       entries = await loadCatalogForSession(deps, session, {
         signal: input.signal,
         force: true,
@@ -998,13 +1003,26 @@ export const discoverAccountMcpService = async (
       entry = refreshed;
       credential = await requestCredential(entry);
     } else {
+      if (error instanceof McpProtocolError &&
+          error.status === 404) {
+        // A denied renewal is authoritative revocation evidence. Drop the stale
+        // catalog immediately; other bindings must revalidate before use.
+        deps.catalog.invalidate();
+      }
       throw error;
     }
   }
 
+  const knownDeviceId = deps.currentCloud().deviceId;
+  if (credential.claims.accountId !== input.accountId ||
+      (knownDeviceId && credential.claims.deviceId !== knownDeviceId) ||
+      credential.appId !== entry.definition.appId || credential.serviceId !== entry.definition.serviceId ||
+      credential.revision !== entry.revision || credential.resource !== entry.definition.resource) {
+    throw invalidCredential('SERVICE_CREDENTIAL_IDENTITY_MISMATCH');
+  }
   if (credential.claims.scopes.length !== entry.definition.scopes.length ||
       !entry.definition.scopes.every(scope => credential.claims.scopes.includes(scope)) ||
-      !validServiceScopes(entry.definition.serviceId, credential.claims.scopes)) {
+      !validServiceScopes(credential.claims.scopes)) {
     throw invalidCredential('SERVICE_CREDENTIAL_SCOPE_MISMATCH');
   }
   const latestSession = await currentSession(deps, input.accountId);
@@ -1012,95 +1030,128 @@ export const discoverAccountMcpService = async (
     throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
   }
 
+  const isWhoYou = entry.definition.projectId === 'who-you';
+  // Preserve the existing Who You resource/issuer check before sending any
+  // bearer. Its endpoint comes only from the authorized registry declaration.
+  if (isWhoYou) {
+    await discoverWhoYouResource({
+      mcpUrl: entry.definition.resource,
+      cloudAuthBaseUrl: deps.baseUrl ?? resolveCloudAuthBaseUrl(),
+      fetchImpl: deps.fetchImpl,
+      timeoutMs: deps.timeoutMs,
+      signal: input.signal,
+    });
+  }
   const client = new McpProtocolClient({
     endpoint: entry.definition.protocol.endpoint,
     token: credential.token,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
-  const serverInfo = await client.discover(input.signal);
-  const toolDescriptors = await client.listTools(input.signal);
-  const capabilityResource = serverInfo.resources
-    ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)
-    : undefined;
-  const permittedToolNames = toolDescriptors.map((tool) => tool.name);
-  const projection = projectMcpService({
-    serviceId: entry.definition.serviceId,
-    serviceName: entry.definition.displayName,
-    serviceDescription:
-      'Mira ID 账号已授权的标准 MCP 服务；工具与 Schema 由服务自身声明。',
-    toolDescriptors,
-    capabilityResource,
-    grantedScopes: credential.claims.scopes,
-    requiredScopes: entry.definition.scopes,
-    permittedAccess: ['read', 'write', 'send', 'destructive'],
-    permittedToolNames,
-    serverInfo,
-  });
   const expiresAt = Date.parse(credential.expiresAt);
   const revision = entry.revision;
   const accountId = input.accountId;
   const sessionToken = session.sessionToken;
   const now = deps.now ?? (() => Date.now());
-  const executionGateway: ToolGatewayClient = {
-    listTools: async (): Promise<readonly ToolManifest[]> => [],
-    callTool: async (request, options) => {
-      const result = await client.callTool(
-        request.name,
-        parseMcpArguments(request.arguments),
-        options?.signal,
-      );
-      return { content: toolResultContent(result) };
-    },
+  const assertCurrent = async () => {
+    const cloud = deps.currentCloud();
+    if (cloud.status !== 'signed_in' || cloud.accountId !== accountId ||
+        (cloud.deviceId && cloud.deviceId !== credential.claims.deviceId)) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID account or device changed during the MCP service run', 'SERVICE_REGISTRY_ACCOUNT_CHANGED');
+    }
+    if (!(now() < expiresAt)) {
+      throw new McpProtocolError('unauthorized', 'The service credential expired', 'SERVICE_CREDENTIAL_EXPIRED');
+    }
+    const stored = await currentSession(deps, accountId);
+    if (stored.sessionToken !== sessionToken) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during the MCP service run', 'SERVICE_REGISTRY_SESSION_CHANGED');
+    }
+    // Reuse the shared catalog within its bounded window. If it expired or a
+    // renewal observed revocation, revalidate even inside an existing run.
+    const observed = deps.catalog.peek({ accountId, sessionToken }) ??
+      await loadCatalogForSession(deps, stored);
+    const current = findEntry(observed, accountServiceIdentity(entry.definition));
+    const latest = await currentSession(deps, accountId);
+    if (latest.sessionToken !== sessionToken || !(now() < expiresAt) ||
+        !current || current.revision !== revision ||
+        current.definition.protocol.version !== entry.definition.protocol.version ||
+        current.definition.protocol.endpoint !== entry.definition.protocol.endpoint ||
+        current.manifestRevision !== entry.manifestRevision ||
+        current.definition.resource !== entry.definition.resource ||
+        current.definition.scopes.length !== entry.definition.scopes.length ||
+        !current.definition.scopes.every(scope => entry.definition.scopes.includes(scope))) {
+      throw new McpProtocolError('unauthorized', 'The service registration or session changed', 'SERVICE_REGISTRATION_CHANGED');
+    }
   };
+  await assertCurrent();
+  const serverInfo = await client.discover(input.signal);
+  const toolDescriptors = await client.listTools(input.signal);
+  const identity = isWhoYou && toolDescriptors.some(tool => tool.name === 'whoyou_whoami')
+    ? parseIdentity(parseToolStructuredContent(await client.callTool('whoyou_whoami', {}, input.signal)), accountId)
+    : undefined;
+  await assertCurrent();
+  if (isWhoYou && !identity) throw invalidCredential('SERVICE_MAIL_IDENTITY_REQUIRED');
+  return { client, entry, credential, serverInfo, toolDescriptors, identity, isWhoYou, expiresAt, revision, accountId, assertCurrent };
+};
+
+export const discoverAccountMcpService = async (
+  input: { accountId: string; serviceId: string; signal?: AbortSignal },
+  deps: AccountServiceDiscoveryDeps,
+): Promise<McpServiceSnapshot> => {
+  const { client, entry, credential, serverInfo, toolDescriptors, isWhoYou, expiresAt, revision, accountId, assertCurrent } =
+    await connectAccountMcpService(input, deps);
+  const capabilityResource = serverInfo.resources
+    ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)
+    : undefined;
+  const hasMailReaders = toolDescriptors.some(tool => requiredMailRole(tool.name) !== null);
+  const mailPolicy = isWhoYou || hasMailReaders;
+  const permittedToolNames = mailPolicy ? toolDescriptors.filter(tool => requiredMailRole(tool.name) !== null).map(tool => tool.name) : toolDescriptors.map(tool => tool.name);
+  const projection = projectMcpService({
+    serviceId: entry.definition.serviceId,
+    serviceName: entry.definition.displayName,
+    serviceDescription: isWhoYou
+      ? 'Mira ID 已授权的狐邮只读邮件服务；逐页和正文发送给模型前须单独同意。'
+      : 'Mira ID 账号已授权的标准 MCP 服务；工具与 Schema 由服务自身声明。',
+    toolDescriptors,
+    capabilityResource,
+    grantedScopes: credential.claims.scopes,
+    requiredScopes: entry.definition.scopes,
+    permittedAccess: mailPolicy ? ['read'] : ['read', 'write', 'send', 'destructive'],
+    permittedToolNames,
+    ...(mailPolicy ? { sensitiveResultFor: (name: string) => requiredMailRole(name) ?? undefined } : {}),
+    serverInfo,
+  });
+  const executionGateway: ToolGatewayClient = mailPolicy
+    ? createWhoYouMcpReadExecutor(client, projection.tools)
+    : {
+      listTools: async (): Promise<readonly ToolManifest[]> => [],
+      callTool: async (request, options) => {
+        await assertCurrent();
+        const result = await client.callTool(
+          request.name,
+          parseMcpArguments(request.arguments),
+          options?.signal,
+        );
+        await assertCurrent();
+        return { content: toolResultContent(result) };
+      },
+    };
+  await assertCurrent();
+  const names = new Set(projection.tools.map(tool => tool.name));
+  const declaredGroups = entry.definition.capabilities?.flatMap(cap => {
+    const toolNames = [...new Set(cap.toolRefs.filter(name => names.has(name)))];
+    return toolNames.length ? [{ id: cap.id, name: cap.title, description: cap.description ?? '', toolNames }] : [];
+  });
   return {
     ...projection,
-    initialToolNames: [],
+    service: { ...projection.service, id: accountServiceIdentity(entry.definition),
+      ...(declaredGroups?.length ? { capabilities: declaredGroups } : {}) },
+    catalogRevision: JSON.stringify([accountServiceIdentity(entry.definition), revision, entry.manifestRevision, projection.catalogRevision]),
+    initialToolNames: mailPolicy && projection.tools.some(tool => tool.name === 'whoyou_mail_search') ? ['whoyou_mail_search'] : [],
     expiresAt,
-    bindingKey: `${accountId}:${entry.definition.serviceId}:${revision}:${entry.definition.protocol.version}:${entry.definition.protocol.endpoint}`,
+    bindingKey: JSON.stringify([accountId, credential.claims.deviceId, accountServiceIdentity(entry.definition), revision, entry.manifestRevision, entry.definition.protocol.endpoint]),
     executionGateway,
-    assertCurrent: async () => {
-      const cloud = deps.currentCloud();
-      if (cloud.status !== 'signed_in' || cloud.accountId !== accountId) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The Mira ID account changed during the MCP service run',
-          'SERVICE_REGISTRY_ACCOUNT_CHANGED',
-        );
-      }
-      if (!(now() < expiresAt)) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The service credential expired',
-          'SERVICE_CREDENTIAL_EXPIRED',
-        );
-      }
-      const stored = await deps.loadSession();
-      if (!stored || stored.account.id !== accountId ||
-          stored.sessionToken !== sessionToken ||
-          !(Date.parse(stored.expiresAt) > now())) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The Mira ID session changed during the MCP service run',
-          'SERVICE_REGISTRY_SESSION_CHANGED',
-        );
-      }
-      // If another binding refreshed the catalog and this service is gone or
-      // its revision changed, this cached authorization is no longer current.
-      const observed = deps.catalog.peek({ accountId, sessionToken });
-      if (observed) {
-        const current = findEntry(observed, entry.definition.serviceId);
-        if (!current || current.revision !== revision ||
-            current.definition.protocol.version !== entry.definition.protocol.version ||
-            current.definition.protocol.endpoint !== entry.definition.protocol.endpoint) {
-          throw new McpProtocolError(
-            'unauthorized',
-            'The service registration changed or was revoked',
-            'SERVICE_REGISTRATION_CHANGED',
-          );
-        }
-      }
-    },
+    assertCurrent,
   };
 };
 
@@ -1126,7 +1177,7 @@ export const createAccountMcpServiceDiscovery = (
 
 export interface AccountMcpServiceDirectoryOptions {
   loadSession?: () => Promise<StoredCloudSession | null>;
-  currentCloud?: () => { status: string; accountId: string | null };
+  currentCloud?: () => { status: string; accountId: string | null; deviceId?: string | null };
   catalog?: AccountServiceCatalogCache;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -1137,19 +1188,20 @@ export interface AccountMcpServiceDirectoryOptions {
 
 /**
  * Maps the account's registered service directory to generic MCP bindings.
- * Existing canonical Who You/Desktop paths stay owned by their adapters until
- * A3 migration is verified; registering them again here would double-discover.
+ * Desktop remains owned by the independent Host Grant / Direct adapter.
+ * Who You is registry-discovered and retains the exact existing mail disclosure policy.
  */
 export class AccountMcpServiceDirectory implements McpServiceDirectory {
   private readonly deps: AccountServiceDiscoveryDeps;
   private readonly bindingsByRevision = new Map<string, McpServiceBinding>();
+  private bindingSession: { accountId: string; sessionToken: string } | null = null;
 
   constructor(options: AccountMcpServiceDirectoryOptions = {}) {
     this.deps = {
       loadSession: options.loadSession ?? (() => cloudSessionStore.load()),
       currentCloud: options.currentCloud ?? (() => {
         const cloud = useCloudAccountStore.getState();
-        return { status: cloud.status, accountId: cloud.account?.id ?? null };
+        return { status: cloud.status, accountId: cloud.account?.id ?? null, deviceId: cloud.currentDeviceId };
       }),
       catalog: options.catalog ?? new AccountServiceCatalogCache({
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
@@ -1167,6 +1219,44 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     };
   }
 
+  async loadWhoYouSnapshot(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
+    try {
+      const session = await currentSession(this.deps, input.accountId);
+      if (session.sessionToken !== input.sessionToken) throw new WhoYouError('session_rejected', 'Mira ID 会话已变化。');
+      const entries = await loadCatalogForSession(this.deps, session, { force: true, signal: input.signal });
+      const mail = entries.filter(entry => entry.definition.projectId === 'who-you' && isCompatibleCatalogEntry(entry));
+      if (mail.length !== 1) throw new WhoYouError('unauthorized', mail.length ? '存在多个狐邮实例，请在 Mira ID 中确认授权。' : '尚无狐邮授权。', 'SERVICE_REGISTRATION_NOT_FOUND');
+      const connection = await connectAccountMcpService({
+        accountId: input.accountId, serviceId: accountServiceIdentity(mail[0].definition),
+        expectedSessionToken: input.sessionToken, signal: input.signal,
+      }, this.deps);
+      if (!connection.identity) {
+        throw new WhoYouError('invalid_response', '狐邮未确认当前 Mira ID 身份。');
+      }
+      await connection.assertCurrent();
+      if (!connection.toolDescriptors.some(tool => tool.name === 'whoyou_mailbox_list')) throw new WhoYouError('invalid_response', '狐邮未声明邮箱列表工具。');
+      const mailboxes = parseMailboxes(parseToolStructuredContent(
+        await connection.client.callTool('whoyou_mailbox_list', {}, input.signal),
+      ));
+      await connection.assertCurrent();
+      return { identity: connection.identity, mailboxes };
+    } catch (error) {
+      if (error instanceof WhoYouError) throw error;
+      if (error instanceof McpProtocolError) {
+        if (error.code === 'SERVICE_REGISTRATION_NOT_FOUND' || error.code === 'SERVICE_REGISTRATION_CHANGED') {
+          throw new WhoYouError('unauthorized', '当前 Mira ID 未注册狐邮服务或授权已撤销。', error.code);
+        }
+        if (error.kind === 'unauthorized') {
+          throw new WhoYouError('session_rejected', 'Mira ID 会话或服务凭据已失效。', error.code);
+        }
+        if (error.kind === 'invalid_response') {
+          throw new WhoYouError('invalid_response', '狐邮返回无效服务数据。', error.code);
+        }
+      }
+      throw new WhoYouError('unavailable', '狐邮暂时不可用，请稍后重试。');
+    }
+  }
+
   async bindings(input: {
     accountId: string;
     signal?: AbortSignal;
@@ -1175,13 +1265,19 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     const entries = await loadCatalogForSession(this.deps, session, {
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    const compatible = entries.filter((entry) =>
-      isCompatibleCatalogEntry(entry) &&
-      !LEGACY_SERVICE_IDS.has(entry.definition.serviceId));
+    const latest = await currentSession(this.deps, input.accountId);
+    if (latest.sessionToken !== session.sessionToken) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
+    }
+    if (this.bindingSession?.accountId !== input.accountId || this.bindingSession.sessionToken !== session.sessionToken) {
+      this.bindingsByRevision.clear();
+      this.bindingSession = { accountId: input.accountId, sessionToken: session.sessionToken };
+    }
+    const compatible = entries.filter(isCompatibleCatalogEntry);
     if (this.bindingsByRevision.size > 64) this.bindingsByRevision.clear();
     return compatible.map((entry) => {
-      const serviceId = entry.definition.serviceId;
-      const key = `${input.accountId}:${serviceId}:${entry.revision}`;
+      const serviceId = accountServiceIdentity(entry.definition);
+      const key = JSON.stringify([input.accountId, serviceId, entry.revision, entry.manifestRevision, entry.definition.protocol.endpoint]);
       const cached = this.bindingsByRevision.get(key);
       if (cached) return cached;
       const binding = new McpServiceBinding({
@@ -1191,6 +1287,7 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
         // Renewal happens after the catalog cache can no longer satisfy it, so
         // a valid revision is always rechecked before a fresh service bearer.
         maxAgeMs: SERVICE_REGISTRY_CATALOG_MAX_AGE_MS + 60_000,
+        ...(this.deps.now ? { now: this.deps.now } : {}),
       });
       this.bindingsByRevision.set(key, binding);
       return binding;

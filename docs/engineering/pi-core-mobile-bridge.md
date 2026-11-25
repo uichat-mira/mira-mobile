@@ -129,7 +129,9 @@ attachment storage or upload integration. The existing run events, approval,
 message rendering and stop path are retained. Device layout/keyboard checks
 remain T4 acceptance, not implied by component tests.
 
-### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
+### Historical trusted cloud MCP service slice (MOB-096, 2026-11-24)
+
+Superseded by MOB-105 V1 below; the dedicated MCP service and static fallback described here are retired.
 
 This is the first real OPS-046 consumer, still limited to the read-only mail
 tools already covered by the existing MOB-086 mail disclosure approval.
@@ -216,9 +218,8 @@ were updated at their direct `McpProtocolClient` call sites to use
 `discover()`. The Desktop Direct/Relay fetches forward the MCP routing headers
 (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*`) to
 `POST /mcp` while continuing to own the transport credential; the client's
-placeholder Authorization header is never forwarded. The Desktop custom
-transport stays JSON-only, so it does not advertise the generic client's SSE
-`Accept` capability. Service registry/catalog filtering, credentials, caches,
+placeholder Authorization header is never forwarded. Both Direct and Relay forward
+`Accept: application/json, text/event-stream`; the Desktop server chooses JSON. Service registry/catalog filtering, credentials, caches,
 approval, Tool Gateway authority and Pi Core scheduling are unchanged.
 Who-You and Desktop production services must also speak `2026-07-28`; a
 service that only offers the legacy handshake is rejected rather than
@@ -227,7 +228,9 @@ maintainer's real-device check.
 
 
 
-### Mira ID service directory consumption (MOB-105 / 0.5.0 A2, 2026-11-25)
+### Historical V0 service directory (MOB-105 A2, superseded)
+
+The following V0 slice is historical; current code uses V1 exclusively.
 
 MOB-105 consumes the frozen cloud-auth service registry V0 contract
 (`cloud-auth` #198, `docs/service-registry-v0.md`). Registering a service for an
@@ -280,6 +283,28 @@ switch or per-service login.
   Fixtures are not real production registrations. Real Mira ID accounts, deployed
   services, Android/iOS devices and A3/Direct/Relay interoperability remain T4
   validation gaps; no production registration is assumed to exist.
+
+### Mira ID V1 service directory (MOB-105 / MOB-107 joint candidate)
+
+- The account directory uses only `GET /v1/application-services` and
+  `POST /v1/application-services/{appId}/{serviceId}/credential`, with
+  `resource` and `expectedRevision` in the credential request.
+- Binding identity derives from the exact APP_ID, serviceId and resource tuple;
+  catalog and credential revisions, device/account/session, expiry and endpoint
+  changes invalidate stale authority. The Cloud Session stays at Cloud Auth.
+  The client checks the returned credential envelope and claims against the
+  trusted HTTPS issuer response; the resource server verifies the signature.
+- Discovery comes from the V1 catalog and real `tools/list`, not a compiled
+  Who You binding. Optional capability groups can refer only to permitted real
+  tools. Existing mail one-shot disclosure consent and inbox/text limits stay
+  in force; unknown services with recognized mail readers receive the same
+  conservative restrictions. The existing Who You settings screen requires a
+  single authorized Who You instance; ambiguous instances fail closed.
+- MCP 2026-07-28 mirrors schema-declared `x-mcp-header` primitive parameters
+  using standard `Mcp-Param-*` headers; invalid annotated definitions are excluded.
+- Desktop Host/Direct/Relay remain independent of the application directory.
+  Real deployed Who You V1, Desktop/Relay interoperability and device testing
+  are separate acceptance evidence, not implied by fixture tests.
 
 ### Semantic tool-chain blocking removal (MOB-100, 2026-11-24)
 

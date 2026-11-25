@@ -5,7 +5,7 @@ import {
   parseMailMessage,
   parseMailSearch,
   parseToolStructuredContent,
-} from '../whoYou/whoYouMcpClient';
+} from '../whoYou/whoYouReadContract';
 import type { McpProtocolClient } from './mcpProtocolClient';
 
 const READ_SEARCH = 'whoyou_mail_search';

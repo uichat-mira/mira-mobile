@@ -1,6 +1,6 @@
 import { McpServiceBinding } from './mcpServiceBinding';
 import type { ToolGatewayClient } from '../tools/toolGatewayClient';
-import type { WhoYouMcpServiceDiscovery } from './whoYouMcpService';
+import type { McpServiceDiscovery } from './mcpServiceBinding';
 
 const executor = (): ToolGatewayClient => ({
   listTools: jest.fn(async () => []),
@@ -31,7 +31,7 @@ const snapshot = (overrides: Record<string, unknown> = {}) => ({
 
 const discovery = (
   snapshots: ReturnType<typeof snapshot>[] = [snapshot()],
-): WhoYouMcpServiceDiscovery & { discover: jest.Mock } => {
+): McpServiceDiscovery & { discover: jest.Mock } => {
   let index = 0;
   return {
     discover: jest.fn(async () => {
@@ -39,7 +39,7 @@ const discovery = (
       index += 1;
       return value;
     }),
-  } as WhoYouMcpServiceDiscovery & { discover: jest.Mock };
+  } as McpServiceDiscovery & { discover: jest.Mock };
 };
 
 describe('McpServiceBinding', () => {

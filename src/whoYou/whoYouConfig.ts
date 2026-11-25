@@ -1,17 +1,7 @@
-/**
- * The only approved Who You MCP resource and browser management entry.
- *
- * The resource is deliberately a build-level constant: an arbitrary discovered
- * or redirected origin must never receive a service bearer. Tests and future
- * channels can pass an explicit normalized URL into the client constructors.
- */
-const WHO_YOU_MCP_URL = 'https://who-you.tomz.io/mcp';
+/** The official browser management entry; MCP endpoints come from Mira ID. */
 const WHO_YOU_WEB_MAILBOXES_URL = 'https://who-you.tomz.io/account/mailboxes';
 
-export const WHO_YOU_AUDIENCE = 'mira:who-you';
 export const WHO_YOU_READ_SCOPE = 'whoyou.read';
-
-export const resolveWhoYouMcpUrl = (): string => WHO_YOU_MCP_URL;
 
 export const resolveWhoYouWebMailboxesUrl = (): string =>
   WHO_YOU_WEB_MAILBOXES_URL;
