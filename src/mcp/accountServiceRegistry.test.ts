@@ -463,6 +463,40 @@ describe('Mira ID service registry catalog', () => {
     expect(cache.peek(input)).toEqual([]);
   });
 
+  it('starts a fresh catalog request when force is set instead of reusing stale in-flight work', async () => {
+    let releaseFirst: (response: Response) => void = () => undefined;
+    const first = new Promise<Response>(resolve => { releaseFirst = resolve; });
+    const fetchMock = jest.fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce(json(200, catalogBody([{ serviceId: 'tasks', revision: 2 }])));
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+    const cache = new AccountServiceCatalogCache({baseUrl:BASE_URL,fetchImpl,now:()=>NOW});
+    const input = {accountId:ACCOUNT_ID,sessionToken:SESSION_TOKEN};
+    const pending = cache.load(input);
+    await Promise.resolve();
+    const forced = cache.load({...input, force: true});
+    await Promise.resolve();
+    const callsBeforeRelease = fetchMock.mock.calls.length;
+    releaseFirst(json(200, catalogBody([{ serviceId: 'who-you', revision: 1 }])));
+    const [staleResult, forcedResult] = await Promise.allSettled([pending, forced]);
+
+    expect(callsBeforeRelease).toBe(2);
+    expect(staleResult).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({code:'SERVICE_CATALOG_SUPERSEDED'}),
+    });
+    expect(forcedResult).toMatchObject({
+      status: 'fulfilled',
+      value: [
+        expect.objectContaining({
+          definition: expect.objectContaining({serviceId:'tasks'}),
+          revision: 2,
+        }),
+      ],
+    });
+    expect(cache.peek(input)?.map(entry => entry.definition.serviceId)).toEqual(['tasks']);
+  });
+
   it('repairs a stale service revision once from a forced catalog refresh', async () => {
     let revision = 1;
     const fixture = fetchFixture({

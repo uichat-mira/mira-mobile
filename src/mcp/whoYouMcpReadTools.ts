@@ -89,7 +89,8 @@ const messageArgs = (input: Record<string, unknown>): Record<string, unknown> =>
 const exactApproval = (
   args: Record<string, unknown>,
 ): { args: Record<string, unknown>; detail: string } => {
-  const detail = JSON.stringify(args);
+  const detail = JSON.stringify(args)
+    .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
   if (detail.length > 1_500) {
     badArguments('邮件授权参数太长，不能完整展示给用户。');
   }
