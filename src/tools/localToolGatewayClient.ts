@@ -10,7 +10,6 @@ import {
   type ToolManifest,
 } from './toolGatewayClient';
 import { webToolDefinition } from './localTools/webTool';
-import { whoYouMailSearchTool, whoYouMailMessageTool } from './localTools/whoYouMailTools';
 
 export interface LocalToolContext {
   signal?: AbortSignal;
@@ -188,6 +187,4 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
 
 export const localToolGatewayClient = new LocalToolGatewayClient([
   webToolDefinition,
-  whoYouMailSearchTool,
-  whoYouMailMessageTool,
 ]);

@@ -13,6 +13,7 @@ import {
   DESKTOP_MCP_SERVICE_ID,
   DESKTOP_MCP_RESOURCE_URI,
 } from './desktopMcpService';
+import { MCP_PROTOCOL_VERSION } from './mcpProtocolClient';
 
 const directCredential: StoredDeviceCredential = {
   hostUrl: 'https://100.64.0.8:41131',
@@ -71,7 +72,7 @@ const capabilityDocument = {
       serverName: 'mira-desktop',
       serverVersion: '0.4.0',
       sdk: 'mira-desktop-tool-core',
-      protocolVersions: ['2025-06-18'],
+      protocolVersions: [MCP_PROTOCOL_VERSION],
     },
   },
   capabilities: [{
@@ -95,29 +96,39 @@ const rpcResult = (
 ): unknown => {
   const id = payload.id;
   const method = payload.method;
-  if (method === 'notifications/initialized') return null;
-  if (method === 'initialize') {
+  if (method === 'server/discover') {
     return {
       jsonrpc: '2.0',
       id,
       result: {
-        protocolVersion: '2025-06-18',
+        resultType: 'complete',
+        supportedVersions: [MCP_PROTOCOL_VERSION],
         capabilities: {
           tools: { listChanged: false },
           resources: { subscribe: false, listChanged: false },
         },
-        serverInfo: { name: 'mira-desktop', version: '0.4.0' },
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: 'mira-desktop',
+            version: '0.4.0',
+          },
+        },
       },
     };
   }
   if (method === 'tools/list') {
-    return { jsonrpc: '2.0', id, result: { tools: [desktopTool] } };
+    return {
+      jsonrpc: '2.0',
+      id,
+      result: { resultType: 'complete', tools: [desktopTool] },
+    };
   }
   if (method === 'resources/list') {
     return {
       jsonrpc: '2.0',
       id,
       result: {
+        resultType: 'complete',
         resources: [{
           uri: DESKTOP_MCP_RESOURCE_URI,
           name: 'Mira Desktop capabilities',
@@ -131,6 +142,7 @@ const rpcResult = (
       jsonrpc: '2.0',
       id,
       result: {
+        resultType: 'complete',
         contents: [{
           uri: DESKTOP_MCP_RESOURCE_URI,
           mimeType: 'application/json',
@@ -144,6 +156,7 @@ const rpcResult = (
       jsonrpc: '2.0',
       id,
       result: {
+        resultType: 'complete',
         content: [{
           type: 'text',
           text: mode === 'approval' ? 'approval required' : 'desktop-content',
@@ -228,9 +241,22 @@ describe('Mira Desktop MCP Mobile binding', () => {
       call.path === '/remote/v1/tools' ||
       call.path === '/remote/v1/tool-invocations/stream'
     )).toBe(false);
-    // Direct paired Desktop never opts into the Cloud thread workspace header.
-    expect(request.mock.calls.every(([call]) => call.headers === undefined))
-      .toBe(true);
+    // Direct paired Desktop never opts into the Cloud thread workspace header,
+    // but the 2026-07-28 MCP routing headers still reach /mcp.
+    const directMcpCalls = request.mock.calls
+      .map(([call]) => call)
+      .filter((call) => call.path === '/mcp');
+    expect(directMcpCalls.length).toBeGreaterThan(0);
+    for (const call of directMcpCalls) {
+      expect(call.headers?.['MCP-Protocol-Version']).toBe(MCP_PROTOCOL_VERSION);
+      expect(call.headers?.['Mcp-Method']).toBe(
+        (call.body as { method?: string }).method,
+      );
+      expect(call.headers?.['X-Mira-Thread-Id']).toBeUndefined();
+    }
+    expect(directMcpCalls.some(
+      (call) => call.headers?.['Mcp-Name'] === DESKTOP_MCP_RESOURCE_URI,
+    )).toBe(true);
 
     await expect(snapshot.executionGateway?.callTool({
       callId: 'call-direct',
@@ -349,14 +375,23 @@ describe('Mira Desktop MCP Mobile binding', () => {
       (request) =>
         (request.body as { method?: string }).method === 'tools/call',
     );
-    const initialize = mcpCalls.find(
+    const discover = mcpCalls.find(
       (request) =>
-        (request.body as { method?: string }).method === 'initialize',
+        (request.body as { method?: string }).method === 'server/discover',
     );
-    expect(toolsCall?.headers).toEqual({
+    expect(toolsCall?.headers).toMatchObject({
       'X-Mira-Thread-Id': 'local-thread-1',
+      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      'Mcp-Method': 'tools/call',
+      'Mcp-Name': 'read',
     });
-    expect(initialize?.headers).toBeUndefined();
+    expect(discover?.headers).toMatchObject({
+      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      'Mcp-Method': 'server/discover',
+    });
+    expect(discover?.headers?.['X-Mira-Thread-Id']).toBeUndefined();
+    // The Desktop MCP server chooses a JSON response; the client advertises both standard response types.
+    expect(toolsCall?.headers?.Accept).toBe('application/json, text/event-stream');
     expect(threadWorkspace.assertBindingCompatible).toHaveBeenCalledWith({
       threadId: 'local-thread-1',
       accountId: 'account-a',

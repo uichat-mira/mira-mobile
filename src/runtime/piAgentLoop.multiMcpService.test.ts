@@ -82,8 +82,8 @@ const json = (status: number, body: unknown): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
-const rpc = (id: unknown, result: unknown): Response =>
-  json(200, { jsonrpc: '2.0', id, result });
+const rpc = (id: unknown, result: Record<string, unknown>): Response =>
+  json(200, { jsonrpc: '2.0', id, result: { resultType: 'complete', ...result } });
 
 interface FixtureRuntime {
   fixture: FixtureService;
@@ -106,15 +106,32 @@ const startFixture = (fixture: FixtureService): FixtureRuntime => {
       method: string;
       params?: { name?: string; uri?: string; arguments?: Record<string, unknown> };
     };
-    if (body.method === 'initialize') {
-      return rpc(body.id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { tools: {}, resources: {} },
-        serverInfo: { name: fixture.serverName, version: '1.0.0' },
-      });
+    const headers = init?.headers as Record<string, string>;
+    const meta = (body.params as { _meta?: Record<string, unknown> } | undefined)?._meta;
+    const expectedName = body.method === 'tools/call'
+      ? body.params?.name
+      : body.method === 'resources/read'
+        ? body.params?.uri
+        : undefined;
+    if (
+      headers['MCP-Protocol-Version'] !== MCP_PROTOCOL_VERSION ||
+      headers['Mcp-Method'] !== body.method ||
+      meta?.['io.modelcontextprotocol/protocolVersion'] !== MCP_PROTOCOL_VERSION ||
+      (expectedName !== undefined && headers['Mcp-Name'] !== expectedName)
+    ) {
+      throw new Error('Unexpected MCP 2026-07-28 request metadata');
     }
-    if (body.method === 'notifications/initialized') {
-      return new Response(null, { status: 202 });
+    if (body.method === 'server/discover') {
+      return rpc(body.id, {
+        supportedVersions: [MCP_PROTOCOL_VERSION],
+        capabilities: { tools: {}, resources: {} },
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: fixture.serverName,
+            version: '1.0.0',
+          },
+        },
+      });
     }
     if (body.method === 'tools/list') return rpc(body.id, { tools: fixture.tools });
     if (body.method === 'resources/list') {
@@ -214,7 +231,7 @@ const snapshotFor = async (options: {
     token: TOKEN,
     fetchImpl: runtime.fetch as unknown as typeof fetch,
   });
-  const serverInfo = await client.initialize();
+  const serverInfo = await client.discover();
   const toolDescriptors = await client.listTools();
   const resources = await client.listResources();
   const contents = await client.readResource(resources[0].uri);

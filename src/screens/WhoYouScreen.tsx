@@ -32,7 +32,7 @@ import {
 import type {
   WhoYouCredentialStatus,
   WhoYouMailbox,
-} from '../whoYou/whoYouMcpClient';
+} from '../whoYou/whoYouReadContract';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type StatusTone = 'success' | 'warning' | 'error' | 'neutral';

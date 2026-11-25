@@ -3,11 +3,13 @@ import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient
 import { PiCoreAgentLoop } from '../runtime/piAgentLoop';
 import {
   TOOL_DISCLOSURE_TOOL,
+  ToolApprovalRequiredError,
   type ToolGatewayClient,
   type ToolManifest,
 } from '../tools/toolGatewayClient';
 import { LocalAgentToolGateway } from '../tools/localAgentToolGateway';
 import {
+  accountServiceIdentity,
   AccountMcpServiceDirectory,
   AccountServiceCatalogCache,
   parseAccountServiceCatalog,
@@ -24,9 +26,14 @@ const SESSION_TOKEN = 'session-token-a';
 const b64url = (value: unknown): string =>
   Buffer.from(JSON.stringify(value)).toString('base64url');
 
+const identity = (serviceId: string, appId = 'app-fixture-' + serviceId, resource = 'https://' + serviceId + '.example/mcp') => ({ appId, serviceId, resource });
+const localId = (serviceId: string) => accountServiceIdentity(identity(serviceId));
+
 const credentialToken = (input: {
   accountId?: string;
   serviceId: string;
+  appId?: string;
+  resource?: string;
   audience?: string;
   scopes: string[];
   deviceId?: string;
@@ -39,7 +46,10 @@ const credentialToken = (input: {
     b64url({
       iss: 'mira:cloud-auth',
       sub: input.accountId ?? ACCOUNT_ID,
-      aud: input.audience ?? `mira:service:${input.serviceId}`,
+      aud: input.audience ?? input.resource ?? identity(input.serviceId).resource,
+      app_id: input.appId ?? identity(input.serviceId).appId,
+      service_id: input.serviceId,
+      resource: input.resource ?? identity(input.serviceId).resource,
       device_id: input.deviceId ?? 'device-a',
       scope: input.scopes,
       iat: nowSeconds,
@@ -59,6 +69,8 @@ const canonical = (id: string) => {
 
 const definition = (input: {
   serviceId: string;
+  appId?: string;
+  resource?: string;
   displayName?: string;
   protocolName?: string;
   protocolVersion?: string;
@@ -67,21 +79,23 @@ const definition = (input: {
 }) => {
   const serviceId = input.serviceId;
   return {
-    serviceId,
+    ...identity(serviceId, input.appId, input.resource ?? input.endpoint),
     projectId: canonical(serviceId) ? serviceId : 'fixture-project',
-    displayName: input.displayName ?? serviceId,
+    name: input.displayName ?? serviceId,
+    type: 'mcp',
     protocol: {
       name: input.protocolName ?? 'mcp',
       version: input.protocolVersion ?? MCP_PROTOCOL_VERSION,
       endpoint: input.endpoint ?? `https://${serviceId}.example/mcp`,
     },
-    audience: canonical(serviceId)?.audience ?? `mira:service:${serviceId}`,
     scopes: input.scopes ?? canonical(serviceId)?.scopes ?? [`service:${serviceId}:read`],
   };
 };
 
 const catalogBody = (services: Array<{
   serviceId: string;
+  appId?: string;
+  resource?: string;
   displayName?: string;
   protocolName?: string;
   protocolVersion?: string;
@@ -90,8 +104,9 @@ const catalogBody = (services: Array<{
   revision?: number;
 }>) => ({
   services: services.map((entry) => ({
-    definition: definition(entry),
+    ...definition(entry),
     revision: entry.revision ?? 1,
+    manifestRevision: 1,
   })),
 });
 
@@ -132,40 +147,45 @@ const fetchFixture = (input: {
   const mcpCalls: FetchFixture['mcpCalls'] = [];
   const fetchImpl = jest.fn(async (inputUrl: unknown, init?: RequestInit) => {
     const url = String(inputUrl);
-    if (url === `${BASE_URL}/v1/services`) {
+    if (url === `${BASE_URL}/v1/application-services`) {
       catalogCount += 1;
       return json(200, input.catalog());
     }
-    const credentialMatch = url.match(/^https:\/\/cloud\.test\/v1\/services\/([^/]+)\/credential$/u);
+    const credentialMatch = url.match(/^https:\/\/cloud\.test\/v1\/application-services\/([^/]+)\/([^/]+)\/credential$/u);
     if (credentialMatch) {
-      const serviceId = decodeURIComponent(credentialMatch[1]);
-      const body = JSON.parse(String(init?.body)) as { expectedRevision: number };
+      const appId = decodeURIComponent(credentialMatch[1]);
+      const serviceId = decodeURIComponent(credentialMatch[2]);
+      const body = JSON.parse(String(init?.body)) as { expectedRevision: number; resource: string };
       credentialCalls.push({ serviceId, expectedRevision: body.expectedRevision });
+      const record = (input.catalog() as { services: ReturnType<typeof definition>[] }).services.find(e => e.appId === appId && e.serviceId === serviceId);
+      expect(record?.resource).toBe(body.resource);
       if (input.credential) return input.credential(serviceId, body.expectedRevision);
       return json(200, {
         token: credentialToken({
           serviceId,
-          audience: canonical(serviceId)?.audience,
+          appId, resource: body.resource,
           scopes: input.tokenScopes?.(serviceId) ?? canonical(serviceId)?.scopes ?? [`service:${serviceId}:read`],
         }),
         tokenType: 'Bearer',
-        audience: canonical(serviceId)?.audience ?? `mira:service:${serviceId}`,
+        appId, resource: body.resource,
+        scopes: input.tokenScopes?.(serviceId) ?? canonical(serviceId)?.scopes ?? ['service:' + serviceId + ':read'],
         expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
         serviceId,
         revision: body.expectedRevision,
       });
     }
     const serviceId = new URL(url).hostname.split('.')[0];
-    const request = parseRequest(init);
-    if (request.method === 'initialize') {
-      return mcpRpc(request.id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { tools: {} },
-        serverInfo: { name: `${serviceId}-server`, version: '1.0.0' },
-      });
+    if (serviceId === 'who-you' && new URL(url).pathname === '/.well-known/oauth-protected-resource/mcp') {
+      expect(init?.headers).not.toHaveProperty('authorization');
+      return json(200, { resource: 'https://who-you.example/mcp', authorization_servers: [BASE_URL], scopes_supported: ['whoyou.read'], bearer_methods_supported: ['header'] });
     }
-    if (request.method === 'notifications/initialized') {
-      return new Response(null, { status: 202 });
+    const request = parseRequest(init);
+    if (request.method === 'server/discover') {
+      return mcpRpc(request.id, {
+        supportedVersions: [MCP_PROTOCOL_VERSION],
+        capabilities: { tools: {} },
+        _meta: { 'io.modelcontextprotocol/serverInfo': { name: serviceId + '-server', version: '1.0.0' } },
+      });
     }
     if (request.method === 'tools/list') {
       return mcpRpc(request.id, { tools: input.toolsFor(serviceId) });
@@ -176,6 +196,14 @@ const fetchFixture = (input: {
         tool: request.params?.name ?? '',
         arguments: request.params?.arguments ?? {},
       });
+      if (serviceId === 'who-you') {
+        const structuredContent = request.params?.name === 'whoyou_whoami'
+          ? { accountId: ACCOUNT_ID, consumerId: ACCOUNT_ID, scopes: ['whoyou.read'] }
+          : request.params?.name === 'whoyou_mailbox_list'
+          ? { identities: [] }
+          : { messages: [], nextCursor: 'page-two-fixture' };
+        return mcpRpc(request.id, { content: [], structuredContent });
+      }
       return mcpRpc(request.id, {
         content: [{ type: 'text', text: `${serviceId}:${request.params?.name}` }],
       });
@@ -234,27 +262,21 @@ describe('Mira ID service registry catalog', () => {
   it('parses compatible and unknown entries but isolates malformed registrations', () => {
     const parsed = parseAccountServiceCatalog({
       services: [
-        { definition: definition({ serviceId: 'notes' }), revision: 2 },
-        { definition: definition({ serviceId: 'notes' }), revision: 3 },
-        { definition: definition({ serviceId: 'legacy', protocolName: 'custom' }), revision: 1 },
-        {
-          definition: {
-            ...definition({ serviceId: 'broken' }),
-            audience: 'mira:service:someone-else',
-          },
-          revision: 1,
-        },
-        { definition: null, revision: 1 },
-        { definition: definition({ serviceId: 'tasks' }), revision: 0 },
+        ...catalogBody([{ serviceId: 'notes', appId: 'app-fixture-one', revision: 2 },
+          { serviceId: 'notes', appId: 'app-fixture-two', revision: 3 }]).services,
+        { ...definition({ serviceId: 'broken' }), resource: 'mira:service:someone-else', revision: 1, manifestRevision: 1 },
+        { definition: definition({ serviceId: 'legacy' }), revision: 1 },
+        { ...definition({ serviceId: 'tasks' }), revision: 0, manifestRevision: 1 },
       ],
     });
-    expect(parsed.map((entry) => [entry.definition.serviceId, entry.revision]))
-      .toEqual([['notes', 2], ['legacy', 1]]);
+    expect(parsed.map(entry => [entry.definition.appId, entry.definition.serviceId, entry.revision]))
+      .toEqual([['app-fixture-one', 'notes', 2], ['app-fixture-two', 'notes', 3]]);
+    expect(accountServiceIdentity(parsed[0].definition)).not.toBe(accountServiceIdentity(parsed[1].definition));
     expect(() => parseAccountServiceCatalog({ services: 'no' }))
       .toThrow('Mira ID returned an invalid service catalog');
   });
 
-  it('consumes canonical compatible services without admitting extra scopes or duplicate legacy mail', async () => {
+  it('consumes declared compatible services without hardcoded scope or audience mapping', async () => {
     const fixture = fetchFixture({
       catalog: () => catalogBody([
         { serviceId: 'cloud-guanlan' },
@@ -265,11 +287,11 @@ describe('Mira ID service registry catalog', () => {
     });
     const registry = directory({ fetchImpl: fixture.fetchImpl });
     const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
-    expect(bindings).toHaveLength(1);
+    expect(bindings.map(b => b.serviceTypeId)).toEqual([localId('cloud-guanlan'), localId('who-you')]);
     const parsed = parseAccountServiceCatalog(catalogBody([{ serviceId: 'cloud-guanlan', scopes: ['guanlan.read', 'guanlan.write'] }]));
-    expect(parsed).toEqual([]);
+    expect(parsed[0]?.definition.scopes).toEqual(['guanlan.read', 'guanlan.write']);
     const credential = await requestAccountServiceCredential(SESSION_TOKEN, {
-      accountId: ACCOUNT_ID, serviceId: 'cloud-guanlan', expectedRevision: 1,
+      accountId: ACCOUNT_ID, ...identity('cloud-guanlan'), expectedRevision: 1,
     }, { baseUrl: BASE_URL, fetchImpl: fixture.fetchImpl, now: () => NOW });
     expect(credential.claims.scopes).toEqual(['guanlan.read']);
   });
@@ -290,7 +312,7 @@ describe('Mira ID service registry catalog', () => {
 
     const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
     expect(bindings.map((binding) => binding.serviceTypeId))
-      .toEqual(['notes', 'tasks']);
+      .toEqual([localId('notes'), localId('tasks'), localId('who-you')]);
     expect(fixture.catalogCalls()).toBe(1);
     const reused = await registry.bindings({ accountId: ACCOUNT_ID });
     expect(reused[0]).toBe(bindings[0]);
@@ -300,7 +322,7 @@ describe('Mira ID service registry catalog', () => {
     const ready = await notes.discover({ accountId: ACCOUNT_ID });
     expect(ready.status).toBe('ready');
     if (ready.status !== 'ready') return;
-    expect(ready.snapshot.service.id).toBe('notes');
+    expect(ready.snapshot.service.id).toBe(localId('notes'));
     expect(ready.snapshot.service.toolNames).toEqual(['notes_lookup']);
     expect(ready.snapshot.initialToolNames).toEqual([]);
     expect(ready.snapshot.expiresAt).toBe(NOW + 10 * 60_000);
@@ -320,6 +342,127 @@ describe('Mira ID service registry catalog', () => {
     }]);
   });
 
+  it('isolates identical tool names and service IDs belonging to different application instances', async () => {
+    let now = NOW;
+    const a = { serviceId: 'notes', appId: 'app-fixture-one', endpoint: 'https://one.example/mcp' };
+    const b = { serviceId: 'notes', appId: 'app-fixture-two', endpoint: 'https://two.example/mcp' };
+    let registrations = [a, b];
+    const fixture = fetchFixture({
+      catalog: () => catalogBody(registrations),
+      toolsFor: () => toolsFor('notes'),
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
+    const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
+    expect(bindings).toHaveLength(2);
+    expect(bindings[0].serviceTypeId).not.toBe(bindings[1].serviceTypeId);
+    const left = await bindings[0].discover({ accountId: ACCOUNT_ID });
+    const right = await bindings[1].discover({ accountId: ACCOUNT_ID });
+    if (left.status !== 'ready' || right.status !== 'ready') throw new Error('both bindings must be ready');
+    const call = { callId: 'lookup', name: 'notes_lookup', arguments: '{}' };
+    await expect(left.gateway.callTool(call)).resolves.toEqual({ content: 'one:notes_lookup' });
+    await expect(right.gateway.callTool(call)).resolves.toEqual({ content: 'two:notes_lookup' });
+    registrations = [b];
+    now += 5 * 60_000 + 1;
+    expect((await registry.bindings({ accountId: ACCOUNT_ID })).map(binding => binding.serviceTypeId))
+      .toEqual([bindings[1].serviceTypeId]);
+    await expect(left.gateway.callTool(call)).rejects.toMatchObject({ code: 'MCP_SERVICE_UNAUTHORIZED' });
+    await expect(right.gateway.callTool(call)).resolves.toEqual({ content: 'two:notes_lookup' });
+    expect(fixture.mcpCalls.map(item => item.endpoint)).toEqual([a.endpoint, b.endpoint, b.endpoint]);
+  });
+
+  it('uses one registered Who You binding, only approved mail schemas, and one-shot consent for each page', async () => {
+    let active = true;
+    let now = NOW;
+    const fixture = fetchFixture({
+      catalog: () => catalogBody(active ? [{ serviceId: 'who-you' }] : []),
+      toolsFor: () => ['whoyou_whoami', 'whoyou_mailbox_list', 'whoyou_mail_search', 'whoyou_mail_message_get', 'whoyou_mail_send'].map(name => ({
+        name, description: name, inputSchema: { type: 'object' },
+      })),
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
+    const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
+    expect(bindings.map(b => b.serviceTypeId)).toEqual([localId('who-you')]);
+    const ready = await bindings[0].discover({ accountId: ACCOUNT_ID });
+    expect(ready.status).toBe('ready');
+    if (ready.status !== 'ready') return;
+    expect(ready.snapshot.tools.map(t => t.name).sort()).toEqual(['whoyou_mail_message_get', 'whoyou_mail_search']);
+    expect(ready.snapshot.tools.every(t => Boolean(t.sensitiveResult))).toBe(true);
+    const search = { callId: 'page-one', name: 'whoyou_mail_search', arguments: '{}' };
+    let approval;
+    try { await ready.gateway.callTool(search); } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) approval = error.approval;
+      else throw error;
+    }
+    expect(approval).toBeDefined();
+    expect(fixture.mcpCalls.map(c => c.tool)).toEqual(['whoyou_whoami']);
+    if (!approval) throw new Error('missing approval');
+    const approved = await ready.gateway.resolveApproval(approval, 'approved');
+    expect(approved.status).toBe('completed');
+    if (approved.status === 'completed') expect(JSON.parse(approved.result.content).nextCursor).toBe('page-two-fixture');
+    await expect(ready.gateway.callTool({ ...search, callId: 'page-two', arguments: '{"cursor":"page-two-fixture"}' })).rejects.toBeInstanceOf(ToolApprovalRequiredError);
+    await expect(ready.gateway.callTool({ ...search, name: 'whoyou_mail_send' })).rejects.toMatchObject({ code: 'TOOL_NOT_DECLARED' });
+    const snapshot = await registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN });
+    expect(snapshot.identity.accountId).toBe(ACCOUNT_ID);
+    expect(snapshot.mailboxes).toEqual([]);
+    expect(fixture.credentialCalls.every(c => c.serviceId === 'who-you')).toBe(true);
+    const previousCalls = fixture.mcpCalls.length;
+    // Catalog refresh observes revocation while the original offline bearer
+    // still has time left. Neither old approvals nor settings can bypass it.
+    active = false;
+    now += 5 * 60_000 + 1;
+    expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
+    await expect(ready.gateway.callTool(search)).rejects.toBeDefined();
+    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
+      .rejects.toMatchObject({ code: 'SERVICE_REGISTRATION_NOT_FOUND' });
+    expect(fixture.mcpCalls).toHaveLength(previousCalls);
+
+  });
+
+  it('refreshes a previously empty settings catalog after active facility login and revokes an in-flight binding at the catalog deadline', async () => {
+    let active = false;
+    let now = NOW;
+    const fixture = fetchFixture({
+      catalog: () => catalogBody(active ? [{ serviceId: 'who-you' }] : []),
+      toolsFor: () => ['whoyou_whoami', 'whoyou_mailbox_list', 'whoyou_mail_search', 'whoyou_mail_message_get'].map(name => ({
+        name, description: name, inputSchema: { type: 'object' },
+      })),
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
+    expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
+    active = true;
+    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
+      .resolves.toMatchObject({ identity: { accountId: ACCOUNT_ID } });
+    const [binding] = await registry.bindings({ accountId: ACCOUNT_ID });
+    const ready = await binding.discover({ accountId: ACCOUNT_ID });
+    expect(ready.status).toBe('ready');
+    if (ready.status !== 'ready') throw new Error('binding unavailable');
+    active = false;
+    now += 5 * 60_000 + 1;
+    // No other run or settings refresh is needed to invalidate an old gateway.
+    const before = fixture.mcpCalls.length;
+    await expect(ready.gateway.callTool({callId:'revoked', name:'whoyou_mail_search', arguments:'{}'}))
+      .rejects.toMatchObject({code:'MCP_SERVICE_UNAUTHORIZED'});
+    expect(fixture.mcpCalls).toHaveLength(before);
+  });
+
+  it('does not let an invalidated in-flight catalog restore stale service authorization', async () => {
+    let release: (response: Response) => void = () => undefined;
+    const first = new Promise<Response>(resolve => { release = resolve; });
+    const fetchImpl = jest.fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce(json(200, catalogBody([]))) as unknown as typeof fetch;
+    const cache = new AccountServiceCatalogCache({baseUrl:BASE_URL,fetchImpl,now:()=>NOW});
+    const input = {accountId:ACCOUNT_ID,sessionToken:SESSION_TOKEN};
+    const pending = cache.load(input);
+    const rejected = expect(pending).rejects.toMatchObject({code:'SERVICE_CATALOG_SUPERSEDED'});
+    await Promise.resolve();
+    cache.invalidate();
+    await expect(cache.load(input)).resolves.toEqual([]);
+    release(json(200,catalogBody([{serviceId:'who-you'}])));
+    await rejected;
+    expect(cache.peek(input)).toEqual([]);
+  });
+
   it('repairs a stale service revision once from a forced catalog refresh', async () => {
     let revision = 1;
     const fixture = fetchFixture({
@@ -328,7 +471,7 @@ describe('Mira ID service registry catalog', () => {
       credential: (serviceId, expectedRevision) => {
         if (expectedRevision === 1) {
           revision = 2;
-          return json(409, { error: 'SERVICE_REGISTRATION_CHANGED' });
+          return json(409, { error: 'APPLICATION_SERVICE_CHANGED' });
         }
         return json(200, {
           token: credentialToken({
@@ -336,7 +479,7 @@ describe('Mira ID service registry catalog', () => {
             scopes: ['service:notes:read'],
           }),
           tokenType: 'Bearer',
-          audience: 'mira:service:notes',
+          appId: identity('notes').appId, resource: identity('notes').resource, scopes: ['service:notes:read'],
           expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
           serviceId,
           revision: expectedRevision,
@@ -353,7 +496,7 @@ describe('Mira ID service registry catalog', () => {
       { serviceId: 'notes', expectedRevision: 1 },
       { serviceId: 'notes', expectedRevision: 2 },
     ]);
-    expect(ready.snapshot.bindingKey).toContain(':2:');
+    expect(JSON.parse(ready.snapshot.bindingKey!)).toContain(2);
   });
 
   it('isolates a revoked sibling and keeps the other authorized service usable', async () => {
@@ -365,7 +508,7 @@ describe('Mira ID service registry catalog', () => {
       toolsFor,
       credential: (serviceId, expectedRevision) => {
         if (serviceId === 'notes') {
-          return json(404, { error: 'SERVICE_REGISTRATION_NOT_FOUND' });
+          return json(404, { error: 'APPLICATION_SERVICE_NOT_FOUND' });
         }
         return json(200, {
           token: credentialToken({
@@ -373,7 +516,7 @@ describe('Mira ID service registry catalog', () => {
             scopes: ['service:tasks:read'],
           }),
           tokenType: 'Bearer',
-          audience: 'mira:service:tasks',
+          appId: identity('tasks').appId, resource: identity('tasks').resource, scopes: ['service:tasks:read'],
           expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
           serviceId,
           revision: expectedRevision,
@@ -384,11 +527,11 @@ describe('Mira ID service registry catalog', () => {
     const [notes, tasks] = await registry.bindings({ accountId: ACCOUNT_ID });
     await expect(notes.discover({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
       status: 'degraded',
-      serviceTypeId: 'notes',
+      serviceTypeId: localId('notes'),
     });
     await expect(tasks.discover({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
       status: 'ready',
-      serviceTypeId: 'tasks',
+      serviceTypeId: localId('tasks'),
     });
   });
 
@@ -406,7 +549,7 @@ describe('Mira ID service registry catalog', () => {
           scopes: ['service:notes:read'],
         }),
         tokenType: 'Bearer',
-        audience: 'mira:service:notes',
+        appId: identity('notes').appId, resource: identity('notes').resource, scopes: ['service:notes:read'],
         expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
         serviceId,
         revision: expectedRevision,
@@ -459,21 +602,22 @@ describe('Mira ID service registry catalog', () => {
         scopes: ['service:notes:read'],
       }),
       tokenType: 'Bearer',
-      audience: 'mira:service:notes',
+      appId: identity('notes').appId, resource: identity('notes').resource, scopes: ['service:notes:read'],
       expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
       serviceId: 'notes',
       revision: 2,
     };
     expect(parseIssuedAccountServiceCredential(valid, {
       accountId: ACCOUNT_ID,
-      serviceId: 'notes',
+      ...identity('notes'),
       revision: 2,
       nowMs: NOW,
     }).claims.scopes).toEqual(['service:notes:read']);
 
     for (const invalid of [
       { ...valid, serviceId: 'tasks' },
-      { ...valid, audience: 'mira:service:tasks' },
+      { ...valid, resource: identity('tasks').resource },
+      { ...valid, appId: identity('tasks').appId },
       { ...valid, revision: 3 },
       { ...valid, expiresAt: new Date(NOW + 20 * 60_000).toISOString() },
       {
@@ -486,7 +630,7 @@ describe('Mira ID service registry catalog', () => {
     ]) {
       expect(() => parseIssuedAccountServiceCredential(invalid, {
         accountId: ACCOUNT_ID,
-        serviceId: 'notes',
+        ...identity('notes'),
         revision: 2,
         nowMs: NOW,
       })).toThrow('Mira ID returned an invalid service credential');
@@ -538,7 +682,7 @@ describe('Mira ID service registry catalog', () => {
           scopes: ['service:notes:read'],
         }),
         tokenType: 'Bearer',
-        audience: 'mira:service:notes',
+        appId: identity('notes').appId, resource: identity('notes').resource, scopes: ['service:notes:read'],
         expiresAt: new Date(NOW + 10 * 60_000).toISOString(),
         serviceId,
         revision: 4,
@@ -548,7 +692,7 @@ describe('Mira ID service registry catalog', () => {
       SESSION_TOKEN,
       {
         accountId: ACCOUNT_ID,
-        serviceId: 'notes',
+        ...identity('notes'),
         expectedRevision: 5,
       },
       { baseUrl: BASE_URL, fetchImpl: fixture.fetchImpl, now: () => NOW },
@@ -608,7 +752,7 @@ describe('Mira ID service registry catalog', () => {
       if (offered.length === 1) {
         return (async function* () {
           yield toolCall('disclose-notes', TOOL_DISCLOSURE_TOOL, {
-            serviceId: 'notes',
+            serviceId: localId('notes'),
             toolNames: ['notes_lookup'],
           });
           yield { type: 'finish' as const, reason: 'tool_calls' as const };
@@ -617,7 +761,7 @@ describe('Mira ID service registry catalog', () => {
       if (offered.length === 2) {
         return (async function* () {
           yield toolCall('disclose-tasks', TOOL_DISCLOSURE_TOOL, {
-            serviceId: 'tasks',
+            serviceId: localId('tasks'),
             toolNames: ['tasks_lookup'],
           });
           yield { type: 'finish' as const, reason: 'tool_calls' as const };
@@ -664,9 +808,9 @@ describe('Mira ID service registry catalog', () => {
     ]);
     const discovery = await gateway.discoverTools();
     expect(discovery.services?.map((service) => service.id))
-      .toEqual(expect.arrayContaining(['notes', 'tasks']));
+      .toEqual(expect.arrayContaining([localId('notes'), localId('tasks')]));
     expect(discovery.services?.map((service) => service.id))
-      .not.toContain('legacy');
+      .not.toContain(localId('legacy'));
     expect(fixture.catalogCalls()).toBe(1);
   });
 });

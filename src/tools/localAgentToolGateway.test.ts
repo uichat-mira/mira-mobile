@@ -32,7 +32,7 @@ import {
   type ToolManifest,
   type ToolServiceDescriptor,
 } from './toolGatewayClient';
-import type { WhoYouMcpServiceDiscovery } from '../mcp/whoYouMcpService';
+import type { McpServiceSnapshot } from '../mcp/mcpServiceBinding';
 import {
   McpServiceBinding,
   type McpServiceDiscovery,
@@ -1407,8 +1407,8 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
   });
 
   const mcpDiscovery = (
-    snapshot: Awaited<ReturnType<WhoYouMcpServiceDiscovery['discover']>>,
-  ): WhoYouMcpServiceDiscovery => ({
+    snapshot: McpServiceSnapshot & { accountId: string },
+  ): McpServiceDiscovery => ({
     discover: jest.fn(async () => snapshot),
   });
 
@@ -1594,7 +1594,7 @@ describe('LocalAgentToolGateway trusted MCP service slice', () => {
   });
 
   it('distinguishes colliding service tool names deterministically instead of shadow-routing', async () => {
-    const duplicate = (serviceId: string, revision: string): WhoYouMcpServiceDiscovery => ({
+    const duplicate = (serviceId: string, revision: string): McpServiceDiscovery => ({
       discover: jest.fn(async () => ({
         service: {
           id: serviceId,

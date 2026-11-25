@@ -4,27 +4,15 @@ import {
 } from '../cloud/cloudAuthConfig';
 import {
   normalizeWhoYouMcpUrl,
-  resolveWhoYouMcpUrl,
   WHO_YOU_READ_SCOPE,
   whoYouResourceMetadataUrl,
 } from './whoYouConfig';
-import {
-  requestWhoYouReadCredential,
-  type IssuedWhoYouReadCredential,
-  type WhoYouCredentialOptions,
-} from './whoYouCredential';
 import { WhoYouError } from './whoYouError';
 import {
   assertWhoYouResponseTarget,
   withWhoYouRequestDeadline,
   type WhoYouRequestInit,
 } from './whoYouHttp';
-
-const MCP_PROTOCOL_VERSION = '2025-06-18';
-const WHOAMI_TOOL = 'whoyou_whoami';
-const MAILBOX_LIST_TOOL = 'whoyou_mailbox_list';
-const MAIL_SEARCH_TOOL = 'whoyou_mail_search';
-const MAIL_MESSAGE_GET_TOOL = 'whoyou_mail_message_get';
 
 export interface WhoYouResourceMetadata {
   resource: string;
@@ -86,11 +74,6 @@ export interface WhoYouReadSession {
   signal?: AbortSignal;
 }
 
-export interface WhoYouMailReaderClient {
-  searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage>;
-  readMail(input: WhoYouReadSession & { messageId: string }): Promise<WhoYouMailMessage>;
-}
-
 export interface WhoYouMailbox {
   mailboxId: string;
   address: string;
@@ -110,16 +93,11 @@ export interface WhoYouSnapshot {
   mailboxes: WhoYouMailbox[];
 }
 
-export interface WhoYouMcpClientLike {
+export interface WhoYouSnapshotReader {
   load(input: {
     sessionToken: string;
     accountId: string;
   }): Promise<WhoYouSnapshot>;
-}
-
-export interface WhoYouClientOptions extends WhoYouCredentialOptions {
-  mcpUrl?: string;
-  credentialRequester?: typeof requestWhoYouReadCredential;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -160,71 +138,6 @@ const transportFailure = (status: number): WhoYouError => {
     );
   }
   return invalidResponse('狐邮拒绝了只读请求');
-};
-
-const jsonRpcResult = (
-  value: unknown,
-  expectedId: number | null,
-): unknown => {
-  if (!isRecord(value) || value.jsonrpc !== '2.0') {
-    throw invalidResponse('狐邮返回了无效的 MCP 响应');
-  }
-  if (expectedId !== null && value.id !== expectedId) {
-    throw invalidResponse('狐邮返回了不匹配的 MCP 响应');
-  }
-  if (value.error !== undefined) {
-    const code = isRecord(value.error) ? safeCode(value.error.code) : undefined;
-    throw new WhoYouError(
-      'rejected',
-      '狐邮返回了只读请求错误。',
-      code ?? 'WHOYOU_MCP_ERROR',
-    );
-  }
-  if (!('result' in value)) {
-    throw invalidResponse('狐邮返回了不完整的 MCP 响应');
-  }
-  return value.result;
-};
-
-const parseSseResult = (text: string, expectedId: number): unknown => {
-  const events = text.split(/\r?\n\r?\n/u);
-  for (const event of events) {
-    const data = event
-      .split(/\r?\n/u)
-      .filter(line => line.startsWith('data:'))
-      .map(line => line.slice('data:'.length).trimStart())
-      .join('\n');
-    if (data.length === 0) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(data) as unknown;
-    } catch {
-      continue;
-    }
-    if (isRecord(parsed) && parsed.id === expectedId) {
-      return jsonRpcResult(parsed, expectedId);
-    }
-  }
-  throw invalidResponse('狐邮没有返回 MCP 结果');
-};
-
-const parseRpcResponse = async (
-  response: Response,
-  expectedId: number,
-): Promise<unknown> => {
-  if (!response.ok) throw transportFailure(response.status);
-  const text = await response.text();
-  const contentType = response.headers.get('content-type') ?? '';
-  if (contentType.toLowerCase().includes('text/event-stream')) {
-    return parseSseResult(text, expectedId);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw invalidResponse('狐邮返回了无法解析的 MCP 响应');
-  }
-  return jsonRpcResult(parsed, expectedId);
 };
 
 const parseResourceMetadata = (
@@ -348,7 +261,7 @@ export const parseToolStructuredContent = (result: unknown): Record<string, unkn
   return result.structuredContent;
 };
 
-const parseIdentity = (
+export const parseIdentity = (
   value: Record<string, unknown>,
   expectedAccountId: string,
 ): WhoYouIdentity => {
@@ -507,7 +420,7 @@ const parseMailbox = (value: unknown): WhoYouMailbox => {
   };
 };
 
-const parseMailboxes = (
+export const parseMailboxes = (
   value: Record<string, unknown>,
 ): WhoYouMailbox[] => {
   if (!Array.isArray(value.identities)) {
@@ -515,272 +428,3 @@ const parseMailboxes = (
   }
   return value.identities.map(parseMailbox);
 };
-
-/**
- * Minimal read-only Streamable HTTP MCP client. It performs the RFC 9728
- * discovery check, requests a fresh read credential for each load, completes a
- * stateless MCP handshake and exposes only the approved read-only tools.
- */
-export class WhoYouMcpClient implements WhoYouMcpClientLike {
-  private readonly mcpUrl: string;
-  private readonly cloudAuthBaseUrl: string;
-  private readonly fetchImpl?: typeof fetch;
-  private readonly now: () => Date;
-  private readonly timeoutMs?: number;
-  private readonly credentialRequester: typeof requestWhoYouReadCredential;
-  private metadata: WhoYouResourceMetadata | null = null;
-  private pendingDiscovery: Promise<WhoYouResourceMetadata> | null = null;
-  private nextRequestId = 1;
-
-  constructor(options: WhoYouClientOptions = {}) {
-    this.mcpUrl = normalizeWhoYouMcpUrl(
-      options.mcpUrl ?? resolveWhoYouMcpUrl(),
-    );
-    this.cloudAuthBaseUrl = normalizeCloudAuthBaseUrl(
-      options.baseUrl ?? resolveCloudAuthBaseUrl(),
-    );
-    this.fetchImpl = options.fetchImpl;
-    this.now = options.now ?? (() => new Date());
-    this.timeoutMs = options.timeoutMs;
-    this.credentialRequester =
-      options.credentialRequester ?? requestWhoYouReadCredential;
-  }
-
-  private discover(signal?: AbortSignal): Promise<WhoYouResourceMetadata> {
-    if (signal?.aborted) {
-      return Promise.reject(new WhoYouError('network', '狐邮请求已取消。', 'WHOYOU_REQUEST_CANCELLED'));
-    }
-    if (this.metadata) return Promise.resolve(this.metadata);
-    // Abortable requests do not share an uncancellable discovery in flight.
-    if (signal) {
-      return discoverWhoYouResource({
-        mcpUrl: this.mcpUrl,
-        cloudAuthBaseUrl: this.cloudAuthBaseUrl,
-        fetchImpl: this.fetchImpl,
-        timeoutMs: this.timeoutMs,
-        signal,
-      }).then(metadata => {
-        this.metadata = metadata;
-        return metadata;
-      });
-    }
-    if (this.pendingDiscovery) return this.pendingDiscovery;
-    const pending = discoverWhoYouResource({
-      mcpUrl: this.mcpUrl,
-      cloudAuthBaseUrl: this.cloudAuthBaseUrl,
-      fetchImpl: this.fetchImpl,
-      timeoutMs: this.timeoutMs,
-    }).then(metadata => {
-      this.metadata = metadata;
-      return metadata;
-    });
-    this.pendingDiscovery = pending;
-    const release = () => {
-      if (this.pendingDiscovery === pending) this.pendingDiscovery = null;
-    };
-    void pending.then(release, release);
-    return pending;
-  }
-
-  private async sendRpc(
-    token: string,
-    body: Record<string, unknown>,
-    expectedId: number,
-    protocolVersion?: string,
-    callerSignal?: AbortSignal,
-  ): Promise<unknown> {
-    const fetchImpl = this.fetchImpl ?? globalThis.fetch;
-    if (typeof fetchImpl !== 'function') {
-      throw new WhoYouError(
-        'network',
-        '无法连接狐邮，请检查网络后重试。',
-        'WHOYOU_FETCH_UNAVAILABLE',
-      );
-    }
-    return withWhoYouRequestDeadline(async signal => {
-      let response: Response;
-      try {
-        const init: WhoYouRequestInit = {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            accept: 'application/json, text/event-stream',
-            authorization: `Bearer ${token}`,
-            ...(protocolVersion
-              ? { 'MCP-Protocol-Version': protocolVersion }
-              : {}),
-          },
-          body: JSON.stringify(body),
-          redirect: 'error',
-          signal,
-        };
-        response = await fetchImpl(this.mcpUrl, init);
-        assertWhoYouResponseTarget(response, this.mcpUrl);
-      } catch (error) {
-        if (error instanceof WhoYouError) throw error;
-        throw new WhoYouError(
-          'network',
-          '无法连接狐邮，请检查网络后重试。',
-          'WHOYOU_MCP_UNREACHABLE',
-        );
-      }
-      return parseRpcResponse(response, expectedId);
-    }, this.timeoutMs, callerSignal);
-  }
-
-  private async sendInitialized(token: string, callerSignal?: AbortSignal): Promise<void> {
-    const fetchImpl = this.fetchImpl ?? globalThis.fetch;
-    if (typeof fetchImpl !== 'function') {
-      throw new WhoYouError(
-        'network',
-        '无法连接狐邮，请检查网络后重试。',
-        'WHOYOU_FETCH_UNAVAILABLE',
-      );
-    }
-    await withWhoYouRequestDeadline(async signal => {
-      let response: Response;
-      try {
-        const init: WhoYouRequestInit = {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            accept: 'application/json, text/event-stream',
-            authorization: `Bearer ${token}`,
-            'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
-          },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'notifications/initialized',
-          }),
-          redirect: 'error',
-          signal,
-        };
-        response = await fetchImpl(this.mcpUrl, init);
-        assertWhoYouResponseTarget(response, this.mcpUrl);
-      } catch (error) {
-        if (error instanceof WhoYouError) throw error;
-        throw new WhoYouError(
-          'network',
-          '无法连接狐邮，请检查网络后重试。',
-          'WHOYOU_MCP_UNREACHABLE',
-        );
-      }
-      if (!response.ok) throw transportFailure(response.status);
-    }, this.timeoutMs, callerSignal);
-  }
-
-  private async callTool(
-    token: string,
-    name: string,
-    args: Record<string, unknown> = {},
-    callerSignal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const id = this.nextRequestId++;
-    const result = await this.sendRpc(
-      token,
-      {
-        jsonrpc: '2.0',
-        id,
-        method: 'tools/call',
-        params: { name, arguments: args },
-      },
-      id,
-      MCP_PROTOCOL_VERSION,
-      callerSignal,
-    );
-    return parseToolStructuredContent(result);
-  }
-
-  private async authorize(input: WhoYouReadSession): Promise<{ token: string; identity: WhoYouIdentity }> {
-    await this.discover(input.signal);
-
-    let credential: IssuedWhoYouReadCredential;
-    try {
-      credential = await this.credentialRequester(
-        input.sessionToken,
-        input.accountId,
-        {
-          baseUrl: this.cloudAuthBaseUrl,
-          fetchImpl: this.fetchImpl,
-          now: this.now,
-          timeoutMs: this.timeoutMs,
-          ...(input.signal ? { signal: input.signal } : {}),
-        },
-      );
-    } catch (error) {
-      if (error instanceof WhoYouError) throw error;
-      throw new WhoYouError(
-        'unavailable',
-        '无法获取狐邮只读凭证，请稍后重试。',
-        'WHOYOU_CREDENTIAL_FAILED',
-      );
-    }
-
-    const initializeId = this.nextRequestId++;
-    const initialized = await this.sendRpc(
-      credential.token,
-      {
-        jsonrpc: '2.0',
-        id: initializeId,
-        method: 'initialize',
-        params: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: 'mira-mobile', version: '1' },
-        },
-      },
-      initializeId,
-      undefined,
-      input.signal,
-    );
-    if (
-      !isRecord(initialized) ||
-      initialized.protocolVersion !== MCP_PROTOCOL_VERSION
-    ) {
-      throw invalidResponse('狐邮没有接受只读 MCP 协议版本');
-    }
-
-    await this.sendInitialized(credential.token, input.signal);
-
-    const identity = parseIdentity(
-      await this.callTool(credential.token, WHOAMI_TOOL, {}, input.signal),
-      input.accountId,
-    );
-    return { token: credential.token, identity };
-  }
-
-  async load(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
-    const { token, identity } = await this.authorize(input);
-    const mailboxes = parseMailboxes(
-      await this.callTool(token, MAILBOX_LIST_TOOL, {}, input.signal),
-    );
-    return { identity, mailboxes };
-  }
-
-  async searchMail(input: WhoYouReadSession & { query?: string; cursor?: string }): Promise<WhoYouMailSearchPage> {
-    const query = input.query?.trim();
-    if (query && query.length > 200) throw new WhoYouError('rejected', '搜索关键词过长');
-    if (input.cursor && input.cursor.length > 200) throw new WhoYouError('rejected', '分页游标无效');
-    const { token } = await this.authorize(input);
-    const result = await this.callTool(token, MAIL_SEARCH_TOOL, {
-      folder: 'inbox',
-      limit: 10,
-      ...(query ? { query } : {}),
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-    }, input.signal);
-    return parseMailSearch(result);
-  }
-
-  async readMail(input: WhoYouReadSession & { messageId: string }): Promise<WhoYouMailMessage> {
-    if (!isNonEmptyString(input.messageId) || input.messageId.length > 80) {
-      throw new WhoYouError('rejected', '邮件标识无效');
-    }
-    const { token } = await this.authorize(input);
-    return parseMailMessage(await this.callTool(token, MAIL_MESSAGE_GET_TOOL, {
-      messageId: input.messageId,
-      include: 'text',
-    }, input.signal));
-  }
-}
-
-export const whoYouMcpClient = new WhoYouMcpClient();

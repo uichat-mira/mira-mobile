@@ -129,17 +129,22 @@ attachment storage or upload integration. The existing run events, approval,
 message rendering and stop path are retained. Device layout/keyboard checks
 remain T4 acceptance, not implied by component tests.
 
-### Trusted cloud MCP service slice (MOB-096, 2026-11-24)
+### Historical trusted cloud MCP service slice (MOB-096, 2026-11-24)
+
+Superseded by MOB-105 V1 below; the dedicated MCP service and static fallback described here are retired.
 
 This is the first real OPS-046 consumer, still limited to the read-only mail
 tools already covered by the existing MOB-086 mail disclosure approval.
 
 - `src/mcp/mcpProtocolClient.ts` is a protocol-neutral Streamable HTTP MCP
-  client. It performs `initialize`, paginated `tools/list`, optional
+  client. It performs `server/discover`, paginated `tools/list`, optional
   `resources/list` / `resources/read` and `tools/call` against one
-  caller-authorized endpoint. It rejects target changes, unmatched JSON-RPC
-  ids, duplicate tool/resource names, oversized schemas and unsupported
-  protocol versions. The bearer only travels in the Authorization header.
+  caller-authorized endpoint. Every request carries its protocol version,
+  client identity and client capabilities in `_meta`, with `Mcp-Method` and
+  the applicable `Mcp-Name` routing headers. It rejects target changes,
+  unmatched JSON-RPC ids, duplicate tool/resource names, oversized schemas,
+  non-`2026-07-28` servers and legacy `initialize` handshakes. The bearer only
+  travels in the Authorization header; there is no MCP session.
 - `src/mcp/whoYouMcpService.ts` reuses the existing RFC 9728 resource check,
   short-lived `whoyou.read` Cloud Auth credential, `whoyou_whoami` identity
   confirmation and `tools/list`. It then reads the optional
@@ -155,9 +160,10 @@ tools already covered by the existing MOB-086 mail disclosure approval.
   groups. The catalog revision covers real schemas and capability mapping.
 - The `McpServiceToolGateway` exposes deferred authoritative `tools/list`
   schemas through `mira_tools_disclose`. The two approved read tools execute
-  via the authenticated MCP session behind a per-run `LocalToolGatewayClient`
-  one-shot consent adapter. Search honors real MCP filters within the Mobile
-  inbox/10-message scope; body reads permit plain text only. Existing bounded
+  via the authenticated MCP request path behind a per-run
+  `LocalToolGatewayClient` one-shot consent adapter. Search honors real MCP
+  filters within the Mobile inbox/10-message scope; body reads permit plain
+  text only. Existing bounded
   untrusted-data result projections are reused, with no unapproved mail sent
   to Pi. The Cloud account, exact session-token identity and read credential
   are revalidated before and after approval or execution. A mail result may
@@ -186,7 +192,45 @@ tools already covered by the existing MOB-086 mail disclosure approval.
 
 
 
-### Mira ID service directory consumption (MOB-105 / 0.5.0 A2, 2026-11-25)
+### MCP 2026-07-28 protocol client (MOB-107, 2026-11-25)
+
+`src/mcp/mcpProtocolClient.ts` speaks only the `2026-07-28` revision. The
+client no longer keeps a version negotiation state machine or a fallback
+switch:
+
+- every request sends `params._meta` with
+  `io.modelcontextprotocol/protocolVersion`, `clientInfo` and
+  `clientCapabilities`;
+- the Streamable HTTP binding sends `MCP-Protocol-Version` and `Mcp-Method` on
+  every POST, plus `Mcp-Name` for `tools/call` and `resources/read` (using the
+  specification's Base64 sentinel for values that are not header-safe);
+- `discover()` calls `server/discover` and rejects servers whose
+  `supportedVersions` do not include `2026-07-28`;
+- list, read and call results accept `resultType: "complete"` (or its absence
+  per the revision's forward-compatibility rule); unknown types and the
+  unsupported `input_required` MRTR flow fail explicitly, and protocol errors
+  such as `-32022` keep an observable client error code;
+- `initialize`, `notifications/initialized`, `Mcp-Session-Id`, the
+  2025-06-18 / 2025-11-25 constants and all legacy negotiation are removed.
+
+`accountServiceRegistry.ts`, `whoYouMcpService.ts` and `desktopMcpService.ts`
+were updated at their direct `McpProtocolClient` call sites to use
+`discover()`. The Desktop Direct/Relay fetches forward the MCP routing headers
+(`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*`) to
+`POST /mcp` while continuing to own the transport credential; the client's
+placeholder Authorization header is never forwarded. Both Direct and Relay forward
+`Accept: application/json, text/event-stream`; the Desktop server chooses JSON. Service registry/catalog filtering, credentials, caches,
+approval, Tool Gateway authority and Pi Core scheduling are unchanged.
+Who-You and Desktop production services must also speak `2026-07-28`; a
+service that only offers the legacy handshake is rejected rather than
+downgraded. Cross-repository runtime acceptance remains with OPS-053 and the
+maintainer's real-device check.
+
+
+
+### Historical V0 service directory (MOB-105 A2, superseded)
+
+The following V0 slice is historical; current code uses V1 exclusively.
 
 MOB-105 consumes the frozen cloud-auth service registry V0 contract
 (`cloud-auth` #198, `docs/service-registry-v0.md`). Registering a service for an
@@ -239,6 +283,28 @@ switch or per-service login.
   Fixtures are not real production registrations. Real Mira ID accounts, deployed
   services, Android/iOS devices and A3/Direct/Relay interoperability remain T4
   validation gaps; no production registration is assumed to exist.
+
+### Mira ID V1 service directory (MOB-105 / MOB-107 joint candidate)
+
+- The account directory uses only `GET /v1/application-services` and
+  `POST /v1/application-services/{appId}/{serviceId}/credential`, with
+  `resource` and `expectedRevision` in the credential request.
+- Binding identity derives from the exact APP_ID, serviceId and resource tuple;
+  catalog and credential revisions, device/account/session, expiry and endpoint
+  changes invalidate stale authority. The Cloud Session stays at Cloud Auth.
+  The client checks the returned credential envelope and claims against the
+  trusted HTTPS issuer response; the resource server verifies the signature.
+- Discovery comes from the V1 catalog and real `tools/list`, not a compiled
+  Who You binding. Optional capability groups can refer only to permitted real
+  tools. Existing mail one-shot disclosure consent and inbox/text limits stay
+  in force; unknown services with recognized mail readers receive the same
+  conservative restrictions. The existing Who You settings screen requires a
+  single authorized Who You instance; ambiguous instances fail closed.
+- MCP 2026-07-28 mirrors schema-declared `x-mcp-header` primitive parameters
+  using standard `Mcp-Param-*` headers; invalid annotated definitions are excluded.
+- Desktop Host/Direct/Relay remain independent of the application directory.
+  Real deployed Who You V1, Desktop/Relay interoperability and device testing
+  are separate acceptance evidence, not implied by fixture tests.
 
 ### Semantic tool-chain blocking removal (MOB-100, 2026-11-24)
 

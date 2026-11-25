@@ -5,9 +5,9 @@ import {
 import { WhoYouError } from './whoYouError';
 import type {
   WhoYouMailbox,
-  WhoYouMcpClientLike,
+  WhoYouSnapshotReader,
   WhoYouSnapshot,
-} from './whoYouMcpClient';
+} from './whoYouReadContract';
 import {
   createWhoYouStore,
   type WhoYouCloudSnapshot,
@@ -65,7 +65,7 @@ const setup = (options: {
   const saveSpy = jest.spyOn(sessionStore, 'save');
   const clearSpy = jest.spyOn(sessionStore, 'clear');
   const loadSession = jest.fn(() => sessionStore.load());
-  const client: WhoYouMcpClientLike & { load: jest.Mock } = {
+  const client: WhoYouSnapshotReader & { load: jest.Mock } = {
     load: options.client ?? jest.fn(async () => snapshot),
   };
   const store = createWhoYouStore({

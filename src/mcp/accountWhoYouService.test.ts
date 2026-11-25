@@ -1,12 +1,8 @@
 import { cloudSessionStore } from '../cloud/cloudSessionStore';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
-import type { IssuedWhoYouReadCredential } from '../whoYou/whoYouCredential';
-import {
-  WHO_YOU_MCP_RESOURCE_URI,
-  WHO_YOU_MCP_SERVICE_ID,
-  discoverWhoYouMcpService,
-} from './whoYouMcpService';
-
+import { AccountServiceCatalogCache, accountServiceIdentity, discoverAccountMcpService, type IssuedAccountServiceCredential } from './accountServiceRegistry';
+const WHO_YOU_MCP_RESOURCE_URI = 'mira://service/who-you/capabilities';
+const APP_ID = 'app-whoyou-fixture';
 const MCP_URL = 'https://who-you.example.test/mcp';
 const METADATA_URL =
   'https://who-you.example.test/.well-known/oauth-protected-resource/mcp';
@@ -21,10 +17,12 @@ const metadata = {
   bearer_methods_supported: ['header'],
 };
 
-const credential: IssuedWhoYouReadCredential = {
+const credential: IssuedAccountServiceCredential = {
   token: 'who-you-read-token',
   tokenType: 'Bearer',
-  audience: 'mira:who-you',
+  appId: APP_ID, resource: MCP_URL,
+  serviceId: 'who-you',
+  revision: 1,
   expiresAt: '2099-01-01T00:00:00.000Z',
   claims: {
     accountId: ACCOUNT,
@@ -87,7 +85,7 @@ const manifest = {
       serverName: 'who-you',
       serverVersion: '0.1.0',
       sdk: '@modelcontextprotocol/server@2.4.0',
-      protocolVersions: ['2025-06-18'],
+      protocolVersions: ['2026-07-28'],
     },
   },
   capabilities: [
@@ -128,15 +126,12 @@ const fixtureFetch = (options: {
       method: string;
       params?: { name?: string; uri?: string };
     };
-    if (body.method === 'initialize') {
+    if (body.method === 'server/discover') {
       return rpc(body.id, {
-        protocolVersion: '2025-06-18',
+        supportedVersions: ['2026-07-28'],
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { name: 'who-you', version: '0.1.0' },
+        _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'who-you', version: '0.1.0' } },
       });
-    }
-    if (body.method === 'notifications/initialized') {
-      return new Response(null, { status: 202 });
     }
     if (body.method === 'tools/list') {
       return rpc(body.id, { tools: options.tools ?? tools });
@@ -176,21 +171,25 @@ const fixtureFetch = (options: {
 
 const discover = (
   fetchImpl: jest.Mock,
-  overrides: { credential?: IssuedWhoYouReadCredential; accountId?: string } = {},
-) => discoverWhoYouMcpService({
-  sessionToken: SESSION,
-  accountId: overrides.accountId ?? ACCOUNT,
-  mcpUrl: MCP_URL,
-  cloudAuthBaseUrl: CLOUD_AUTH_URL,
-  fetchImpl: fetchImpl as unknown as typeof fetch,
-  credentialRequester: jest.fn(async () => overrides.credential ?? credential),
-});
-
+  overrides: { credential?: IssuedAccountServiceCredential; accountId?: string; liveSession?: boolean } = {},
+) => {
+  const accountId = overrides.accountId ?? ACCOUNT;
+  const stored = { schemaVersion: 1 as const, account: { id: accountId, username:'fixture' }, sessionToken: SESSION, expiresAt: '2099-01-01T00:00:00.000Z', savedAt:'2026-11-24T00:00:00.000Z' };
+  const catalogFetch = jest.fn(async () => json(200, { services:[{ appId:APP_ID, serviceId:'who-you', projectId:'who-you', name:'Who You', type:'mcp', protocol:{name:'mcp',version:'2026-07-28',endpoint:MCP_URL},resource:MCP_URL,scopes:['whoyou.read'],revision:1,manifestRevision:1}]})) as unknown as typeof fetch;
+  return discoverAccountMcpService({accountId,serviceId:accountServiceIdentity({appId:APP_ID,serviceId:'who-you',resource:MCP_URL})},{
+    loadSession: overrides.liveSession ? () => cloudSessionStore.load() : async () => stored,
+    currentCloud: overrides.liveSession ? () => ({status:useCloudAccountStore.getState().status,accountId:useCloudAccountStore.getState().account?.id ?? null}) : () => ({status:'signed_in',accountId}),
+    catalog: new AccountServiceCatalogCache({baseUrl:CLOUD_AUTH_URL,fetchImpl:catalogFetch}),
+    baseUrl:CLOUD_AUTH_URL,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    credentialRequester: jest.fn(async () => overrides.credential ?? credential),
+  });
+};
 describe('Who You trusted MCP service discovery', () => {
   it('maps the real read tools and verified v1 resource into a trusted read-only catalog', async () => {
     const fetchImpl = fixtureFetch();
     const snapshot = await discover(fetchImpl);
-    expect(snapshot.service.id).toBe(WHO_YOU_MCP_SERVICE_ID);
+    expect(snapshot.service.id).toBe(accountServiceIdentity({appId:APP_ID,serviceId:'who-you',resource:MCP_URL}));
     expect(snapshot.tools.map((entry) => entry.name)).toEqual([
       'whoyou_mail_search',
       'whoyou_mail_message_get',
@@ -250,14 +249,14 @@ describe('Who You trusted MCP service discovery', () => {
         consumerId: 'another',
         scopes: ['whoyou.read'],
       },
-    }))).rejects.toMatchObject({ code: 'WHOYOU_IDENTITY_MISMATCH' });
+    }))).rejects.toMatchObject({ kind: 'invalid_response' });
 
     await expect(discover(fixtureFetch(), {
       credential: {
         ...credential,
         claims: { ...credential.claims, accountId: 'another' },
       },
-    })).rejects.toMatchObject({ code: 'WHOYOU_CREDENTIAL_IDENTITY_MISMATCH' });
+    })).rejects.toMatchObject({ code: 'SERVICE_CREDENTIAL_IDENTITY_MISMATCH' });
 
     await expect(discover(fixtureFetch(), {
       credential: {
@@ -265,10 +264,10 @@ describe('Who You trusted MCP service discovery', () => {
         claims: {
           ...credential.claims,
           scopes: ['whoyou.read', 'whoyou.mail.write'] as unknown as
-            IssuedWhoYouReadCredential['claims']['scopes'],
+            IssuedAccountServiceCredential['claims']['scopes'],
         },
       },
-    })).rejects.toMatchObject({ code: 'WHOYOU_CREDENTIAL_IDENTITY_MISMATCH' });
+    })).rejects.toMatchObject({ code: 'SERVICE_CREDENTIAL_SCOPE_MISMATCH' });
   });
 
   it('omits permitted tools that the real tools/list no longer declares', async () => {
@@ -293,25 +292,25 @@ describe('Who You trusted MCP service discovery', () => {
       savedAt: '2026-11-24T00:00:00.000Z',
     };
     const load = jest.spyOn(cloudSessionStore, 'load').mockResolvedValue(storeSession);
-    const snapshot = await discover(fixtureFetch());
     useCloudAccountStore.setState({
       status: 'signed_in',
       account: storeSession.account,
     });
     try {
-      await expect(snapshot.assertCurrent()).resolves.toBeUndefined();
+      const snapshot = await discover(fixtureFetch(), {liveSession:true});
+      await expect(snapshot.assertCurrent?.()).resolves.toBeUndefined();
       load.mockResolvedValue({ ...storeSession, sessionToken: 'new-session-same-account' });
-      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
-        code: 'WHOYOU_SESSION_CHANGED',
+      await expect(snapshot.assertCurrent?.()).rejects.toMatchObject({
+        code: 'SERVICE_REGISTRY_SESSION_CHANGED',
       });
       load.mockResolvedValue({ ...storeSession, expiresAt: '2020-01-01T00:00:00.000Z' });
-      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
-        code: 'WHOYOU_SESSION_CHANGED',
+      await expect(snapshot.assertCurrent?.()).rejects.toMatchObject({
+        code: 'SERVICE_REGISTRY_SESSION_EXPIRED',
       });
       load.mockResolvedValue(storeSession);
       useCloudAccountStore.setState({ account: { id: 'account-2', username: 'other' } });
-      await expect(snapshot.assertCurrent()).rejects.toMatchObject({
-        code: 'WHOYOU_ACCOUNT_CHANGED',
+      await expect(snapshot.assertCurrent?.()).rejects.toMatchObject({
+        code: 'SERVICE_REGISTRY_ACCOUNT_CHANGED',
       });
     } finally {
       load.mockRestore();
