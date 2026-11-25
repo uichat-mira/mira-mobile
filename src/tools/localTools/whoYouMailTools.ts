@@ -1,6 +1,6 @@
 import type { LocalToolDefinition } from '../localToolGatewayClient';
 import { ToolGatewayError } from '../toolGatewayClient';
-import { whoYouMailService, type WhoYouMailService } from '../../whoYou/whoYouMailService';
+import type { WhoYouMailService } from '../../whoYou/whoYouMailService';
 import { WhoYouError } from '../../whoYou/whoYouError';
 
 const safeTimestamp = (value: number): string => {
@@ -57,6 +57,7 @@ export const formatWhoYouMailSearch = (page: Awaited<ReturnType<WhoYouMailServic
       snippet: m.snippet.slice(0, 300),
     })),
     moreAvailable: page.nextCursor !== null,
+  nextCursor: page.nextCursor,
   }),
 });
 
@@ -130,6 +131,3 @@ export const createWhoYouMailTools = (
     },
   },
 ];
-
-export const [whoYouMailSearchTool, whoYouMailMessageTool] =
-  createWhoYouMailTools(whoYouMailService);

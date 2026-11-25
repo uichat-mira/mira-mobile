@@ -348,7 +348,7 @@ export const parseToolStructuredContent = (result: unknown): Record<string, unkn
   return result.structuredContent;
 };
 
-const parseIdentity = (
+export const parseIdentity = (
   value: Record<string, unknown>,
   expectedAccountId: string,
 ): WhoYouIdentity => {
@@ -507,7 +507,7 @@ const parseMailbox = (value: unknown): WhoYouMailbox => {
   };
 };
 
-const parseMailboxes = (
+export const parseMailboxes = (
   value: Record<string, unknown>,
 ): WhoYouMailbox[] => {
   if (!Array.isArray(value.identities)) {

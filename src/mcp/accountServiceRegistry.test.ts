@@ -3,6 +3,7 @@ import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient
 import { PiCoreAgentLoop } from '../runtime/piAgentLoop';
 import {
   TOOL_DISCLOSURE_TOOL,
+  ToolApprovalRequiredError,
   type ToolGatewayClient,
   type ToolManifest,
 } from '../tools/toolGatewayClient';
@@ -41,6 +42,7 @@ const credentialToken = (input: {
       sub: input.accountId ?? ACCOUNT_ID,
       aud: input.audience ?? `mira:service:${input.serviceId}`,
       device_id: input.deviceId ?? 'device-a',
+      ...(input.serviceId === 'who-you' ? { consumer_id: input.accountId ?? ACCOUNT_ID } : {}),
       scope: input.scopes,
       iat: nowSeconds,
       nbf: nowSeconds,
@@ -156,6 +158,10 @@ const fetchFixture = (input: {
       });
     }
     const serviceId = new URL(url).hostname.split('.')[0];
+    if (serviceId === 'who-you' && new URL(url).pathname === '/.well-known/oauth-protected-resource/mcp') {
+      expect(init?.headers).not.toHaveProperty('authorization');
+      return json(200, { resource: 'https://who-you.example/mcp', authorization_servers: [BASE_URL], scopes_supported: ['whoyou.read'], bearer_methods_supported: ['header'] });
+    }
     const request = parseRequest(init);
     if (request.method === 'initialize') {
       return mcpRpc(request.id, {
@@ -176,6 +182,14 @@ const fetchFixture = (input: {
         tool: request.params?.name ?? '',
         arguments: request.params?.arguments ?? {},
       });
+      if (serviceId === 'who-you') {
+        const structuredContent = request.params?.name === 'whoyou_whoami'
+          ? { accountId: ACCOUNT_ID, consumerId: ACCOUNT_ID, scopes: ['whoyou.read'] }
+          : request.params?.name === 'whoyou_mailbox_list'
+          ? { identities: [] }
+          : { messages: [], nextCursor: 'page-two-fixture' };
+        return mcpRpc(request.id, { content: [], structuredContent });
+      }
       return mcpRpc(request.id, {
         content: [{ type: 'text', text: `${serviceId}:${request.params?.name}` }],
       });
@@ -254,7 +268,7 @@ describe('Mira ID service registry catalog', () => {
       .toThrow('Mira ID returned an invalid service catalog');
   });
 
-  it('consumes canonical compatible services without admitting extra scopes or duplicate legacy mail', async () => {
+  it('consumes canonical compatible services without admitting extra scopes or duplicate mail bindings', async () => {
     const fixture = fetchFixture({
       catalog: () => catalogBody([
         { serviceId: 'cloud-guanlan' },
@@ -265,7 +279,7 @@ describe('Mira ID service registry catalog', () => {
     });
     const registry = directory({ fetchImpl: fixture.fetchImpl });
     const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
-    expect(bindings).toHaveLength(1);
+    expect(bindings.map(b => b.serviceTypeId)).toEqual(['cloud-guanlan', 'who-you']);
     const parsed = parseAccountServiceCatalog(catalogBody([{ serviceId: 'cloud-guanlan', scopes: ['guanlan.read', 'guanlan.write'] }]));
     expect(parsed).toEqual([]);
     const credential = await requestAccountServiceCredential(SESSION_TOKEN, {
@@ -290,7 +304,7 @@ describe('Mira ID service registry catalog', () => {
 
     const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
     expect(bindings.map((binding) => binding.serviceTypeId))
-      .toEqual(['notes', 'tasks']);
+      .toEqual(['notes', 'tasks', 'who-you']);
     expect(fixture.catalogCalls()).toBe(1);
     const reused = await registry.bindings({ accountId: ACCOUNT_ID });
     expect(reused[0]).toBe(bindings[0]);
@@ -318,6 +332,54 @@ describe('Mira ID service registry catalog', () => {
       tool: 'notes_lookup',
       arguments: { query: 'mira' },
     }]);
+  });
+
+  it('uses one registered Who You binding, only approved mail schemas, and one-shot consent for each page', async () => {
+    let active = true;
+    let now = NOW;
+    const fixture = fetchFixture({
+      catalog: () => catalogBody(active ? [{ serviceId: 'who-you' }] : []),
+      toolsFor: () => ['whoyou_mail_search', 'whoyou_mail_message_get', 'whoyou_mail_send'].map(name => ({
+        name, description: name, inputSchema: { type: 'object' },
+      })),
+    });
+    const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
+    const bindings = await registry.bindings({ accountId: ACCOUNT_ID });
+    expect(bindings.map(b => b.serviceTypeId)).toEqual(['who-you']);
+    const ready = await bindings[0].discover({ accountId: ACCOUNT_ID });
+    expect(ready.status).toBe('ready');
+    if (ready.status !== 'ready') return;
+    expect(ready.snapshot.tools.map(t => t.name).sort()).toEqual(['whoyou_mail_message_get', 'whoyou_mail_search']);
+    expect(ready.snapshot.tools.every(t => Boolean(t.sensitiveResult))).toBe(true);
+    const search = { callId: 'page-one', name: 'whoyou_mail_search', arguments: '{}' };
+    let approval;
+    try { await ready.gateway.callTool(search); } catch (error) {
+      if (error instanceof ToolApprovalRequiredError) approval = error.approval;
+      else throw error;
+    }
+    expect(approval).toBeDefined();
+    expect(fixture.mcpCalls.map(c => c.tool)).toEqual(['whoyou_whoami']);
+    if (!approval) throw new Error('missing approval');
+    const approved = await ready.gateway.resolveApproval(approval, 'approved');
+    expect(approved.status).toBe('completed');
+    if (approved.status === 'completed') expect(JSON.parse(approved.result.content).nextCursor).toBe('page-two-fixture');
+    await expect(ready.gateway.callTool({ ...search, callId: 'page-two', arguments: '{"cursor":"page-two-fixture"}' })).rejects.toBeInstanceOf(ToolApprovalRequiredError);
+    await expect(ready.gateway.callTool({ ...search, name: 'whoyou_mail_send' })).rejects.toMatchObject({ code: 'TOOL_NOT_DECLARED' });
+    const snapshot = await registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN });
+    expect(snapshot.identity.accountId).toBe(ACCOUNT_ID);
+    expect(snapshot.mailboxes).toEqual([]);
+    expect(fixture.credentialCalls.every(c => c.serviceId === 'who-you')).toBe(true);
+    const previousCalls = fixture.mcpCalls.length;
+    // Catalog refresh observes revocation while the original offline bearer
+    // still has time left. Neither old approvals nor settings can bypass it.
+    active = false;
+    now += 5 * 60_000 + 1;
+    expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
+    await expect(ready.gateway.callTool(search)).rejects.toBeDefined();
+    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
+      .rejects.toMatchObject({ code: 'SERVICE_REGISTRATION_NOT_FOUND' });
+    expect(fixture.mcpCalls).toHaveLength(previousCalls);
+
   });
 
   it('repairs a stale service revision once from a forced catalog refresh', async () => {

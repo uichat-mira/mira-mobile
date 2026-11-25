@@ -8,8 +8,8 @@ import {
   type StoredCloudSession,
 } from '../cloud/cloudSessionStore';
 import { WhoYouError } from './whoYouError';
+import { accountMcpServiceDirectory } from '../mcp/accountServiceRegistry';
 import {
-  whoYouMcpClient,
   type WhoYouIdentity,
   type WhoYouMailbox,
   type WhoYouMcpClientLike,
@@ -115,7 +115,9 @@ const whoYouFailure = (
       case 'unauthorized':
         return {
           status: 'error',
-          message: '狐邮拒绝了当前只读凭证，请稍后重试或重新登录 Mira Cloud。',
+          message: error.code === 'SERVICE_REGISTRATION_NOT_FOUND' || error.code === 'SERVICE_REGISTRATION_CHANGED'
+            ? '当前 Mira ID 未注册狐邮服务或授权已撤销。'
+            : '狐邮拒绝了当前只读凭证，请稍后重试或重新登录 Mira Cloud。',
         };
       case 'rejected':
         return {
@@ -264,7 +266,7 @@ const productionDependencies: WhoYouStoreDependencies = {
       accountId: state.account?.id ?? null,
     };
   },
-  client: whoYouMcpClient,
+  client: { load: input => accountMcpServiceDirectory.loadWhoYouSnapshot(input) },
   now: () => new Date(),
 };
 

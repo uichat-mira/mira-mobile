@@ -370,3 +370,6 @@ not by retaining two active loop implementations indefinitely.
 
 
 MOB-105 registry consumers validate the OPS-047 canonical service identity/audience/scope triples in addition to derived generic audiences. Compatibility is determined by declared protocol, not the audience spelling. Who You remains on its existing privacy-aware adapter until OPS-048 migration; registry credentials must match the declared scope set and JWT expiry.
+
+
+OPS-048 / MOB-105 cutover candidate: use the same registry connection for Who You Agent and settings discovery/credentials; no compiled-in mail fallback or special discovery singleton. The service-specific protected two-read-tool executor remains a privacy policy, not a second directory; each search page/body requires exact disclosure consent, and the returned opaque pagination cursor is retained. Activation requires verified account registration and deployed interoperability.

@@ -144,3 +144,8 @@
 ---
 
 **一句话产品定义：Mobile Pi Core 以通用 MCP Client 消费 Desktop、Who-You 及未来 MCP Server；第一方服务可选声明「环境（服务）→ 能力 → 工具」，Agent 自适应发现、按需披露 Schema 并连续调用。Desktop 保留自身 Harness/审批与必要 Remote V1 远程业务权威；协议方向已裁决，未交付部分必须以代码与运行证据验收。**
+
+
+## 0.5.0 A3 狐邮迁移候选
+
+MOB-105 / OPS-048：本候选以 Mira ID 已授权目录作为 Mobile 狐邮唯一发现/取票来源；不再默认注册旧专用 MCP discovery 或静态本机邮件工具。设置页的身份/邮箱状态读取也从同一注册连接获取短期只读票据。保留 RFC 9728 资源归属、whoami 账号/consumer 核对、两项受保护读取的逐页/正文审批和结果裁剪，分页结果保留服务端 opaque nextCursor。未知/未注册/撤销服务不得走旧签发 fallback。Desktop 的 Host Grant / Direct 独立。此切换须先完成可信真实账号注册与联验，不据候选测试宣称线上已迁移。

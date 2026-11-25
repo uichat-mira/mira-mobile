@@ -17,6 +17,10 @@ import {
   type McpResourceContent,
 } from './mcpProtocolClient';
 import { projectMcpService } from './mcpServiceCapabilities';
+import { createWhoYouMcpReadExecutor } from './whoYouMcpReadTools';
+import { discoverWhoYouResource, parseToolStructuredContent, parseIdentity, parseMailboxes, type WhoYouReadSession, type WhoYouSnapshot } from '../whoYou/whoYouMcpClient';
+import { WhoYouError } from '../whoYou/whoYouError';
+import { requiredMailRole } from '../tools/agentToolPolicies';
 import {
   McpServiceBinding,
   type McpServiceDiscovery,
@@ -47,7 +51,9 @@ const MAX_ENDPOINT_LENGTH = 2_048;
 const MAX_TEXT_RESULT_BYTES = 256 * 1024;
 
 /** Reserved identities owned by an existing, separately authorized path. */
-const LEGACY_SERVICE_IDS = new Set(['who-you', 'mira-desktop']);
+const LEGACY_SERVICE_IDS = new Set(['mira-desktop']);
+// Existing Mobile privacy contract (#337), not a second service discovery path.
+const WHO_YOU_PROTECTED_READ_TOOLS = ['whoyou_mail_search', 'whoyou_mail_message_get'] as const;
 
 export interface AccountServiceProtocol {
   name: string;
@@ -352,6 +358,7 @@ const parseCredentialClaims = (input: {
   if (claims.iss !== CLOUD_AUTH_ISSUER ||
       claims.aud !== input.audience ||
       claims.sub !== input.accountId ||
+      (input.serviceId === 'who-you' && claims.consumer_id !== input.accountId) ||
       !nonEmpty(claims.device_id, 200) ||
       !validServiceScopes(input.serviceId, claims.scope) ||
       !isNumericDate(claims.iat) ||
@@ -928,15 +935,19 @@ const findEntry = (
  * list: `tools/list` is the schema authority and registration never implies a
  * tool approval.
  */
-export const discoverAccountMcpService = async (
+const connectAccountMcpService = async (
   input: {
     accountId: string;
     serviceId: string;
     signal?: AbortSignal;
+    expectedSessionToken?: string;
   },
   deps: AccountServiceDiscoveryDeps,
-): Promise<McpServiceSnapshot> => {
+) => {
   const session = await currentSession(deps, input.accountId);
+  if (input.expectedSessionToken !== undefined && input.expectedSessionToken !== session.sessionToken) {
+    throw new McpProtocolError('unauthorized', 'The Mira ID session changed', 'SERVICE_REGISTRY_SESSION_CHANGED');
+  }
   let entries = await loadCatalogForSession(deps, session, {
     ...(input.signal ? { signal: input.signal } : {}),
   });
@@ -1012,6 +1023,18 @@ export const discoverAccountMcpService = async (
     throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
   }
 
+  const isWhoYou = entry.definition.serviceId === 'who-you';
+  // Preserve the existing Who You resource/issuer check before sending any
+  // bearer. Its endpoint comes only from the authorized registry declaration.
+  if (isWhoYou) {
+    await discoverWhoYouResource({
+      mcpUrl: entry.definition.protocol.endpoint,
+      cloudAuthBaseUrl: deps.baseUrl ?? resolveCloudAuthBaseUrl(),
+      fetchImpl: deps.fetchImpl,
+      timeoutMs: deps.timeoutMs,
+      signal: input.signal,
+    });
+  }
   const client = new McpProtocolClient({
     endpoint: entry.definition.protocol.endpoint,
     token: credential.token,
@@ -1019,89 +1042,109 @@ export const discoverAccountMcpService = async (
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
-  const serverInfo = await client.initialize(input.signal);
-  const toolDescriptors = await client.listTools(input.signal);
-  const capabilityResource = serverInfo.resources
-    ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)
-    : undefined;
-  const permittedToolNames = toolDescriptors.map((tool) => tool.name);
-  const projection = projectMcpService({
-    serviceId: entry.definition.serviceId,
-    serviceName: entry.definition.displayName,
-    serviceDescription:
-      'Mira ID 账号已授权的标准 MCP 服务；工具与 Schema 由服务自身声明。',
-    toolDescriptors,
-    capabilityResource,
-    grantedScopes: credential.claims.scopes,
-    requiredScopes: entry.definition.scopes,
-    permittedAccess: ['read', 'write', 'send', 'destructive'],
-    permittedToolNames,
-    serverInfo,
-  });
   const expiresAt = Date.parse(credential.expiresAt);
   const revision = entry.revision;
   const accountId = input.accountId;
   const sessionToken = session.sessionToken;
   const now = deps.now ?? (() => Date.now());
-  const executionGateway: ToolGatewayClient = {
-    listTools: async (): Promise<readonly ToolManifest[]> => [],
-    callTool: async (request, options) => {
-      const result = await client.callTool(
-        request.name,
-        parseMcpArguments(request.arguments),
-        options?.signal,
+  const assertCurrent = async () => {
+  const cloud = deps.currentCloud();
+  if (cloud.status !== 'signed_in' || cloud.accountId !== accountId) {
+    throw new McpProtocolError(
+      'unauthorized',
+      'The Mira ID account changed during the MCP service run',
+      'SERVICE_REGISTRY_ACCOUNT_CHANGED',
+    );
+  }
+  if (!(now() < expiresAt)) {
+    throw new McpProtocolError(
+      'unauthorized',
+      'The service credential expired',
+      'SERVICE_CREDENTIAL_EXPIRED',
+    );
+  }
+  const stored = await deps.loadSession();
+  if (!stored || stored.account.id !== accountId ||
+      stored.sessionToken !== sessionToken ||
+      !(Date.parse(stored.expiresAt) > now())) {
+    throw new McpProtocolError(
+      'unauthorized',
+      'The Mira ID session changed during the MCP service run',
+      'SERVICE_REGISTRY_SESSION_CHANGED',
+    );
+  }
+  // If another binding refreshed the catalog and this service is gone or
+  // its revision changed, this cached authorization is no longer current.
+  const observed = deps.catalog.peek({ accountId, sessionToken });
+  if (observed) {
+    const current = findEntry(observed, entry.definition.serviceId);
+    if (!current || current.revision !== revision ||
+        current.definition.protocol.version !== entry.definition.protocol.version ||
+        current.definition.protocol.endpoint !== entry.definition.protocol.endpoint) {
+      throw new McpProtocolError(
+        'unauthorized',
+        'The service registration changed or was revoked',
+        'SERVICE_REGISTRATION_CHANGED',
       );
-      return { content: toolResultContent(result) };
-    },
+    }
+  }
   };
+  await assertCurrent();
+  const serverInfo = await client.initialize(input.signal);
+  const identity = isWhoYou
+    ? parseIdentity(parseToolStructuredContent(await client.callTool('whoyou_whoami', {}, input.signal)), accountId)
+    : undefined;
+  await assertCurrent();
+  return { client, entry, credential, serverInfo, identity, isWhoYou, expiresAt, revision, accountId, assertCurrent };
+};
+
+export const discoverAccountMcpService = async (
+  input: { accountId: string; serviceId: string; signal?: AbortSignal },
+  deps: AccountServiceDiscoveryDeps,
+): Promise<McpServiceSnapshot> => {
+  const { client, entry, credential, serverInfo, isWhoYou, expiresAt, revision, accountId, assertCurrent } =
+    await connectAccountMcpService(input, deps);
+  const toolDescriptors = await client.listTools(input.signal);
+  const capabilityResource = serverInfo.resources
+    ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)
+    : undefined;
+  const permittedToolNames = isWhoYou ? WHO_YOU_PROTECTED_READ_TOOLS : toolDescriptors.map(tool => tool.name);
+  const projection = projectMcpService({
+    serviceId: entry.definition.serviceId,
+    serviceName: entry.definition.displayName,
+    serviceDescription: isWhoYou
+      ? 'Mira ID 已授权的狐邮只读邮件服务；逐页和正文发送给模型前须单独同意。'
+      : 'Mira ID 账号已授权的标准 MCP 服务；工具与 Schema 由服务自身声明。',
+    toolDescriptors,
+    capabilityResource,
+    grantedScopes: credential.claims.scopes,
+    requiredScopes: entry.definition.scopes,
+    permittedAccess: isWhoYou ? ['read'] : ['read', 'write', 'send', 'destructive'],
+    permittedToolNames,
+    ...(isWhoYou ? { sensitiveResultFor: (name: string) => requiredMailRole(name) ?? undefined } : {}),
+    serverInfo,
+  });
+  const executionGateway: ToolGatewayClient = isWhoYou
+    ? createWhoYouMcpReadExecutor(client, projection.tools)
+    : {
+      listTools: async (): Promise<readonly ToolManifest[]> => [],
+      callTool: async (request, options) => {
+        const result = await client.callTool(
+          request.name,
+          parseMcpArguments(request.arguments),
+          options?.signal,
+        );
+        return { content: toolResultContent(result) };
+      },
+    };
+  await assertCurrent();
   return {
     ...projection,
-    initialToolNames: [],
+    initialToolNames: isWhoYou ? ['whoyou_mail_search'] : [],
     expiresAt,
     bindingKey: `${accountId}:${entry.definition.serviceId}:${revision}:${entry.definition.protocol.version}:${entry.definition.protocol.endpoint}`,
     executionGateway,
-    assertCurrent: async () => {
-      const cloud = deps.currentCloud();
-      if (cloud.status !== 'signed_in' || cloud.accountId !== accountId) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The Mira ID account changed during the MCP service run',
-          'SERVICE_REGISTRY_ACCOUNT_CHANGED',
-        );
-      }
-      if (!(now() < expiresAt)) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The service credential expired',
-          'SERVICE_CREDENTIAL_EXPIRED',
-        );
-      }
-      const stored = await deps.loadSession();
-      if (!stored || stored.account.id !== accountId ||
-          stored.sessionToken !== sessionToken ||
-          !(Date.parse(stored.expiresAt) > now())) {
-        throw new McpProtocolError(
-          'unauthorized',
-          'The Mira ID session changed during the MCP service run',
-          'SERVICE_REGISTRY_SESSION_CHANGED',
-        );
-      }
-      // If another binding refreshed the catalog and this service is gone or
-      // its revision changed, this cached authorization is no longer current.
-      const observed = deps.catalog.peek({ accountId, sessionToken });
-      if (observed) {
-        const current = findEntry(observed, entry.definition.serviceId);
-        if (!current || current.revision !== revision ||
-            current.definition.protocol.version !== entry.definition.protocol.version ||
-            current.definition.protocol.endpoint !== entry.definition.protocol.endpoint) {
-          throw new McpProtocolError(
-            'unauthorized',
-            'The service registration changed or was revoked',
-            'SERVICE_REGISTRATION_CHANGED',
-          );
-        }
-      }
-    },
+    assertCurrent,
   };
 };
 
@@ -1138,8 +1181,8 @@ export interface AccountMcpServiceDirectoryOptions {
 
 /**
  * Maps the account's registered service directory to generic MCP bindings.
- * Existing canonical Who You/Desktop paths stay owned by their adapters until
- * A3 migration is verified; registering them again here would double-discover.
+ * Desktop remains owned by the independent Host Grant / Direct adapter.
+ * Who You is registry-discovered and retains the exact existing mail disclosure policy.
  */
 export class AccountMcpServiceDirectory implements McpServiceDirectory {
   private readonly deps: AccountServiceDiscoveryDeps;
@@ -1166,6 +1209,38 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
         ? { credentialRequester: options.credentialRequester }
         : {}),
     };
+  }
+
+  async loadWhoYouSnapshot(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
+    try {
+      const connection = await connectAccountMcpService({
+        accountId: input.accountId, serviceId: 'who-you',
+        expectedSessionToken: input.sessionToken, signal: input.signal,
+      }, this.deps);
+      if (!connection.identity) {
+        throw new WhoYouError('invalid_response', '狐邮未确认当前 Mira ID 身份。');
+      }
+      await connection.assertCurrent();
+      const mailboxes = parseMailboxes(parseToolStructuredContent(
+        await connection.client.callTool('whoyou_mailbox_list', {}, input.signal),
+      ));
+      await connection.assertCurrent();
+      return { identity: connection.identity, mailboxes };
+    } catch (error) {
+      if (error instanceof WhoYouError) throw error;
+      if (error instanceof McpProtocolError) {
+        if (error.code === 'SERVICE_REGISTRATION_NOT_FOUND' || error.code === 'SERVICE_REGISTRATION_CHANGED') {
+          throw new WhoYouError('unauthorized', '当前 Mira ID 未注册狐邮服务或授权已撤销。', error.code);
+        }
+        if (error.kind === 'unauthorized') {
+          throw new WhoYouError('session_rejected', 'Mira ID 会话或服务凭据已失效。', error.code);
+        }
+        if (error.kind === 'invalid_response') {
+          throw new WhoYouError('invalid_response', '狐邮返回无效服务数据。', error.code);
+        }
+      }
+      throw new WhoYouError('unavailable', '狐邮暂时不可用，请稍后重试。');
+    }
   }
 
   async bindings(input: {
