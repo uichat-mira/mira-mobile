@@ -466,16 +466,17 @@ describe('Mira ID service registry catalog', () => {
   it('starts a fresh catalog request when force is set instead of reusing stale in-flight work', async () => {
     let releaseFirst: (response: Response) => void = () => undefined;
     const first = new Promise<Response>(resolve => { releaseFirst = resolve; });
-    const fetchImpl = jest.fn()
+    const fetchMock = jest.fn()
       .mockImplementationOnce(() => first)
-      .mockResolvedValueOnce(json(200, catalogBody([{ serviceId: 'tasks', revision: 2 }]))) as unknown as typeof fetch;
+      .mockResolvedValueOnce(json(200, catalogBody([{ serviceId: 'tasks', revision: 2 }])));
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     const cache = new AccountServiceCatalogCache({baseUrl:BASE_URL,fetchImpl,now:()=>NOW});
     const input = {accountId:ACCOUNT_ID,sessionToken:SESSION_TOKEN};
     const pending = cache.load(input);
     await Promise.resolve();
     const forced = cache.load({...input, force: true});
     await Promise.resolve();
-    const callsBeforeRelease = fetchImpl.mock.calls.length;
+    const callsBeforeRelease = fetchMock.mock.calls.length;
     releaseFirst(json(200, catalogBody([{ serviceId: 'who-you', revision: 1 }])));
     const [staleResult, forcedResult] = await Promise.allSettled([pending, forced]);
 
