@@ -11,11 +11,17 @@
 /** Legacy stateless revision with explicit Who You compatibility evidence. */
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
-const SUPPORTED_PROTOCOL_VERSIONS = new Set([
+/**
+ * Protocol revisions this client can negotiate. The registry contract is
+ * independent of MCP; callers filter catalog entries by this exact set instead
+ * of guessing from a display name.
+ */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([
   '2026-07-28',
   '2025-11-25',
   '2025-06-18',
 ]);
+const SUPPORTED_PROTOCOL_VERSIONS = MCP_SUPPORTED_PROTOCOL_VERSIONS;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_LIST_PAGES = 8;
 const MAX_TOOLS = 512;

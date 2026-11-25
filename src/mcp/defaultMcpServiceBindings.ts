@@ -5,11 +5,13 @@ import {
 } from './whoYouMcpService';
 
 /**
- * Trusted MCP service collection for the Local Provider runtime.
+ * Compiled-in MCP bindings for the Local Provider runtime.
  *
- * Adding another independently authorized service means adding a binding whose
- * discovery adapter owns its own authentication, credential lifecycle, policy
- * and execution path. Pi Core and the local composition gateway stay generic.
+ * Generic Mira ID registrations are added dynamically by
+ * `accountServiceRegistry`; this list keeps only services whose existing
+ * canonical discovery path has not migrated yet. Each entry still owns its
+ * authentication, credential lifecycle, privacy policy and execution adapter,
+ * while Pi Core and the local composition gateway stay service-generic.
  */
 export const defaultMcpServiceBindings: readonly McpServiceBinding[] = [
   new McpServiceBinding({
