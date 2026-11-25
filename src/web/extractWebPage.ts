@@ -33,6 +33,12 @@ interface DomDocument {
   querySelectorAll: (selector: string) => ArrayLike<DomNode>;
 }
 
+/**
+ * Turndown types its input as the ambient DOM node union. Mobile has no ambient
+ * DOM, so a linkedom node is passed instead: same runtime shape, no global types.
+ */
+type TurndownInput = Parameters<TurndownService['turndown']>[0];
+
 const MAX_PAGE_LINKS = 40;
 const MAX_LINK_TEXT = 120;
 const MIN_ARTICLE_CHARS = 120;
@@ -108,7 +114,7 @@ const genericRoot = (document: DomDocument): DomNode | null => {
   return document.body ?? document.documentElement ?? null;
 };
 
-const cleanForMarkdown = (html: string, baseUrl: string): string => {
+const cleanForMarkdown = (html: string, baseUrl: string): DomNode | null => {
   const { document } = parseHTML(
     `<!doctype html><html><body>${html}</body></html>`,
   ) as unknown as { document: DomDocument };
@@ -123,13 +129,17 @@ const cleanForMarkdown = (html: string, baseUrl: string): string => {
     }
   }
   absolutizeLinks(document, baseUrl);
-  return document.body?.innerHTML ?? '';
+  // Return the parsed node instead of its serialized HTML. Metro resolves
+  // Turndown through the package "browser" entry, whose string parser falls back
+  // to a global `document` that React Native does not provide; a node input takes
+  // Turndown's cloneNode path and needs no ambient DOM.
+  return document.body ?? null;
 };
 
 const markdownFromHtml = (html: string, baseUrl: string): string => {
   const cleaned = cleanForMarkdown(html, baseUrl);
-  if (!cleaned.trim()) return '';
-  return turndown.turndown(cleaned)
+  if (!cleaned) return '';
+  return turndown.turndown(cleaned as unknown as TurndownInput)
     .replace(/[ \t]+$/gmu, '')
     .replace(/\n{3,}/gu, '\n\n')
     .trim();
