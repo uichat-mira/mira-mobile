@@ -41,12 +41,40 @@ import type {
   McpServiceDiscovery,
   McpServiceSnapshot,
 } from './mcpServiceBinding';
+import {
+  desktopThreadWorkspaceService,
+  DesktopThreadWorkspaceError,
+  type DesktopThreadWorkspaceService,
+} from './desktopThreadWorkspace';
+import { REMOTE_THREAD_CONTEXT_HEADER } from '../protocol/remoteThreadWorkspaceV1';
 
 export const DESKTOP_MCP_SERVICE_ID = 'mira-desktop';
 export const DESKTOP_MCP_RESOURCE_URI =
   'mira://service/mira-desktop/capabilities';
 
 const DESKTOP_MCP_ENDPOINT = 'https://mira-desktop.invalid/mcp';
+const MAX_THREAD_ID_LENGTH = 256;
+
+const normalizeThreadId = (threadId: string | undefined): string | undefined => {
+  if (threadId === undefined) return undefined;
+  const normalized = threadId.trim();
+  const hasControlCharacter = Array.from(normalized).some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f;
+  });
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_THREAD_ID_LENGTH ||
+    hasControlCharacter
+  ) {
+    throw new McpProtocolError(
+      'rejected',
+      'The Local conversation thread context is invalid',
+      'THREAD_CONTEXT_INVALID',
+    );
+  }
+  return normalized;
+};
 const CAPABILITIES_MIME = 'application/json';
 const DESKTOP_REQUIRED_SCOPES = ['tools:read', 'tools:invoke'] as const;
 const DESKTOP_ALLOWED_ACCESS = [
@@ -226,16 +254,23 @@ const createCloudFetch = (
   generation: number,
   entry: Pick<CloudRelayEntry, 'assertCurrentAccess'>,
   json: typeof requestCloudRelayJson,
+  threadId: string | undefined,
 ): DesktopRpcFetch =>
   (async (_url: RequestInfo | URL, init?: RequestInit) => {
     const payload = requestPayload(init);
     try {
       assertCloudBinding(access, accountId, hostId, generation, entry);
+      // Remote Thread Workspace V1 accepts the header only for official Cloud
+      // MCP tool execution; discovery and other MCP services must not see it.
+      const headers = threadId && payload.method === 'tools/call'
+        ? { [REMOTE_THREAD_CONTEXT_HEADER]: threadId }
+        : undefined;
       const result = await json(access.target, access.tickets, {
         hostUrl: access.target.endpoint,
         path: '/mcp',
         method: 'POST',
         body: payload,
+        ...(headers ? { headers } : {}),
         signal: init?.signal ?? undefined,
         raw: true,
         parse: value => value,
@@ -401,8 +436,24 @@ const createDesktopExecutionGateway = (
     args: Record<string, unknown>;
     signal?: AbortSignal;
   }) => Promise<RemoteToolInvocationProjection>,
+  threadBinding?: {
+    assertCompatible: () => void | Promise<void>;
+    remember: () => void | Promise<void>;
+  },
 ): ToolGatewayClient => {
   const invocationTools = new Map<string, string>();
+  const rememberWorkspaceExecution = async (): Promise<void> => {
+    if (!threadBinding) return;
+    try {
+      await threadBinding.remember();
+    } catch (error) {
+      // No side-effecting call may start without a durable routing identity.
+      if (error instanceof DesktopThreadWorkspaceError) {
+        throw new ToolGatewayError(error.code, error.message);
+      }
+      throw new ToolGatewayError('THREAD_BINDING_STORAGE_FAILED', 'Unable to persist the remote thread binding');
+    }
+  };
   return {
     listTools: async () => [],
     callTool: async (request, options) => {
@@ -420,6 +471,21 @@ const createDesktopExecutionGateway = (
           'TOOL_ARGUMENTS_INVALID',
           'Tool arguments must be a JSON object',
         );
+      }
+      if (threadBinding) {
+        try {
+          await threadBinding.assertCompatible();
+        } catch (error) {
+          if (error instanceof DesktopThreadWorkspaceError) {
+            throw new ToolGatewayError(error.code, error.message);
+          }
+          throw error;
+        }
+        // Bind before the side-effecting call. If Desktop creates the workspace
+        // and the response is lost, Mobile must still be able to locate and end
+        // exactly this thread later. A non-workspace call records only routing
+        // identity; Desktop still reports `not_started` and creates no directory.
+        await rememberWorkspaceExecution();
       }
       const result = parseDesktopResult(
         await client.callTool(request.name, args, options?.signal),
@@ -450,6 +516,12 @@ const createDesktopExecutionGateway = (
           'Tool arguments must be a JSON object',
         );
       }
+      // An allowed approval is the point where Desktop may create the private
+      // workspace. Record it before the side-effecting request so an uncertain
+      // Relay response still leaves a retryable thread binding.
+      if (decision === 'approved') {
+        await rememberWorkspaceExecution();
+      }
       const invocation = await resolveApproval({
         invocationId: approval.invocationId,
         decision,
@@ -476,6 +548,7 @@ const projectDesktop = async (input: {
   bindingKey: string;
   assertCurrent: () => void | Promise<void>;
   resolveApproval: Parameters<typeof createDesktopExecutionGateway>[1];
+  threadBinding?: Parameters<typeof createDesktopExecutionGateway>[2];
   signal?: AbortSignal;
 }): Promise<McpServiceSnapshot> => {
   const serverInfo = await input.client.initialize(input.signal);
@@ -510,6 +583,7 @@ const projectDesktop = async (input: {
     executionGateway: createDesktopExecutionGateway(
       input.client,
       input.resolveApproval,
+      input.threadBinding,
     ),
     assertCurrent: input.assertCurrent,
   };
@@ -578,9 +652,15 @@ export const createCloudDesktopMcpDiscovery = (input: {
   accountId: string;
   hostId: string;
   generation: number;
+  /** Local Provider conversation id; opaque to Desktop. */
+  threadId?: string;
   entry?: Pick<CloudRelayEntry, 'discoverHost' | 'assertCurrentAccess'>;
   json?: typeof requestCloudRelayJson;
   sse?: typeof openCloudRelayPostSse;
+  threadWorkspace?: Pick<
+    DesktopThreadWorkspaceService,
+    'assertBindingCompatible' | 'rememberBinding'
+  >;
 }): McpServiceDiscovery => ({
   serviceTypeId: DESKTOP_MCP_SERVICE_ID,
   async discover({ accountId, signal }) {
@@ -591,6 +671,7 @@ export const createCloudDesktopMcpDiscovery = (input: {
         'DESKTOP_MCP_BINDING_CHANGED',
       );
     }
+    const threadId = normalizeThreadId(input.threadId);
     const entry = input.entry ?? cloudRelayEntry;
     const json = input.json ?? requestCloudRelayJson;
     const access = await entry.discoverHost(input.hostId);
@@ -618,8 +699,20 @@ export const createCloudDesktopMcpDiscovery = (input: {
         input.generation,
         entry,
         json,
+        threadId,
       ),
     });
+    const threadWorkspace = threadId
+      ? input.threadWorkspace ?? desktopThreadWorkspaceService
+      : null;
+    const threadIdentity = threadId && threadWorkspace
+      ? {
+          threadId,
+          accountId: input.accountId,
+          hostId: input.hostId,
+          deviceId: manifest.device.id,
+        }
+      : null;
     const approvalClient = new CloudToolHostClient(
       input.accountId,
       input.hostId,
@@ -637,6 +730,7 @@ export const createCloudDesktopMcpDiscovery = (input: {
           cloud.account?.id === changedAccountId
         );
       },
+      threadId,
     );
     return projectDesktop({
       client,
@@ -653,6 +747,19 @@ export const createCloudDesktopMcpDiscovery = (input: {
         ),
       resolveApproval: approval =>
         approvalClient.resolveToolApproval(approval),
+      ...(threadIdentity && threadWorkspace
+        ? {
+            threadBinding: {
+              assertCompatible: () =>
+                threadWorkspace.assertBindingCompatible(threadIdentity),
+              remember: () =>
+                threadWorkspace.rememberBinding({
+                  ...threadIdentity,
+                  generation: input.generation,
+                }),
+            },
+          }
+        : {}),
       ...(signal ? { signal } : {}),
     });
   },

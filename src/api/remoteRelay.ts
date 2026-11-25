@@ -322,12 +322,14 @@ const createHeaders = (input: {
   credential?: string;
   body?: unknown;
   sse?: boolean;
+  extra?: Record<string, string>;
 }) => {
   const headers: Record<string, string> = {
     Accept: input.sse ? 'text/event-stream' : 'application/json',
   };
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.credential) headers.Authorization = `Bearer ${input.credential}`;
+  if (input.extra) Object.assign(headers, input.extra);
   return headers;
 };
 
@@ -500,6 +502,7 @@ export class RelayConnection {
         headers: createHeaders({
           credential: request.credential,
           body: request.body,
+          ...(request.headers ? { extra: request.headers } : {}),
         }),
         ...(request.body === undefined
           ? {}
@@ -557,6 +560,7 @@ export class RelayConnection {
               credential: request.credential,
               body: request.body,
               sse: true,
+              ...(request.headers ? { extra: request.headers } : {}),
             }),
             bodyBase64: base64Encode(
               utf8Encode(JSON.stringify(request.body)),

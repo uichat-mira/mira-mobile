@@ -5,9 +5,11 @@ import { ConversationMenu } from './ConversationMenu';
 jest.mock('lucide-react-native', () => ({
   Archive: () => null,
   ChevronRight: () => null,
+  FolderOpen: () => null,
   FolderPlus: () => null,
   Search: () => null,
   Share2: () => null,
+  Square: () => null,
   Trash2: () => null,
 }));
 
@@ -112,6 +114,32 @@ describe('ConversationMenu action availability', () => {
     root
       .findAll((node) => node.props.accessibilityRole === 'button')
       .map((node) => node.props.accessibilityLabel as string);
+
+  test('shows Desktop thread actions only when the real binding exists', async () => {
+    const withoutBinding = await render({ onShare: jest.fn() });
+    expect(labels(withoutBinding.root)).not.toContain('查看远程工作空间');
+    expect(labels(withoutBinding.root)).not.toContain('结束远程线程');
+    await ReactTestRenderer.act(async () => withoutBinding.unmount());
+
+    const onViewWorkspace = jest.fn();
+    const onEndThread = jest.fn();
+    const withBinding = await render({
+      onShare: jest.fn(),
+      onViewWorkspace,
+      onEndThread,
+    });
+    const workspace = findButtonByLabel(withBinding.root, '查看远程工作空间');
+    const endThread = findButtonByLabel(withBinding.root, '结束远程线程');
+    expect(workspace).toBeDefined();
+    expect(endThread).toBeDefined();
+
+    await ReactTestRenderer.act(async () => workspace!.props.onPress());
+    expect(onViewWorkspace).toHaveBeenCalledTimes(1);
+    await ReactTestRenderer.act(async () => endThread!.props.onPress());
+    expect(onEndThread).toHaveBeenCalledTimes(1);
+
+    await ReactTestRenderer.act(async () => withBinding.unmount());
+  });
 
   test('no longer offers the unimplemented placeholder entries', async () => {
     const renderer = await render({ onShare: jest.fn() });

@@ -138,6 +138,53 @@ afterEach(() => {
 });
 
 describe('Mira Relay transport', () => {
+  it('forwards contract-scoped headers without replacing transport auth', async () => {
+    const request = requestCloudRelayJson(relay, tickets, {
+      hostUrl: relay.endpoint,
+      path: '/mcp',
+      method: 'POST',
+      credential: '',
+      body: { jsonrpc: '2.0', id: 1, method: 'tools/call' },
+      headers: { 'X-Mira-Thread-Id': 'local-thread-1' },
+      raw: true,
+      parse: value => value as { ok: boolean },
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    await connect(socket);
+    const requestFrame = parseSent(socket).find(frame => frame.type === 'request');
+    expect(requestFrame).toMatchObject({
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Mira-Thread-Id': 'local-thread-1',
+      },
+    });
+    expect(
+      (requestFrame?.headers as Record<string, string>).Authorization,
+    ).toBeUndefined();
+
+    const requestId = String(requestFrame?.requestId);
+    socket.message({
+      version: 1,
+      type: 'response',
+      requestId,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    socket.message({
+      version: 1,
+      type: 'chunk',
+      requestId,
+      encoding: 'base64',
+      data: base64(JSON.stringify({ ok: true })),
+    });
+    socket.message({ version: 1, type: 'complete', requestId });
+    await expect(request).resolves.toEqual({ ok: true });
+  });
+
   it('forwards authenticated JSON and unwraps the Host response', async () => {
     const request = requestCloudRelayJson(relay, tickets, {
       hostUrl: relay.endpoint,

@@ -226,7 +226,13 @@ const jsonRpcResult = (value: unknown, expectedId: number): unknown => {
     );
   }
   if (value.error !== undefined) {
-    const code = isRecord(value.error) ? safeCode(value.error.code) : undefined;
+    const error = isRecord(value.error) ? value.error : null;
+    // Remote Thread Workspace V1 carries its stable application code in
+    // `error.data.code`; JSON-RPC's numeric `error.code` is not actionable.
+    const dataCode = error && isRecord(error.data)
+      ? safeCode(error.data.code)
+      : undefined;
+    const code = dataCode ?? (error ? safeCode(error.code) : undefined);
     throw new McpProtocolError(
       'rejected',
       'The MCP service rejected the request',

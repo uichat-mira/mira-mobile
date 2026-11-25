@@ -104,14 +104,45 @@ describe('RuntimeRegistry', () => {
       ...runtime('remote-host', []),
       deleteSession: async (sessionId: string) => { remoteDeletes.push(sessionId); },
     };
-    const registry = new RuntimeRegistry(local as never, remote as never);
+    const endedThreads: string[] = [];
+    const registry = new RuntimeRegistry(
+      local as never,
+      remote as never,
+      undefined,
+      async (threadId: string) => {
+        endedThreads.push(threadId);
+        return { kind: 'no_remote_work', threadId };
+      },
+    );
 
     await registry.deleteSession('local-1', 'local-provider');
     await registry.deleteSession('remote-1', 'remote-host');
     await registry.deleteSession('local-looking-remote', 'remote-host');
 
+    expect(endedThreads).toEqual(['local-1']);
     expect(localDeletes).toEqual(['local-1']);
     expect(remoteDeletes).toEqual(['remote-1', 'local-looking-remote']);
+  });
+
+  it('keeps the local thread when its remote end is not confirmed', async () => {
+    const localDeletes: string[] = [];
+    const local = {
+      ...runtime('local-provider', []),
+      deleteSession: async (sessionId: string) => { localDeletes.push(sessionId); },
+    };
+    const registry = new RuntimeRegistry(
+      local as never,
+      runtime('remote-host', []) as never,
+      undefined,
+      async () => {
+        throw new Error('remote cleanup not confirmed');
+      },
+    );
+
+    await expect(
+      registry.deleteSession('local-1', 'local-provider'),
+    ).rejects.toThrow('remote cleanup not confirmed');
+    expect(localDeletes).toEqual([]);
   });
 
   it('shows an empty list instead of a Remote failure with no Desktop pairing', async () => {

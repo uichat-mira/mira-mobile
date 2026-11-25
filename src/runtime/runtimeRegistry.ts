@@ -6,6 +6,7 @@ import { RemoteHostRuntime } from './remoteHostRuntime';
 import { CloudHostRuntime } from './cloudHostRuntime';
 import type { ConversationRuntime } from './conversationRuntime';
 import { createLocalAgentToolGateway } from '../tools/localAgentToolGateway';
+import { desktopThreadWorkspaceService } from '../mcp/desktopThreadWorkspace';
 
 export type SessionSourceFilter = 'all' | SessionSource;
 
@@ -20,6 +21,8 @@ export class RuntimeRegistry {
     }),
     remote = new RemoteHostRuntime(),
     cloud = new CloudHostRuntime(),
+    private readonly endLocalThread: (threadId: string) => Promise<unknown> =
+      threadId => desktopThreadWorkspaceService.endThread(threadId),
   ) {
     this.local = local;
     this.remote = remote;
@@ -74,7 +77,15 @@ export class RuntimeRegistry {
     return sessions.sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
   }
 
-  deleteSession(sessionId: string, source?: SessionSource): Promise<void> {
+  async deleteSession(sessionId: string, source?: SessionSource): Promise<void> {
+    const isLocalThread = source === 'local-provider' ||
+      (source === undefined && sessionId.startsWith('local-'));
+    if (isLocalThread) {
+      // Deleting the Mobile thread is an explicit end of its remote work. The
+      // dedicated end action retries idempotently; only a confirmed end allows
+      // the local record to disappear.
+      await this.endLocalThread(sessionId);
+    }
     return this.runtimeForSession(sessionId, source).deleteSession(sessionId);
   }
 

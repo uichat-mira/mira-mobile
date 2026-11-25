@@ -413,4 +413,32 @@ describe('PiCoreAgentLoop', () => {
     expect(executor.streamMessages).toHaveBeenCalledTimes(1);
   });
 
+  it('builds the run tool gateway with the Local conversation thread id', async () => {
+    const { gateway } = approvalGateway();
+    const executor = {
+      client: { cancelActiveRun: jest.fn() } as unknown as OpenAiStandardClient,
+      streamMessages: jest.fn(async () => (async function* () {
+        yield { type: 'finish' as const, reason: 'stop' };
+      })()),
+    };
+    const factory = jest.fn(() => gateway);
+    const controller = new LocalAgentRunController(factory);
+
+    const run = await controller.beginRun({
+      executor,
+      strength: 'standard',
+      initialMessages: [{ role: 'user', content: 'hello' }],
+      threadId: 'local-thread-1',
+      shouldPause: () => false,
+    });
+    await collect(run.stream);
+    controller.finishRun(run);
+
+    expect(factory).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'local-thread-1',
+    );
+  });
+
 });
