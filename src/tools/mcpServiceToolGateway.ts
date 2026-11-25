@@ -95,7 +95,9 @@ const asGatewayError = (error: unknown): never => {
       );
     }
     throw new ToolGatewayError(
-      'MCP_SERVICE_REJECTED',
+      error.code && error.code !== 'MCP_RPC_ERROR'
+        ? error.code
+        : 'MCP_SERVICE_REJECTED',
       'The MCP service rejected the tool call',
     );
   }

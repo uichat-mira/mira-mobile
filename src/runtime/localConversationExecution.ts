@@ -124,6 +124,7 @@ export async function executeLocalConversationTurn(
         strength,
         initialMessages: request.messages,
         approvalRecipient: `${config.name.slice(0, 80)} (${new URL(config.baseUrl).hostname}) · ${config.model.slice(0, 80)}`,
+        threadId: turn.session.id,
         selectionText: turn.input,
         previousAssistantText: previous[previous.length - 1]?.role === 'assistant'
           ? previous[previous.length - 1].content : undefined,

@@ -22,6 +22,12 @@ export interface RemoteJsonRequest<T> {
   credential?: string;
   body?: unknown;
   signal?: AbortSignal;
+  /**
+   * Transport-level headers for a contract-scoped context (for example the
+   * official Cloud MCP thread header). Authentication is still owned by
+   * `credential`; callers must not use this to attach business credentials.
+   */
+  headers?: Record<string, string>;
   parse: (value: unknown) => T;
   allowInsecureDevelopment?: boolean;
   /**
@@ -88,6 +94,9 @@ export const requestRemoteJson = async <T>(
   }
   if (request.credential) {
     headers.Authorization = `Bearer ${request.credential}`;
+  }
+  if (request.headers) {
+    Object.assign(headers, request.headers);
   }
 
   let response: Response;

@@ -169,6 +169,26 @@ describe('generic MCP protocol client', () => {
       .rejects.toMatchObject({ code: 'MCP_PROTOCOL_UNSUPPORTED' });
   });
 
+  it('surfaces the Remote Thread Workspace application code from error.data', async () => {
+    const denied = jest.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { id?: number };
+      return json(200, {
+        jsonrpc: '2.0',
+        id: body.id,
+        error: {
+          code: -32010,
+          message: 'thread ended',
+          data: { code: 'thread_ended' },
+        },
+      });
+    });
+    await expect(client(denied as unknown as typeof fetch).initialize())
+      .rejects.toMatchObject({
+        kind: 'rejected',
+        code: 'thread_ended',
+      });
+  });
+
   it('maps auth failure and malformed JSON-RPC, and never exposes provider bodies', async () => {
     const unauthorized = jest.fn(async () =>
       json(401, { error: 'secret-provider-body' }));

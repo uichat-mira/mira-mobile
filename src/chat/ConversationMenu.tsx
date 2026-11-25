@@ -3,9 +3,11 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   Archive,
   ChevronRight,
+  FolderOpen,
   FolderPlus,
   Search,
   Share2,
+  Square,
   Trash2,
 } from 'lucide-react-native';
 import { useTheme } from '../theme/ThemeContext';
@@ -54,6 +56,15 @@ interface ConversationMenuProps {
   onShare?: () => void;
   shareDisabled?: boolean;
   shareDisabledAccessibilityLabel?: string;
+  /** Only present when Mobile has a real Desktop thread binding to show. */
+  onViewWorkspace?: () => void;
+  viewWorkspaceDisabled?: boolean;
+  viewWorkspaceDisabledAccessibilityLabel?: string;
+  /** Explicit end; never invoked by turn completion, backgrounding or app close. */
+  onEndThread?: () => void;
+  endThreadDisabled?: boolean;
+  endThreadDisabledAccessibilityLabel?: string;
+  endThreadLabel?: string;
   onFindInChat?: () => void;
   onDelete?: () => void;
   deleteDisabled?: boolean;
@@ -71,6 +82,13 @@ export function ConversationMenu({
   onShare,
   shareDisabled = false,
   shareDisabledAccessibilityLabel,
+  onViewWorkspace,
+  viewWorkspaceDisabled = false,
+  viewWorkspaceDisabledAccessibilityLabel,
+  onEndThread,
+  endThreadDisabled = false,
+  endThreadDisabledAccessibilityLabel,
+  endThreadLabel = '结束远程线程',
   onFindInChat,
   onDelete,
   deleteDisabled = false,
@@ -80,9 +98,30 @@ export function ConversationMenu({
   projectDisabledAccessibilityLabel,
 }: ConversationMenuProps) {
   const { colors } = useTheme();
+  const items: ConversationMenuItem[] = [
+    menuItems[0],
+    ...(onViewWorkspace
+      ? [{
+          id: 'workspace',
+          label: '查看远程工作空间',
+          icon: FolderOpen,
+        } satisfies ConversationMenuItem]
+      : []),
+    ...(onEndThread
+      ? [{
+          id: 'end-thread',
+          label: endThreadLabel,
+          icon: Square,
+          destructive: true,
+        } satisfies ConversationMenuItem]
+      : []),
+    ...menuItems.slice(1),
+  ];
 
   const actionForItem = (id: string) => {
     if (id === 'share') return onShare;
+    if (id === 'workspace') return onViewWorkspace;
+    if (id === 'end-thread') return onEndThread;
     if (id === 'search') return onFindInChat;
     if (id === 'delete') return onDelete;
     if (id === 'project') return onAddToProject;
@@ -91,6 +130,8 @@ export function ConversationMenu({
 
   const disabledForItem = (id: string) => {
     if (id === 'share') return shareDisabled;
+    if (id === 'workspace') return viewWorkspaceDisabled;
+    if (id === 'end-thread') return endThreadDisabled;
     if (id === 'delete') return deleteDisabled;
     if (id === 'project') return projectDisabled;
     return false;
@@ -98,6 +139,10 @@ export function ConversationMenu({
 
   const disabledLabelForItem = (id: string) => {
     if (id === 'share') return shareDisabledAccessibilityLabel;
+    if (id === 'workspace') {
+      return viewWorkspaceDisabledAccessibilityLabel;
+    }
+    if (id === 'end-thread') return endThreadDisabledAccessibilityLabel;
     if (id === 'delete') return deleteDisabledAccessibilityLabel;
     if (id === 'project') return projectDisabledAccessibilityLabel;
     return undefined;
@@ -135,7 +180,7 @@ export function ConversationMenu({
           >
             {title}
           </Text>
-          {menuItems.map((item) => {
+          {items.map((item) => {
             const action = actionForItem(item.id);
             const disabled = action === undefined || disabledForItem(item.id);
             const itemColor = item.destructive

@@ -72,6 +72,9 @@ const harness = (options: {
   json?: jest.Mock;
   sse?: jest.Mock;
   current?: { value: boolean };
+  threadId?: string;
+  workspace?: Record<string, unknown>;
+  endWorkspace?: Record<string, unknown>;
 } = {}) => {
   const access = options.access ?? makeAccess();
   const current = options.current ?? { value: true };
@@ -95,6 +98,26 @@ const harness = (options: {
       return request.parse(manifest(options.scopes));
     }
     if (request.path === '/remote/v1/tools') return request.parse([tool]);
+    if (request.path.endsWith('/workspace')) {
+      return request.parse(options.workspace ?? {
+        threadId: options.threadId ?? 'local-thread-1',
+        status: 'not_started',
+        workspace: null,
+        startedAt: null,
+        endedAt: null,
+      });
+    }
+    if (request.path.endsWith('/end')) {
+      return request.parse(options.endWorkspace ?? {
+        threadId: options.threadId ?? 'local-thread-1',
+        status: 'ended',
+        workspace: null,
+        startedAt: null,
+        endedAt: '2026-11-25T00:00:10.000Z',
+        stoppedInvocations: 1,
+        stoppedTerminalSessions: 1,
+      });
+    }
     if (request.path.endsWith('/approval')) return request.parse(invocation);
     if (request.path.endsWith('/cancel')) {
       return request.parse({
@@ -130,6 +153,7 @@ const harness = (options: {
     json as unknown as typeof requestCloudRelayJson,
     sse as unknown as typeof import('../api/cloudRelay').openCloudRelayPostSse,
     () => current.value,
+    options.threadId,
   );
   return { access, client, entry, json, sse, current };
 };
@@ -254,6 +278,70 @@ describe('CloudToolHostClient', () => {
     ).rejects.toMatchObject({ code: 'TOOL_APPROVAL_UNCERTAIN' });
     expect(json.mock.calls.filter(([, , request]) => request.method === 'POST'))
       .toHaveLength(1);
+  });
+
+  it('adds the thread header only to the explicit approval and cancel calls', async () => {
+    const f = harness({ threadId: 'local-thread-1' });
+    await f.client.resolveToolApproval({
+      invocationId: 'inv-1',
+      decision: 'approved',
+      toolId: tool.id,
+      args: { query: 'mira' },
+    });
+    await f.client.cancelToolInvocation('inv-1');
+
+    const posts = f.json.mock.calls
+      .map(([, , request]) => request)
+      .filter((request) => request.method === 'POST');
+    expect(posts).toHaveLength(2);
+    for (const request of posts) {
+      expect(request.headers).toEqual({
+        'X-Mira-Thread-Id': 'local-thread-1',
+      });
+    }
+    const manifestRead = f.json.mock.calls.find(
+      ([, , request]) => request.path === '/remote/v1/manifest',
+    )?.[2];
+    expect(manifestRead?.headers).toBeUndefined();
+  });
+
+  it('reads workspace state and confirms an explicit end through the frozen routes', async () => {
+    const workspace = {
+      threadId: 'local-thread-1',
+      status: 'active',
+      workspace: {
+        ref: 'mira-thread-workspace:remote-mcp-abc',
+        kind: 'private',
+        available: true,
+        startedAt: '2026-11-25 00:00:00',
+      },
+      startedAt: '2026-11-25 00:00:00',
+      endedAt: null,
+    };
+    const f = harness({ threadId: 'local-thread-1', workspace });
+
+    await expect(
+      f.client.getThreadWorkspace('local-thread-1', 'cloud-mobile-a'),
+    ).resolves.toMatchObject({ status: 'active' });
+    await expect(
+      f.client.endThreadWorkspace('local-thread-1', 'cloud-mobile-a'),
+    ).resolves.toMatchObject({
+      status: 'ended',
+      stoppedInvocations: 1,
+      stoppedTerminalSessions: 1,
+    });
+
+    const workspaceCalls = f.json.mock.calls
+      .map(([, , request]) => request)
+      .filter((request) => request.path.startsWith('/remote/v1/threads/'));
+    expect(workspaceCalls.map((request) => request.path)).toEqual([
+      '/remote/v1/threads/local-thread-1/workspace',
+      '/remote/v1/threads/local-thread-1/end',
+    ]);
+    // The C2 thread header is defined for MCP tools/call only, not these routes.
+    for (const request of workspaceCalls) {
+      expect(request.headers).toBeUndefined();
+    }
   });
 
   it('fails closed when the account or bound Host changes mid-run', async () => {
