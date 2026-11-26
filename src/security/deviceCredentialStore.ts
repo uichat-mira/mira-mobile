@@ -1,10 +1,8 @@
 import { NativeModules } from 'react-native';
 import type { RemoteDeviceScope } from '../protocol/remoteHostV1';
-import type { RemoteRelayEndpoint } from '../protocol/remotePairingV1';
 
 export interface StoredDeviceCredential {
-  hostUrl: string | null;
-  relay: RemoteRelayEndpoint | null;
+  hostUrl: string;
   credential: string;
   deviceId: string;
   scopes: RemoteDeviceScope[];
@@ -42,40 +40,16 @@ const getNativeModule = (): NativeSecureCredentialModule | null => {
   return module;
 };
 
-const parseRelay = (value: unknown): RemoteRelayEndpoint | null => {
-  if (value === undefined || value === null) return null;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Stored Mira Relay endpoint is invalid');
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.endpoint !== 'string' ||
-    typeof record.relayId !== 'string' ||
-    typeof record.token !== 'string'
-  ) {
-    throw new Error('Stored Mira Relay endpoint is incomplete');
-  }
-  return {
-    endpoint: record.endpoint,
-    relayId: record.relayId,
-    token: record.token,
-  };
-};
-
-const parseStoredCredential = (value: string): StoredDeviceCredential => {
+const parseStoredCredential = (value: string): StoredDeviceCredential | null => {
   const parsed = JSON.parse(value) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Stored Mira device credential is invalid');
   }
 
   const record = parsed as Record<string, unknown>;
-  const hostUrl =
-    typeof record.hostUrl === 'string'
-      ? record.hostUrl
-      : record.hostUrl === null
-        ? null
-        : null;
-  const relay = parseRelay(record.relay);
+  const hostUrl = typeof record.hostUrl === 'string' ? record.hostUrl.trim() : '';
+  // Relay-only records have no usable Direct connection after retirement.
+  if (!hostUrl) return null;
 
   if (
     typeof record.credential !== 'string' ||
@@ -86,13 +60,8 @@ const parseStoredCredential = (value: string): StoredDeviceCredential => {
   ) {
     throw new Error('Stored Mira device credential is incomplete');
   }
-  if (!hostUrl && !relay) {
-    throw new Error('Stored Mira device credential has no remote endpoint');
-  }
-
   return {
     hostUrl,
-    relay,
     credential: record.credential,
     deviceId: record.deviceId,
     scopes: record.scopes as RemoteDeviceScope[],
@@ -101,34 +70,63 @@ const parseStoredCredential = (value: string): StoredDeviceCredential => {
 };
 
 export class NativeDeviceCredentialStore implements DeviceCredentialStore {
+  private pending: Promise<void> = Promise.resolve();
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.pending.then(operation);
+    this.pending = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   isAvailable() {
     return getNativeModule() !== null;
   }
 
   async load(): Promise<StoredDeviceCredential | null> {
-    const module = getNativeModule();
-    if (!module) {
-      throw new Error('Secure credential storage is not installed in this build');
-    }
+    return this.serialize(async () => {
+      const module = getNativeModule();
+      if (!module) {
+        throw new Error('Secure credential storage is not installed in this build');
+      }
 
-    const value = await module.get(SERVICE_NAME);
-    return value ? parseStoredCredential(value) : null;
+      const value = await module.get(SERVICE_NAME);
+      if (!value) return null;
+      const credential = parseStoredCredential(value);
+      if (!credential) {
+        await module.remove(SERVICE_NAME);
+        return null;
+      }
+      // Strip the retired token from secure storage, not only from memory.
+      const canonical = JSON.stringify(credential);
+      if (canonical !== value) await module.set(SERVICE_NAME, canonical);
+      return credential;
+    });
   }
 
   async save(value: StoredDeviceCredential): Promise<void> {
-    const module = getNativeModule();
-    if (!module) {
-      throw new Error('Secure credential storage is not installed in this build');
-    }
-    await module.set(SERVICE_NAME, JSON.stringify(value));
+    return this.serialize(async () => {
+      const module = getNativeModule();
+      if (!module) {
+        throw new Error('Secure credential storage is not installed in this build');
+      }
+      await module.set(SERVICE_NAME, JSON.stringify({
+        hostUrl: value.hostUrl,
+        credential: value.credential,
+        deviceId: value.deviceId,
+        scopes: value.scopes,
+        savedAt: value.savedAt,
+      }));
+    });
   }
 
   async clear(): Promise<void> {
-    const module = getNativeModule();
-    if (!module) {
-      throw new Error('Secure credential storage is not installed in this build');
-    }
-    await module.remove(SERVICE_NAME);
+    return this.serialize(async () => {
+      const module = getNativeModule();
+      if (!module) {
+        throw new Error('Secure credential storage is not installed in this build');
+      }
+      await module.remove(SERVICE_NAME);
+    });
   }
 }
 
@@ -145,9 +143,11 @@ export class MemoryDeviceCredentialStore implements DeviceCredentialStore {
 
   async save(value: StoredDeviceCredential) {
     this.value = {
-      ...value,
-      relay: value.relay ? { ...value.relay } : null,
+      hostUrl: value.hostUrl,
+      credential: value.credential,
+      deviceId: value.deviceId,
       scopes: [...value.scopes],
+      savedAt: value.savedAt,
     };
   }
 

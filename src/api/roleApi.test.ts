@@ -12,7 +12,6 @@ const pairedStore = async () => {
   const store = new MemoryDeviceCredentialStore();
   await store.save({
     hostUrl: 'https://mira.example.ts.net',
-    relay: null,
     credential: 'mira_device_device-1.secret',
     deviceId: 'device-1',
     scopes: ['threads:read'],

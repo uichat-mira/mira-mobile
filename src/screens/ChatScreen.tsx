@@ -11,7 +11,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -24,15 +23,13 @@ import {
 } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Bot,
   ChevronLeft,
   MoreVertical,
-  Send,
   Share2,
-  Square,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { ChatMessage } from '../types';
+import type { AgentExecutionStrengthId } from '../settings/agentExecutionStrength';
 import type { ConversationMatch } from '../chat/conversationTools';
 import {
   ConversationOrchestrator,
@@ -41,14 +38,22 @@ import {
 import { miraHostClient } from '../api/miraHostClient';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { RemoteHostError } from '../api/remoteHttp';
+import {
+  desktopThreadWorkspaceService,
+  DesktopThreadWorkspaceError,
+  type DesktopThreadBinding,
+} from '../mcp/desktopThreadWorkspace';
+import type { RemoteThreadWorkspaceProjection } from '../protocol/remoteThreadWorkspaceV1';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useThreadReadStore } from '../store/threadReadStore';
 import { useThreadPinStore } from '../store/threadPinStore';
 import { removeLastOpenedSession } from '../session/lastOpenedSession';
 import { useTheme } from '../theme/ThemeContext';
-import { fontSize, radius, shadows, sizing, spacing } from '../theme/tokens';
+import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { AssistantMarkdown } from '../chat/AssistantMarkdown';
 import { ConversationMenu } from '../chat/ConversationMenu';
+import { ChatComposer } from '../chat/ChatComposer';
+import { useComposerControls } from '../chat/useComposerControls';
 import { ConversationSearchBar } from '../chat/ConversationSearchBar';
 import { MessageAttachments } from '../chat/MessageAttachments';
 import {
@@ -234,10 +239,10 @@ export function ChatScreen() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [preparingSend, setPreparingSend] = useState(false);
+  const sendingRef = useRef(false);
   const [streamingText, setStreamingText] = useState('');
-  const [agentEnabled, setAgentEnabled] = useState(false);
   const [cloudCanSend, setCloudCanSend] = useState(false);
-  const [agentModeLoading, setAgentModeLoading] = useState(true);
   const [agentPhase, setAgentPhase] = useState<LocalAgentRunPhase>('idle');
   const [agentActivities, setAgentActivities] = useState<LocalAgentActivity[]>([]);
   const [agentPauseReason, setAgentPauseReason] =
@@ -264,6 +269,13 @@ export function ChatScreen() {
     top: number;
     right: number;
   }>({ top: 0, right: spacing.sm });
+  const [desktopThreadBinding, setDesktopThreadBinding] =
+    useState<DesktopThreadBinding | null>(null);
+  const [threadWorkspace, setThreadWorkspace] =
+    useState<RemoteThreadWorkspaceProjection | null>(null);
+  const [isLoadingThreadWorkspace, setIsLoadingThreadWorkspace] =
+    useState(false);
+  const [isEndingThread, setIsEndingThread] = useState(false);
   const [failedMessages, setFailedMessages] = useState<Map<string, string>>(
     new Map(),
   );
@@ -286,6 +298,11 @@ export function ChatScreen() {
     Boolean(cloudAccountId) && cloudAccountId === activeCloudAccountId
   );
   const supportsLocalAgent = isLocalProvider && runtime.supportsAgent === true;
+  const controls = useComposerControls(runtime, sessionId);
+  const { strength: agentStrength, setStrength: setAgentStrength, refresh: refreshComposer, mutationPending: composerMutationPending } = controls;
+  const agentModeLoading = controls.loading || controls.saving;
+  const selectedModel = controls.models.find(option => option.selected);
+  useFocusEffect(useCallback(() => { void refreshComposer(); }, [refreshComposer]));
   const shareDisabled =
     isSharing || isLoading || isLoadingHistory || historyError !== null;
   const shareAccessibilityLabel = isSharing
@@ -340,7 +357,6 @@ export function ChatScreen() {
   }, [isCloudHost, isLocalProvider, sessionId]);
 
   useEffect(() => {
-    let active = true;
     setAgentActivities([]);
     setPendingAgentApproval(null);
     setApprovalAction(null);
@@ -348,32 +364,11 @@ export function ChatScreen() {
     setAgentPauseReason(null);
     setAgentError(null);
     setAgentNotice(null);
-
-    if (!supportsLocalAgent || !runtime.getAgentEnabled) {
-      setAgentEnabled(false);
-      setAgentModeLoading(false);
-      return () => {
-        active = false;
-      };
-    }
-
-    setAgentModeLoading(true);
-    void runtime
-      .getAgentEnabled(sessionId)
-      .then(enabled => {
-        if (active) setAgentEnabled(enabled);
-      })
-      .catch(() => {
-        if (active) setAgentEnabled(false);
-      })
-      .finally(() => {
-        if (active) setAgentModeLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [runtime, sessionId, supportsLocalAgent]);
+    setDesktopThreadBinding(null);
+    setThreadWorkspace(null);
+    setIsLoadingThreadWorkspace(false);
+    setIsEndingThread(false);
+  }, [runtime, sessionId]);
 
   useEffect(() => {
     if (!isLocalProvider || !runtime.setExecutionSuspended) return undefined;
@@ -416,6 +411,23 @@ export function ChatScreen() {
     }
   }, [isCloudHost, isLocalProvider, runtime, sessionId]);
 
+  const refreshDesktopThreadBinding = useCallback(async () => {
+    if (!isLocalProvider) {
+      setDesktopThreadBinding(null);
+      setThreadWorkspace(null);
+      return;
+    }
+    try {
+      setDesktopThreadBinding(
+        await desktopThreadWorkspaceService.getBinding(sessionId),
+      );
+    } catch {
+      // A local storage read failure must not fabricate a remote workspace or
+      // block ordinary Local chat.
+      setDesktopThreadBinding(null);
+    }
+  }, [isLocalProvider, sessionId]);
+
   const loadMessages = useCallback(async (): Promise<ChatMessage[] | null> => {
     setHistoryError(null);
     try {
@@ -450,13 +462,17 @@ export function ChatScreen() {
     useCallback(() => {
       let active = true;
       setIsLoadingHistory(true);
-      void Promise.all([loadMessages(), refreshSessionTitle()]).finally(() => {
+      void Promise.all([
+        loadMessages(),
+        refreshSessionTitle(),
+        refreshDesktopThreadBinding(),
+      ]).finally(() => {
         if (active) setIsLoadingHistory(false);
       });
       return () => {
         active = false;
       };
-    }, [loadMessages, refreshSessionTitle]),
+    }, [loadMessages, refreshDesktopThreadBinding, refreshSessionTitle]),
   );
 
   const retryHistory = useCallback(() => {
@@ -570,7 +586,7 @@ export function ChatScreen() {
   const handleDelete = useCallback(() => {
     if (isDeleting || !canDelete) return;
     const message = isLocalProvider
-      ? `确定删除“${sessionTitle}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      ? `确定删除“${sessionTitle}”吗？会先结束该线程在 Mira Desktop 上的远程任务（若有），已有文件保留；随后仅删除当前设备上的本地对话。`
       : `确定删除“${sessionTitle}”吗？此操作会同步删除桌面端线程。`;
     Alert.alert('删除会话', message, [
       { text: '取消', style: 'cancel' },
@@ -582,6 +598,8 @@ export function ChatScreen() {
           void (async () => {
             try {
               await runtimeRegistry.deleteSession(sessionId, source);
+              setDesktopThreadBinding(null);
+              setThreadWorkspace(null);
               void removeLastOpenedSession(sessionId).catch(() => undefined);
               const cleanup = await Promise.allSettled([
                 removePinnedThread(sessionId),
@@ -595,11 +613,18 @@ export function ChatScreen() {
               }
               navigation.goBack();
             } catch (error) {
-              const failure =
-                error instanceof Error && error.message
-                  ? error.message
-                  : '无法删除该会话，请重试。';
-              Alert.alert('删除失败', failure);
+              if (error instanceof DesktopThreadWorkspaceError) {
+                Alert.alert(
+                  '无法确认远程线程已结束',
+                  `${error.message} 本机会话未删除；请检查 Mira Desktop 连接后重试。`,
+                );
+              } else {
+                const failure =
+                  error instanceof Error && error.message
+                    ? error.message
+                    : '无法删除该会话，请重试。';
+                Alert.alert('删除失败', failure);
+              }
             } finally {
               setIsDeleting(false);
             }
@@ -645,42 +670,7 @@ export function ChatScreen() {
     [],
   );
 
-  const toggleAgentMode = useCallback(async () => {
-    if (
-      !supportsLocalAgent ||
-      !runtime.setAgentEnabled ||
-      agentModeLoading ||
-      isLoading
-    ) {
-      return;
-    }
-    const next = !agentEnabled;
-    setAgentModeLoading(true);
-    try {
-      await runtime.setAgentEnabled(sessionId, next);
-      setAgentEnabled(next);
-      if (!next) {
-        setAgentActivities([]);
-        setPendingAgentApproval(null);
-        setApprovalAction(null);
-        setAgentPhase('idle');
-        setAgentPauseReason(null);
-        setAgentError(null);
-        setAgentNotice(null);
-      }
-    } catch {
-      Alert.alert('Agent 模式', '暂时无法保存 Agent 模式状态，请稍后重试。');
-    } finally {
-      setAgentModeLoading(false);
-    }
-  }, [
-    agentEnabled,
-    agentModeLoading,
-    isLoading,
-    runtime,
-    sessionId,
-    supportsLocalAgent,
-  ]);
+  const agentEnabled = agentStrength !== 'plain';
 
   const handleAgentApproval = useCallback(
     (decision: ToolApprovalDecision) => {
@@ -721,6 +711,7 @@ export function ChatScreen() {
           });
           setInputText('');
           setIsLoading(true);
+          setPreparingSend(false);
           setStreamingText('');
           break;
         case 'agent-reset':
@@ -808,7 +799,6 @@ export function ChatScreen() {
         (input) =>
           runtime.sendMessage(sessionId, input.content, {
             messageId: input.messageId,
-            agentEnabled: input.agentEnabled,
           }),
       ),
     [loadMessages, refreshSessionTitle, runtime, sessionId],
@@ -848,43 +838,67 @@ export function ChatScreen() {
       const content = (text ?? existingMessage?.content ?? inputText).trim();
       if (
         !content ||
+        sendingRef.current ||
         isLoading ||
         (isCloudHost && (!cloudAuthorityActive || !cloudCanSend)) ||
-        (supportsLocalAgent && agentModeLoading)
+        (isLocalProvider && (agentModeLoading || composerMutationPending()))
       ) {
         return;
       }
 
-      const useLocalAgent = supportsLocalAgent && agentEnabled;
-      // Retry reuses the same user message id so an uncertain reconnect cannot
-      // duplicate the user message (Remote Host V1 requires a stable messageId).
-      const userMsg: ChatMessage = existingMessage ?? {
-        id: createLocalMessageId(),
-        role: 'user',
-        content,
-        timestamp: new Date(),
-      };
-      if (!existingMessage) {
-        setMessages((prev) => [...prev, userMsg]);
+      sendingRef.current = true;
+      setPreparingSend(true);
+      try {
+        let effectiveStrength: AgentExecutionStrengthId = 'plain';
+        if (supportsLocalAgent && runtime.getEffectiveAgentStrength) {
+          try {
+            effectiveStrength = await runtime.getEffectiveAgentStrength(sessionId);
+            setAgentStrength(effectiveStrength);
+          } catch {
+            // Let the runtime send surface the fail-closed strength error instead
+            // of silently downgrading this turn to plain chat.
+            effectiveStrength = agentStrength;
+          }
+        }
+        const useLocalAgent = supportsLocalAgent && effectiveStrength !== 'plain';
+        // Retry reuses the same user message id so an uncertain reconnect cannot
+        // duplicate the user message (Remote Host V1 requires a stable messageId).
+        const userMsg: ChatMessage = existingMessage ?? {
+          id: createLocalMessageId(),
+          role: 'user',
+          content,
+          timestamp: new Date(),
+        };
+        if (!existingMessage) {
+          setMessages((prev) => [...prev, userMsg]);
+        }
+
+        // Haptic feedback fires for every user-initiated send (including retries)
+        // so the interaction contract "my question was delivered" matches what
+        // users feel. It runs in parallel with runTurn — no await, the network
+        // path must never wait on the vibrator.
+        void lightImpact();
+
+        await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
+      } finally {
+        sendingRef.current = false;
+        setPreparingSend(false);
       }
-
-      // Haptic feedback fires for every user-initiated send (including retries)
-      // so the interaction contract "my question was delivered" matches what
-      // users feel. It runs in parallel with runTurn — no await, the network
-      // path must never wait on the vibrator.
-      void lightImpact();
-
-      await runTurn(content, userMsg.id, userMsg.timestamp.getTime(), useLocalAgent);
     },
     [
-      agentEnabled,
       agentModeLoading,
+      agentStrength,
+      composerMutationPending,
       cloudAuthorityActive,
       cloudCanSend,
       isCloudHost,
+      isLocalProvider,
       inputText,
       isLoading,
       runTurn,
+      runtime,
+      sessionId,
+      setAgentStrength,
       supportsLocalAgent,
     ],
   );
@@ -904,7 +918,114 @@ export function ChatScreen() {
     }
   }, [agentEnabled, runtime, supportsLocalAgent]);
 
+  const showDesktopThreadWorkspace = useCallback(() => {
+    if (!isLocalProvider || isLoadingThreadWorkspace) return;
+    setIsLoadingThreadWorkspace(true);
+    void (async () => {
+      try {
+        const projection =
+          await desktopThreadWorkspaceService.getWorkspace(sessionId);
+        setThreadWorkspace(projection);
+        if (projection.status === 'active' && projection.workspace) {
+          Alert.alert(
+            '远程工作空间',
+            [
+              'Mira Desktop 已为当前线程创建私有工作空间。',
+              `引用：${projection.workspace.ref}`,
+              `目录当前可用：${projection.workspace.available ? '是' : '否'}`,
+              '成果文件保留在 Mira Desktop；手机端不会虚构本机目录。',
+            ].join('\n'),
+          );
+          return;
+        }
+        if (projection.status === 'ended') {
+          // A discovery read can show `ended` while an earlier end request was
+          // never confirmed. Do not present that as proven cleanup success.
+          Alert.alert(
+            '远程线程已标记结束',
+            projection.workspace
+              ? ['Mira Desktop 已把该线程标记为结束，已有文件仍保留。', `引用：${projection.workspace.ref}`, desktopThreadBinding?.endState === 'confirmed' ? '清理已确认。' : '清理尚未确认，可重试结束。'].join('\n')
+              : 'Mira Desktop 已把该线程标记为结束，没有已生成的远程工作空间。可使用「重试结束远程线程」再次确认清理结果。',
+          );
+          return;
+        }
+        Alert.alert(
+          '尚无远程工作空间',
+          '当前线程还没有实际执行需要 Mira Desktop 工作空间的工具，因此没有生成目录。',
+        );
+      } catch (error) {
+        if (error instanceof DesktopThreadWorkspaceError) {
+          Alert.alert(
+            '无法读取远程工作空间',
+            `${error.message}${error.retryable ? ' 请检查连接后重试。' : ''}`,
+          );
+          return;
+        }
+        Alert.alert('无法读取远程工作空间', '请检查 Mira Desktop 连接后重试。');
+      } finally {
+        setIsLoadingThreadWorkspace(false);
+      }
+    })();
+  }, [desktopThreadBinding, isLoadingThreadWorkspace, isLocalProvider, sessionId]);
+
+  const endDesktopThread = useCallback(() => {
+    if (!isLocalProvider || isEndingThread) return;
+    Alert.alert(
+      '结束远程线程',
+      '这会停止该线程在 Mira Desktop 上仍在运行的远程任务和终端会话。已有文件与成果会保留，不会删除本机聊天。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '结束',
+          style: 'destructive',
+          onPress: () => {
+            setIsEndingThread(true);
+            void (async () => {
+              try {
+                const result =
+                  await desktopThreadWorkspaceService.endThread(sessionId);
+                if (result.kind === 'no_remote_work') {
+                  setDesktopThreadBinding(null);
+                  setThreadWorkspace(null);
+                  Alert.alert(
+                    '无需结束',
+                    '当前线程还没有绑定 Mira Desktop 的远程工作。',
+                  );
+                  return;
+                }
+                setThreadWorkspace(result.projection);
+                await refreshDesktopThreadBinding();
+                Alert.alert(
+                  '远程线程已结束',
+                  [
+                    'Mira Desktop 已确认该线程结束。',
+                    `停止进行中的调用：${result.projection.stoppedInvocations ?? '未提供'}；停止终端会话：${result.projection.stoppedTerminalSessions ?? '未提供'}。`,
+                    '已有文件与成果仍保留。',
+                    ...(result.localEndRecorded === false
+                      ? ['本机结束状态未能保存，后续可能需要再次确认结束。']
+                      : []),
+                  ].join('\n'),
+                );
+              } catch (error) {
+                const message = error instanceof DesktopThreadWorkspaceError
+                  ? error.message
+                  : '无法确认 Mira Desktop 已结束该线程。';
+                Alert.alert(
+                  '结束未确认',
+                  `${message} 本机聊天未被删除；请检查连接后重试。`,
+                );
+              } finally {
+                setIsEndingThread(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [isEndingThread, isLocalProvider, refreshDesktopThreadBinding, sessionId]);
+
   const openMenu = useCallback(() => {
+    void refreshDesktopThreadBinding();
     menuButtonRef.current?.measureInWindow((x, y, width, height) => {
       setMenuAnchor({
         top: y + height + spacing.xs,
@@ -912,7 +1033,7 @@ export function ChatScreen() {
       });
       setIsMenuVisible(true);
     });
-  }, [windowWidth]);
+  }, [refreshDesktopThreadBinding, windowWidth]);
 
   const handleRetry = useCallback(
     (msg: ChatMessage) => {
@@ -1081,7 +1202,7 @@ export function ChatScreen() {
           </Text>
           <Text style={[styles.headerSource, { color: colors.text.soft }]} numberOfLines={1}>
             {isLocalProvider
-              ? `${providerName || 'Local Provider'}${providerModel ? ` · ${providerModel}` : ''}`
+              ? (selectedModel ? `${selectedModel.providerName} · ${selectedModel.model}` : controls.supportsModels ? 'Local Provider' : `${providerName || 'Local Provider'}${providerModel ? ` · ${providerModel}` : ''}`)
               : 'Remote Host'}
           </Text>
         </View>
@@ -1142,6 +1263,24 @@ export function ChatScreen() {
         onShare={() => void handleShare()}
         shareDisabled={shareDisabled}
         shareDisabledAccessibilityLabel={shareAccessibilityLabel}
+        {...(isLocalProvider && desktopThreadBinding
+          ? {
+              onViewWorkspace: showDesktopThreadWorkspace,
+              viewWorkspaceDisabled: isLoadingThreadWorkspace,
+              viewWorkspaceDisabledAccessibilityLabel:
+                '查看远程工作空间，正在读取',
+              onEndThread: endDesktopThread,
+              endThreadDisabled: isEndingThread || desktopThreadBinding.endState === 'confirmed',
+              endThreadDisabledAccessibilityLabel:
+                '结束远程线程，正在处理',
+              endThreadLabel:
+                desktopThreadBinding.endState === 'confirmed'
+                  ? '结束远程线程'
+                  : desktopThreadBinding.endState === 'pending' || threadWorkspace?.status === 'ended'
+                  ? '重试结束远程线程'
+                  : '结束远程线程',
+            }
+          : {})}
         onFindInChat={openSearch}
         onDelete={handleDelete}
         deleteDisabled={isDeleting || !canDelete}
@@ -1177,11 +1316,32 @@ export function ChatScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
+        <ChatComposer
+          key={sessionId}
+          value={inputText}
+          onChangeText={setInputText}
+          placeholder={isCloudHost && !cloudCanSend ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
+          editable={cloudAuthorityActive && (!isCloudHost || cloudCanSend) && !isLoading}
+          running={isLoading}
+          onSend={() => void sendMessage()}
+          onStop={handleStop}
+          strength={controls.supportsStrength ? agentStrength : undefined}
+          followsGlobal={controls.override === null}
+          strengthReady={controls.strengthReady}
+          models={controls.supportsModels ? controls.models : undefined}
+          modelsReady={controls.modelsReady}
+          busy={preparingSend || (isLocalProvider && agentModeLoading)}
+          error={controls.error}
+          onRefresh={() => void refreshComposer()}
+          onStrength={value => { if (!sendingRef.current) void controls.chooseStrength(value); }}
+          onModel={providerId => { if (!sendingRef.current) void controls.chooseModel(providerId); }}
+        >
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.messageList}
           onContentSizeChange={scrollToBottom}
           onScrollToIndexFailed={({ index, averageItemLength }) => {
@@ -1228,138 +1388,7 @@ export function ChatScreen() {
           ListFooterComponent={renderFooter}
         />
 
-        {supportsLocalAgent ? (
-          <View style={styles.agentModeRow}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={
-                agentEnabled ? '关闭本地 Agent 模式' : '开启本地 Agent 模式'
-              }
-              disabled={agentModeLoading || isLoading}
-              onPress={() => void toggleAgentMode()}
-              style={({ pressed }) => [
-                styles.agentModeButton,
-                {
-                  backgroundColor: agentEnabled
-                    ? colors.bg.soft
-                    : colors.bg.card,
-                  borderColor: agentEnabled
-                    ? colors.primary
-                    : colors.border.default,
-                },
-                pressed && { opacity: 0.72 },
-                (agentModeLoading || isLoading) && { opacity: 0.5 },
-              ]}
-            >
-              <Bot
-                size={16}
-                color={agentEnabled ? colors.primary : colors.text.muted}
-                strokeWidth={2}
-              />
-              <Text
-                style={[
-                  styles.agentModeText,
-                  {
-                    color: agentEnabled
-                      ? colors.text.ink
-                      : colors.text.muted,
-                  },
-                ]}
-              >
-                {agentModeLoading
-                  ? 'Agent…'
-                  : agentEnabled
-                    ? 'Agent 已开启'
-                    : 'Agent'}
-              </Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        <View
-          style={[
-            styles.inputBar,
-            {
-              borderTopColor: colors.border.soft,
-              backgroundColor: colors.bg.canvas,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.inputWrapper,
-              {
-                backgroundColor: colors.bg.input,
-                borderColor: colors.border.default,
-              },
-            ]}
-          >
-            <TextInput
-              style={[styles.input, { color: colors.text.ink }]}
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder={isCloudHost && !cloudCanSend
-                ? '当前 Cloud Host 尚未授予消息发送权限' : '给 Mira 发消息...'}
-              placeholderTextColor={colors.text.placeholder}
-              multiline
-              maxLength={500}
-              editable={
-                cloudAuthorityActive && (!isCloudHost || cloudCanSend) &&
-                !isLoading && !(supportsLocalAgent && agentModeLoading)
-              }
-              blurOnSubmit={false}
-              onSubmitEditing={() => void sendMessage()}
-            />
-            {isLoading ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="停止生成"
-                style={({ pressed }) => [
-                  styles.sendBtn,
-                  {
-                    backgroundColor: pressed
-                      ? colors.primaryActive
-                      : colors.text.ink,
-                  },
-                ]}
-                onPress={handleStop}
-              >
-                <Square
-                  size={16}
-                  color={colors.bg.elevated}
-                  fill={colors.bg.elevated}
-                />
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="发送消息"
-                style={({ pressed }) => [
-                  styles.sendBtn,
-                  {
-                    backgroundColor: pressed
-                      ? colors.primaryActive
-                      : colors.primary,
-                  },
-                  (!inputText.trim() ||
-                    (isCloudHost && !cloudCanSend) ||
-                    (supportsLocalAgent && agentModeLoading)) && {
-                    backgroundColor: colors.primaryDisabled,
-                  },
-                ]}
-                onPress={() => void sendMessage()}
-                disabled={
-                  !inputText.trim() ||
-                  (isCloudHost && !cloudCanSend) ||
-                  !cloudAuthorityActive ||
-                  (supportsLocalAgent && agentModeLoading)
-                }
-              >
-                <Send size={18} color={colors.onPrimary} strokeWidth={2.5} />
-              </Pressable>
-            )}
-          </View>
-        </View>
+        </ChatComposer>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1520,56 +1549,4 @@ const styles = StyleSheet.create({
   },
   retryText: { fontSize: fontSize.sm },
   failureText: { fontSize: fontSize.sm, lineHeight: 18, marginTop: 6 },
-  agentModeRow: {
-    paddingHorizontal: 14,
-    paddingBottom: spacing.xs,
-    alignItems: 'flex-start',
-  },
-  agentModeButton: {
-    minHeight: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.full,
-  },
-  agentModeText: {
-    fontSize: fontSize.caption,
-    fontWeight: '600',
-  },
-  inputBar: {
-    paddingHorizontal: 14,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  inputWrapper: {
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 6,
-    paddingLeft: 14,
-    paddingRight: spacing.xs,
-    paddingVertical: spacing.xs,
-    borderWidth: 1,
-    borderRadius: 24,
-    ...shadows.composer,
-  },
-  input: {
-    flex: 1,
-    minHeight: sizing.touchTarget,
-    maxHeight: 100,
-    paddingHorizontal: 0,
-    paddingVertical: 10,
-    fontSize: fontSize.md,
-    lineHeight: 22,
-  },
-  sendBtn: {
-    width: sizing.touchTarget,
-    height: sizing.touchTarget,
-    borderRadius: sizing.touchTarget / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 });

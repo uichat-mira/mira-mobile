@@ -17,6 +17,7 @@ import {
   loadPersonalizationSettings,
   type PersonalizationSettings,
 } from '../settings/personalizationSettings';
+import { loadGeneralSettings } from '../settings/generalSettings';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { getLocalMemoryService, type LocalMemoryService } from '../memory';
 import { assembleLocalRequestContext } from './localRequestContext';
@@ -25,6 +26,7 @@ import {
   LocalProviderExecutionController,
 } from './localProviderExecution';
 import {
+  LocalAgentExecutionStrengthUnavailableError,
   LocalAgentRunController,
   type LocalAgentToolGatewaySource,
 } from './localAgentRunController';
@@ -34,6 +36,16 @@ import {
   stageLocalSessionReferenceRemoval,
   type StagedLocalSessionReferenceRemoval,
 } from '../session/localSessionReferenceCleanup';
+import {
+  buildLocalProviderModelOptions,
+  LocalProviderModelSelectionError,
+  type LocalProviderModelOption,
+} from './localProviderModelSelection';
+import {
+  DEFAULT_AGENT_EXECUTION_STRENGTH,
+  resolveAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 export interface LocalProviderDeletionImpact {
   providerId: string;
@@ -101,6 +113,7 @@ export type StageLocalSessionReferenceRemoval = (
 
 interface ActiveProviderSend {
   providerId: string;
+  sessionId: string;
   cancelled: boolean;
   cancelProviderRun: (() => void) | null;
   close: (() => Promise<void>) | null;
@@ -115,6 +128,8 @@ export interface LocalProviderRuntimeOptions {
     apiKey: string,
   ) => OpenAiStandardClient;
   toolGateway?: LocalAgentToolGatewaySource;
+  /** Injected only for deterministic tests; production reads General settings per run. */
+  loadGlobalAgentStrength?: () => Promise<AgentExecutionStrengthId>;
   loadPersonalization?: () => Promise<PersonalizationSettings>;
   memoryService?: LocalMemoryService;
   stageSessionReferenceRemoval?: StageLocalSessionReferenceRemoval;
@@ -143,6 +158,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     apiKey: string,
   ) => OpenAiStandardClient;
   private readonly loadPersonalization: () => Promise<PersonalizationSettings>;
+  private readonly loadGlobalAgentStrength: () => Promise<AgentExecutionStrengthId>;
   private readonly memoryService: LocalMemoryService;
   private readonly stageSessionReferenceRemoval: StageLocalSessionReferenceRemoval;
   private readonly providerExecution = new LocalProviderExecutionController();
@@ -153,6 +169,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
   private readonly deletingProviderIds = new Set<string>();
   private readonly activeProviderSends = new Set<ActiveProviderSend>();
   private readonly pendingProviderSends = new Set<ActiveProviderSend>();
+  private readonly sessionOperationQueues = new Map<string, Promise<void>>();
   private currentProviderSend: ActiveProviderSend | null = null;
 
   constructor(options: LocalProviderRuntimeOptions = {}) {
@@ -171,6 +188,9 @@ export class LocalProviderRuntime implements ConversationRuntime {
         }));
     this.loadPersonalization =
       options.loadPersonalization ?? loadPersonalizationSettings;
+    this.loadGlobalAgentStrength =
+      options.loadGlobalAgentStrength ??
+      (async () => (await loadGeneralSettings()).agentExecutionStrength);
     this.memoryService = options.memoryService ?? getLocalMemoryService();
     this.stageSessionReferenceRemoval =
       options.stageSessionReferenceRemoval ?? stageLocalSessionReferenceRemoval;
@@ -227,9 +247,57 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
+  private acquireProviderMutations(providerIds: readonly string[]): () => void {
+    const releases: Array<() => void> = [];
+    try {
+      for (const providerId of [...new Set(providerIds)].sort()) {
+        releases.push(this.acquireProviderMutation(providerId));
+      }
+    } catch (error) {
+      releases.forEach((release) => release());
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releases.forEach((release) => release());
+    };
+  }
+
+  /**
+   * Serializes send preflight with model selection for the same conversation.
+   * The actual stream keeps running after preflight; selection then sees the
+   * registered send and refuses to change the provider under an active run.
+   */
+  private enqueueSessionOperation<T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous =
+      this.sessionOperationQueues.get(sessionId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.sessionOperationQueues.set(sessionId, tail);
+    tail
+      .then(() => {
+        if (this.sessionOperationQueues.get(sessionId) === tail) {
+          this.sessionOperationQueues.delete(sessionId);
+        }
+      })
+      .catch(() => undefined);
+    return result;
+  }
+
   private hasProviderSend(providerId: string): boolean {
     return [...this.activeProviderSends].some(
       (send) => send.providerId === providerId,
+    );
+  }
+
+  private hasSessionSend(sessionId: string): boolean {
+    return [...this.activeProviderSends, ...this.pendingProviderSends].some(
+      (send) => send.sessionId === sessionId,
     );
   }
 
@@ -245,9 +313,13 @@ export class LocalProviderRuntime implements ConversationRuntime {
     });
   }
 
-  private prepareProviderSend(providerId: string): ActiveProviderSend {
+  private prepareProviderSend(
+    providerId: string,
+    sessionId: string,
+  ): ActiveProviderSend {
     const send: ActiveProviderSend = {
       providerId: this.requireProviderId(providerId),
+      sessionId,
       cancelled: false,
       cancelProviderRun: null,
       close: null,
@@ -322,13 +394,25 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
   async listSessions(): Promise<Session[]> {
     const configs = await this.configStore.load();
+    // The list icon is a projection of the same effective strength used by a
+    // send. A settings read failure must not prevent listing local threads.
+    const globalStrength = await this.loadGlobalAgentStrength().catch(
+      () => DEFAULT_AGENT_EXECUTION_STRENGTH,
+    );
     const sessions = await Promise.all(
       configs.map(async (config) =>
-        (await this.sessionRepository.list(config.id)).map((session) => ({
-          ...session,
-          providerName: config.name,
-          providerModel: config.model,
-        })),
+        (await this.sessionRepository.list(config.id)).map((session) => {
+          const effectiveStrength = resolveAgentExecutionStrength(
+            session.agentStrengthOverride,
+            globalStrength,
+          );
+          return {
+            ...session,
+            providerName: config.name,
+            providerModel: config.model,
+            agentEnabled: effectiveStrength !== 'plain',
+          };
+        }),
       ),
     );
     return sessions
@@ -512,10 +596,20 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return this.sessionRepository.getMessages(sessionId);
   }
 
-  async sendMessage(
+  sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
+  ): Promise<AsyncIterable<RuntimeEvent>> {
+    return this.enqueueSessionOperation(sessionId, () =>
+      this.prepareMessageSend(sessionId, input, options),
+    );
+  }
+
+  private async prepareMessageSend(
+    sessionId: string,
+    input: string,
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     if (this.deletingProviderIds.has(providerId)) {
@@ -541,7 +635,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
     }
 
     const runtime = this;
-    const preparedSend = this.prepareProviderSend(providerId);
+    const preparedSend = this.prepareProviderSend(providerId, sessionId);
     let generator: AsyncGenerator<RuntimeEvent, void, unknown>;
 
     generator = (async function* () {
@@ -609,13 +703,14 @@ export class LocalProviderRuntime implements ConversationRuntime {
             session,
             input,
             messageId: options?.messageId,
-            agentEnabled: options?.agentEnabled,
           },
           {
             repository: runtime.sessionRepository,
             executor,
             providerExecution: runtime.providerExecution,
             agentRun: runtime.agentRun,
+            resolveAgentStrength: (targetSessionId) =>
+              runtime.getEffectiveAgentStrength(targetSessionId),
             assembleRequest: (canonicalMessages) =>
               assembleLocalRequestContext(canonicalMessages, {
                 loadPersonalization: runtime.loadPersonalization,
@@ -639,18 +734,141 @@ export class LocalProviderRuntime implements ConversationRuntime {
     return generator;
   }
 
-  getAgentEnabled(sessionId: string): Promise<boolean> {
-    return this.sessionRepository.getAgentEnabled(sessionId);
+  getAgentStrengthOverride(
+    sessionId: string,
+  ): Promise<AgentExecutionStrengthId | null> {
+    return this.sessionRepository.getAgentStrengthOverride(sessionId);
   }
 
-  async setAgentEnabled(sessionId: string, enabled: boolean): Promise<void> {
+  async getEffectiveAgentStrength(
+    sessionId: string,
+  ): Promise<AgentExecutionStrengthId> {
+    let override: AgentExecutionStrengthId | null;
+    try {
+      override = await this.sessionRepository.getAgentStrengthOverride(sessionId);
+    } catch {
+      throw new LocalAgentExecutionStrengthUnavailableError();
+    }
+    // An explicit thread choice does not depend on the global setting document.
+    if (override !== null) return override;
+
+    let global: AgentExecutionStrengthId;
+    try {
+      global = await this.loadGlobalAgentStrength();
+    } catch {
+      throw new LocalAgentExecutionStrengthUnavailableError();
+    }
+    return resolveAgentExecutionStrength(override, global);
+  }
+
+  async setAgentStrength(
+    sessionId: string,
+    strength: AgentExecutionStrengthId,
+  ): Promise<void> {
     const providerId = await this.sessionRepository.getProviderId(sessionId);
     const release = this.acquireProviderMutation(providerId);
     try {
-      await this.sessionRepository.setAgentEnabled(sessionId, enabled);
+      await this.sessionRepository.setAgentStrengthOverride(sessionId, strength);
     } finally {
       release();
     }
+  }
+
+  async resetAgentStrength(sessionId: string): Promise<void> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const release = this.acquireProviderMutation(providerId);
+    try {
+      await this.sessionRepository.resetAgentStrength(sessionId);
+    } finally {
+      release();
+    }
+  }
+
+  async listLocalProviderModels(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption[]> {
+    const providerId = await this.sessionRepository.getProviderId(sessionId);
+    const configs = await this.configStore.load();
+    return buildLocalProviderModelOptions(configs, providerId);
+  }
+
+  async getSelectedLocalProviderModel(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption | null> {
+    const options = await this.listLocalProviderModels(sessionId);
+    return options.find((option) => option.selected) ?? null;
+  }
+
+  /**
+   * Switches this conversation to another already-configured Provider/model.
+   *
+   * The session's `providerId` is the single source of truth, so the next send
+   * (ordinary chat or Pi Core Agent) resolves endpoint, model and credential
+   * from the selected configuration. An active or prepared run is never
+   * re-identified; the selection is explicitly refused until it finishes.
+   */
+  async selectLocalProviderModel(
+    sessionId: string,
+    providerId: string,
+  ): Promise<LocalProviderModelOption> {
+    const targetProviderId = this.requireProviderId(providerId);
+    return this.enqueueSessionOperation(sessionId, async () => {
+      const currentProviderId =
+        await this.sessionRepository.getProviderId(sessionId);
+      const release = this.acquireProviderMutations([
+        currentProviderId,
+        targetProviderId,
+      ]);
+      try {
+        if (this.hasSessionSend(sessionId)) {
+          throw new LocalProviderModelSelectionError(
+            'run-active',
+            targetProviderId,
+          );
+        }
+
+        const configs = await this.configStore.load();
+        const target = configs.find(
+          (config) => config.id === targetProviderId,
+        );
+        if (!target) {
+          throw new LocalProviderModelSelectionError(
+            'provider-missing',
+            targetProviderId,
+          );
+        }
+        if (target.requiresStandardProtocolReview) {
+          throw new LocalProviderModelSelectionError(
+            'provider-unavailable',
+            targetProviderId,
+          );
+        }
+        const apiKey = await this.credentialStore.load(target.id);
+        if (!apiKey) {
+          throw new LocalProviderModelSelectionError(
+            'credential-missing',
+            targetProviderId,
+          );
+        }
+
+        if (currentProviderId !== target.id) {
+          await this.sessionRepository.setProviderId(sessionId, target.id);
+        }
+        const selected = buildLocalProviderModelOptions(
+          configs,
+          target.id,
+        ).find((option) => option.providerId === target.id);
+        if (!selected) {
+          throw new LocalProviderModelSelectionError(
+            'provider-missing',
+            targetProviderId,
+          );
+        }
+        return selected;
+      } finally {
+        release();
+      }
+    });
   }
 
   resolveToolApproval(
@@ -671,7 +889,7 @@ export class LocalProviderRuntime implements ConversationRuntime {
 
   setExecutionSuspended(suspended: boolean): void {
     // Set the shared suspension predicate before interrupting Agent approval /
-    // control flow so MobileAgentLoop reports app-suspended, not cancelled.
+    // control flow so PiCoreAgentLoop reports app-suspended, not cancelled.
     this.providerExecution.setExecutionSuspended(suspended);
     if (suspended) {
       this.cancelCurrentProviderSend();

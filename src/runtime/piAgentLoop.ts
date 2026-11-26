@@ -1,0 +1,1184 @@
+import { Agent } from '@earendil-works/pi-agent-core';
+import type {
+  AgentEvent,
+  AgentMessage,
+  AgentTool,
+  StreamFn,
+} from '@earendil-works/pi-agent-core';
+import {
+  contentText,
+  createAssistantMessageEventStream,
+  getSystemMessageText,
+} from '@earendil-works/pi-ai';
+import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  JsonObject,
+  Message,
+  Model,
+  ToolCall,
+  Usage,
+} from '@earendil-works/pi-ai';
+import type { OpenAiMessage, OpenAiTool } from '../provider/openAiStandardClient';
+import type { RuntimeEvent } from './conversationRuntime';
+import {
+  ToolApprovalRequiredError,
+  RecoverableToolCallError,
+  ToolGatewayError,
+  TOOL_DISCLOSURE_TOOL,
+  type ToolApprovalDecision,
+  type ToolCallResult,
+  type ToolGatewayClient,
+  type ToolManifest,
+  type ToolDiscoveryHostCandidate,
+  type ToolServiceDescriptor,
+} from '../tools/toolGatewayClient';
+import { limitToolResult, validateToolCall } from '../tools/toolPolicy';
+import {
+  mergeDisclosedTools,
+  parseToolDisclosureArguments,
+  resolveToolDisclosureTarget,
+  toolDisclosureManifest,
+  toolServiceContext,
+  validateToolServiceCatalog,
+} from '../tools/toolDisclosure';
+import {
+  hostSelectionPrompt,
+  validateMailManifests,
+  validateToolBatch,
+} from '../tools/agentToolPolicies';
+import {
+  DEFAULT_AGENT_EXECUTION_STRENGTH,
+  getAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
+
+/**
+ * Pi Core is the sole Local Agent orchestration engine. Provider IO,
+ * Tool Gateway authority and the conversation transcript stay Mira-owned.
+ */
+export interface PiAgentLoopOptions {
+  /** Effective strength used for the run's central limits and model facts. */
+  strength?: AgentExecutionStrengthId;
+  maxToolRounds?: number;
+  overallTimeoutMs?: number;
+  maxToolResultBytes?: number;
+  shouldPause?: () => boolean;
+  signal?: AbortSignal;
+  onToolChannelUnavailable?: 'fail' | 'continue-without-tools';
+  approvalRecipient?: string;
+  requestApproval?: (approval: import('../tools/toolGatewayClient').ToolApprovalRequest) =>
+    Promise<ToolApprovalDecision>;
+}
+
+export type AgentModelCall = (
+  messages: readonly OpenAiMessage[],
+  tools: readonly OpenAiTool[],
+) => Promise<AsyncIterable<RuntimeEvent>>;
+
+/**
+ * Trusted, per-request execution facts. This is context only: it never grants
+ * tools, raises a limit or acts as a planner/classifier. The numeric values come
+ * from the same closure that enforces them.
+ */
+const budgetFactsMessage = (input: {
+  strength: AgentExecutionStrengthId;
+  remainingToolRounds: number;
+  remainingTimeMs: number;
+}): OpenAiMessage => {
+  const remainingSeconds = Number.isFinite(input.remainingTimeMs)
+    ? Math.max(0, Math.ceil(input.remainingTimeMs / 1_000))
+    : null;
+  return {
+    role: 'system',
+    content: [
+      '[Trusted execution budget — Mira Mobile]',
+      `strength: ${input.strength}`,
+      `remaining_tool_rounds: ${Math.max(0, input.remainingToolRounds)}`,
+      `remaining_time_seconds: ${
+        remainingSeconds === null ? 'unbounded' : remainingSeconds
+      }`,
+      'This execution budget is separate from model reasoning effort. It bounds',
+      'tool rounds and elapsed run time; it is an upper limit, not a target.',
+      'You cannot change or extend it. One model turn may contain multiple tool',
+      'calls and still consumes one tool round. When no tool rounds remain, tools',
+      'are not provided: summarize the work already completed and what remains',
+      'without claiming unfinished work succeeded. If time runs out, the run is',
+      'paused rather than reported as completed.',
+    ].join('\n'),
+  };
+};
+
+const withBudgetFacts = (
+  messages: readonly OpenAiMessage[],
+  facts: Parameters<typeof budgetFactsMessage>[0],
+): OpenAiMessage[] => {
+  // Keep the existing leading system context (service/personalization) first,
+  // then state the trusted budget before the user turn.
+  let insertAt = 0;
+  while (messages[insertAt]?.role === 'system') insertAt += 1;
+  return [
+    ...messages.slice(0, insertAt),
+    budgetFactsMessage(facts),
+    ...messages.slice(insertAt),
+  ];
+};
+
+const createUsage = (): Usage => ({
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+});
+
+const PI_MODEL: Model<'mira-local-provider'> = {
+  id: 'mira-local-provider',
+  name: 'Mira Local Provider',
+  api: 'mira-local-provider',
+  provider: 'mira',
+  baseUrl: '',
+  reasoning: false,
+  input: ['text'],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 0,
+  maxTokens: 0,
+};
+
+const abortError = (): Error => {
+  const error = new Error('Aborted');
+  error.name = 'AbortError';
+  return error;
+};
+
+class PiApprovalRejectedError extends Error {
+  constructor() {
+    super('Tool approval was rejected');
+    this.name = 'PiApprovalRejectedError';
+  }
+}
+
+class RuntimeEventQueue implements AsyncIterable<RuntimeEvent> {
+  private readonly values: RuntimeEvent[] = [];
+  private readonly waiters: Array<{
+    resolve: (result: IteratorResult<RuntimeEvent>) => void;
+  }> = [];
+  private closed = false;
+
+  push(value: RuntimeEvent): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.resolve({ done: false, value });
+      return;
+    }
+    this.values.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter.resolve({ done: true, value: undefined });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RuntimeEvent> {
+    return {
+      next: () => {
+        const value = this.values.shift();
+        if (value !== undefined) {
+          return Promise.resolve({ done: false, value });
+        }
+        if (this.closed) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+        return new Promise((resolve) => {
+          this.waiters.push({ resolve });
+        });
+      },
+      return: () => {
+        this.close();
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+  }
+}
+
+const isDegradableToolChannelError = (error: unknown): boolean =>
+  error instanceof ToolGatewayError &&
+  error.code === 'TOOL_CHANNEL_UNAVAILABLE';
+
+// Some Host tools dispatch by operation and declare root oneOf object variants.
+// The Local Provider Chat Completions function contract requires an object root;
+// adding the redundant type preserves the JSON Schema accepted argument set.
+const toProviderParameters = (
+  schema: ToolManifest['parameters'],
+): ToolManifest['parameters'] => {
+  const variants = schema.oneOf;
+  if (
+    schema.type !== undefined ||
+    !Array.isArray(variants) ||
+    variants.length === 0 ||
+    !variants.every(
+      (variant: unknown) => variant !== null &&
+        typeof variant === 'object' &&
+        !Array.isArray(variant) &&
+        (variant as Record<string, unknown>).type === 'object',
+    )
+  ) {
+    return schema;
+  }
+  return { ...schema, type: 'object' };
+};
+
+const toTool = (manifest: ToolManifest): OpenAiTool => ({
+  type: 'function',
+  function: {
+    name: manifest.name,
+    ...(manifest.description ? { description: manifest.description } : {}),
+    parameters: toProviderParameters(manifest.parameters),
+  },
+});
+
+const toAssistantMessage = (
+  content: string,
+  timestamp: number,
+): AssistantMessage => ({
+  role: 'assistant',
+  content: content ? [{ type: 'text', text: content }] : [],
+  api: PI_MODEL.api,
+  provider: PI_MODEL.provider,
+  model: PI_MODEL.id,
+  usage: createUsage(),
+  stopReason: 'stop',
+  timestamp,
+});
+
+const toAgentMessages = (
+  messages: readonly OpenAiMessage[],
+): AgentMessage[] => {
+  const timestamp = Date.now();
+  return messages.flatMap<AgentMessage>((message) => {
+    if (message.role === 'system') {
+      return [{
+        role: 'system',
+        content: message.content ?? '',
+        timestamp,
+      }];
+    }
+    if (message.role === 'tool') {
+      return [{
+        role: 'toolResult',
+        toolCallId: message.tool_call_id ?? '',
+        toolName: '',
+        content: [{ type: 'text', text: message.content ?? '' }],
+        isError: false,
+        timestamp,
+      }];
+    }
+    if (message.role === 'assistant') {
+      const toolCalls: ToolCall[] = (message.tool_calls ?? []).flatMap((call) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(call.function.arguments || '{}');
+        } catch {
+          parsed = {};
+        }
+        return [{
+          type: 'toolCall',
+          id: call.id,
+          name: call.function.name,
+          arguments:
+            parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? (parsed as JsonObject)
+              : ({} as JsonObject),
+        }];
+      });
+      return [{
+        ...toAssistantMessage(message.content ?? '', timestamp),
+        content: [
+          ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+          ...toolCalls,
+        ],
+      }];
+    }
+    return [{
+      role: 'user',
+      content: message.content ?? '',
+      timestamp,
+    }];
+  });
+};
+
+const assistantText = (content: readonly { type: string; text?: string }[]): string =>
+  content.flatMap((block) =>
+    block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
+  ).join('');
+
+const toOpenAiMessages = (messages: readonly Message[]): OpenAiMessage[] => {
+  const result: OpenAiMessage[] = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const text = getSystemMessageText(message);
+      if (text) result.push({ role: 'system', content: text });
+      continue;
+    }
+    if (message.role === 'user') {
+      result.push({ role: 'user', content: contentText(message.content) });
+      continue;
+    }
+    if (message.role === 'toolResult') {
+      result.push({
+        role: 'tool',
+        content: contentText(message.content),
+        tool_call_id: message.toolCallId,
+      });
+      continue;
+    }
+    const toolCalls = message.content.flatMap((block) =>
+      block.type === 'toolCall'
+        ? [{
+            id: block.id,
+            type: 'function' as const,
+            function: {
+              name: block.name,
+              arguments: JSON.stringify(block.arguments),
+            },
+          }]
+        : [],
+    );
+    const text = assistantText(message.content);
+    result.push({
+      role: 'assistant',
+      content: text || null,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    });
+  }
+  return result;
+};
+
+const nextWithAbort = <T>(
+  iterator: AsyncIterator<T>,
+  signal?: AbortSignal,
+): Promise<IteratorResult<T>> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      resolve({ done: true, value: undefined });
+      return;
+    }
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      resolve({ done: true, value: undefined });
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    iterator.next().then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        resolve(result);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+
+const toStopReason = (reason: string | null | undefined): {
+  stopReason: AssistantMessage['stopReason'];
+  doneReason: 'stop' | 'length' | 'toolUse';
+} => {
+  if (reason === 'tool_calls' || reason === 'toolUse') {
+    return { stopReason: 'toolUse', doneReason: 'toolUse' };
+  }
+  if (reason === 'length') {
+    return { stopReason: 'length', doneReason: 'length' };
+  }
+  return { stopReason: 'stop', doneReason: 'stop' };
+};
+
+/**
+ * Converts one Mira Local Provider model round into a pi-ai assistant stream.
+ * Provider output remains owned by LocalProviderExecutor; this function only
+ * translates the wire events into Pi's assistant protocol.
+ */
+const createPiStreamFn = (
+  modelCall: AgentModelCall,
+  tools: () => readonly OpenAiTool[],
+  prepareMessages: (messages: readonly OpenAiMessage[]) => OpenAiMessage[],
+  isFinalSummary: () => boolean,
+  preflightCalls: (calls: readonly ToolCall[]) => void,
+  onProviderError: (error: unknown) => void,
+): StreamFn =>
+  (model, context, options) => {
+    const stream = createAssistantMessageEventStream();
+    const output: AssistantMessage = {
+      role: 'assistant',
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: createUsage(),
+      stopReason: 'pending',
+      timestamp: Date.now(),
+    };
+    const signal = options?.signal;
+
+    (async () => {
+      let iterator: AsyncIterator<RuntimeEvent> | null = null;
+      let finishReason: string | null | undefined;
+      try {
+        if (signal?.aborted) throw abortError();
+        const finalSummary = isFinalSummary();
+        let summaryRequestedTools = false;
+        const providerStream = await modelCall(
+          prepareMessages(toOpenAiMessages(context.messages)),
+          tools(),
+        );
+        stream.push({ type: 'start', partial: output });
+        iterator = providerStream[Symbol.asyncIterator]();
+        while (true) {
+          const next = await nextWithAbort(iterator, signal);
+          if (next.done) break;
+          const event = next.value;
+          if (event.type === 'text-delta') {
+            let block = output.content.find((item) => item.type === 'text');
+            if (!block || block.type !== 'text') {
+              block = { type: 'text', text: '' };
+              output.content.push(block);
+              stream.push({
+                type: 'text_start',
+                contentIndex: output.content.length - 1,
+                partial: output,
+              });
+            }
+            block.text += event.delta;
+            stream.push({
+              type: 'text_delta',
+              contentIndex: output.content.indexOf(block),
+              delta: event.delta,
+              partial: output,
+            });
+            continue;
+          }
+          if (event.type === 'tool-call') {
+            if (finalSummary) {
+              summaryRequestedTools = true;
+              continue;
+            }
+            let parsed: JsonObject = {};
+            let argumentsError: string | undefined;
+            try {
+              const value: unknown = JSON.parse(event.arguments || '{}');
+              if (value && typeof value === 'object' && !Array.isArray(value)) {
+                parsed = value as JsonObject;
+              } else {
+                argumentsError = 'Tool arguments must be a JSON object';
+              }
+            } catch {
+              argumentsError = 'Tool arguments are not valid JSON';
+            }
+            const block: ToolCall = {
+              type: 'toolCall',
+              id: event.callId,
+              name: event.name,
+              arguments: parsed,
+              ...(argumentsError ? { argumentsError } : {}),
+            };
+            // Do not expose a runnable tool call until the Provider confirms
+            // tool_calls. A malformed stop/error must never leave a phantom
+            // invocation in the chat event stream.
+            output.content.push(block);
+            continue;
+          }
+          if (event.type === 'finish') {
+            finishReason = event.reason;
+            continue;
+          }
+          if (event.type === 'error') {
+            throw new Error(event.message);
+          }
+        }
+
+        if (signal?.aborted) throw abortError();
+        // A tool-less final round cannot request another tool or another
+        // summary. Keep partial text, but mark an incomplete response.
+        const { stopReason, doneReason } = toStopReason(
+          finalSummary && (summaryRequestedTools || finishReason === 'tool_calls' || finishReason == null)
+            ? 'length' : finishReason,
+        );
+        output.stopReason = stopReason;
+        // The Local Agent only acts on tool calls when the provider explicitly
+        // finished with tool_calls. Do not let a malformed round execute tools
+        // because it emitted a tool-call event under a normal stop reason.
+        if (doneReason !== 'toolUse') {
+          output.content = output.content.filter((block) => block.type !== 'toolCall');
+        } else {
+          // Validate every tool request before Pi executes the first tool.
+          const calls = output.content.filter(
+            (block): block is ToolCall => block.type === 'toolCall',
+          );
+          preflightCalls(calls);
+          for (const call of calls) {
+            const contentIndex = output.content.indexOf(call);
+            stream.push({ type: 'toolcall_start', contentIndex, partial: output });
+            stream.push({
+              type: 'toolcall_delta',
+              contentIndex,
+              delta: 'argumentsError' in call ? '' : JSON.stringify(call.arguments),
+              partial: output,
+            });
+            stream.push({
+              type: 'toolcall_end',
+              contentIndex,
+              toolCall: call,
+              partial: output,
+            });
+          }
+        }
+        stream.push({ type: 'done', reason: doneReason, message: output });
+        stream.end();
+      } catch (error) {
+        if (!signal?.aborted) onProviderError(error);
+        output.stopReason = signal?.aborted ? 'aborted' : 'error';
+        output.errorMessage =
+          error instanceof Error ? error.message : String(error);
+        stream.push({
+          type: 'error',
+          reason: output.stopReason,
+          error: output,
+        });
+        stream.end();
+      } finally {
+        if (iterator) {
+          const closing = iterator.return?.(undefined);
+          closing?.catch(() => undefined);
+        }
+      }
+    })().catch(() => undefined);
+
+    return stream;
+  };
+
+const resultText = (result: unknown): string => {
+  if (!result || typeof result !== 'object') return '';
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) return '';
+  return content.flatMap((block) => {
+    if (!block || typeof block !== 'object') return [];
+    const text = (block as { text?: unknown }).text;
+    return typeof text === 'string' ? [text] : [];
+  }).join('');
+};
+
+export class PiCoreAgentLoop {
+  constructor(private readonly gateway: ToolGatewayClient) {}
+
+  async run(
+    initialMessages: readonly OpenAiMessage[],
+    modelCall: AgentModelCall,
+    options: PiAgentLoopOptions = {},
+  ): Promise<AsyncIterable<RuntimeEvent>> {
+    let manifests: readonly ToolManifest[];
+    let hostCandidates: readonly ToolDiscoveryHostCandidate[] = [];
+    let notices: RuntimeEvent[] = [];
+    let services: readonly ToolServiceDescriptor[] = [];
+    let catalogRevision: string | undefined;
+    try {
+      if (this.gateway.discoverTools) {
+        const discovery = await this.gateway.discoverTools();
+        manifests = discovery.tools;
+        hostCandidates = discovery.hostCandidates ?? [];
+        services = discovery.services ?? [];
+        catalogRevision = discovery.catalogRevision;
+        notices = discovery.notices.map((notice) => ({
+          type: 'notice',
+          code: notice.code,
+        }));
+      } else {
+        manifests = await this.gateway.listTools();
+      }
+    } catch (error) {
+      if (
+        (options.onToolChannelUnavailable ?? 'fail') !==
+          'continue-without-tools' ||
+        !isDegradableToolChannelError(error)
+      ) {
+        throw error;
+      }
+      manifests = [];
+      notices = [{ type: 'notice', code: 'tool-channel-unavailable' }];
+    }
+    if (services.length > 0) {
+      validateToolServiceCatalog(services, manifests);
+    }
+    const queue = new RuntimeEventQueue();
+    const strengthId = options.strength ?? DEFAULT_AGENT_EXECUTION_STRENGTH;
+    const strength = getAgentExecutionStrength(strengthId);
+    const maxToolRounds = options.maxToolRounds ?? strength.maxToolRounds;
+    const maxToolResultBytes = options.maxToolResultBytes;
+    const timeoutMs = options.overallTimeoutMs ??
+      (strength.maxDurationMinutes === null
+        ? undefined
+        : strength.maxDurationMinutes * 60_000);
+    const deadline = timeoutMs === undefined
+      ? Number.POSITIVE_INFINITY
+      : Date.now() + timeoutMs;
+    const shouldPause = options.shouldPause ?? (() => false);
+    const externalSignal = options.signal;
+    const gateway = this.gateway;
+    const requestApproval = options.requestApproval;
+
+    const buildRuntimeManifests = (
+      items: readonly ToolManifest[],
+    ): readonly ToolManifest[] => {
+      const base = items.filter(item => item.name !== TOOL_DISCLOSURE_TOOL);
+      if (services.length === 0) return base;
+      const visible = new Set(base.map(item => item.name));
+      const hasDeferred = services.some(service =>
+        service.toolNames.some(name => !visible.has(name)));
+      if (!gateway.discloseTools) {
+        if (hasDeferred) {
+          throw new ToolGatewayError(
+            'TOOL_DISCLOSURE_UNSUPPORTED',
+            'The tool service declares schemas but the gateway cannot disclose them',
+          );
+        }
+        return base;
+      }
+      if (!hasDeferred) return base;
+      return [...base, toolDisclosureManifest(services)];
+    };
+
+    if (manifests.some(item => item.name === TOOL_DISCLOSURE_TOOL)) {
+      throw new ToolGatewayError(
+        'TOOL_NAME_COLLISION',
+        'A service tool collides with the Mobile disclosure entry',
+      );
+    }
+    manifests = buildRuntimeManifests(manifests);
+    validateMailManifests(manifests);
+    const serviceContext = services.length > 0 ? toolServiceContext(services) : null;
+    return (async function* () {
+      if (externalSignal?.aborted) {
+        yield {
+          type: 'run-paused',
+          reason: shouldPause() ? 'app-suspended' : 'cancelled',
+        };
+        return;
+      }
+      if (shouldPause()) {
+        yield { type: 'run-paused', reason: 'app-suspended' };
+        return;
+      }
+      if (Date.now() >= deadline) {
+        yield { type: 'run-paused', reason: 'timeout' };
+        return;
+      }
+
+      for (const notice of notices) yield notice;
+
+      let timedOut = false;
+      let cancelled = false;
+      let approvalRejected = false;
+      let fatalError: string | null = null;
+      let originalError: unknown = null;
+      const recordError = (error: unknown): void => {
+        if (originalError === null) originalError = error;
+        fatalError = error instanceof Error ? error.message : String(error);
+      };
+      let limitReached = false;
+      let toolRounds = 0;
+      const recoverableFailures = new Map<string, RecoverableToolCallError>();
+      let lastStopReason: AssistantMessage['stopReason'] | null = null;
+      let terminalEmitted = false;
+      let agent: Agent | null = null;
+      let hostSelectionReply: string | null = null;
+      let unsubscribe = () => {};
+
+      const abortRun = () => {
+        agent?.abort();
+      };
+      const onExternalAbort = () => {
+        cancelled = true;
+        abortRun();
+      };
+      externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+      const timeout = Number.isFinite(deadline)
+        ? setTimeout(() => {
+            timedOut = true;
+            abortRun();
+          }, Math.max(0, deadline - Date.now()))
+        : null;
+
+      const requestGatewayTool = async (
+        manifest: ToolManifest,
+        request: { callId: string; name: string; arguments: string },
+        signal?: AbortSignal,
+      ): Promise<ToolCallResult> => {
+        try {
+          return await gateway.callTool(request, { signal });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (
+            error instanceof ToolApprovalRequiredError &&
+            requestApproval &&
+            gateway.resolveApproval
+          ) {
+            const approval = error.approval;
+            queue.push({
+              type: 'approval-required',
+              invocationId: approval.invocationId,
+              callId: approval.callId,
+              name: approval.name,
+              message: manifest.sensitiveResult
+                ? `${approval.message}\n接收方：${options.approvalRecipient ?? '当前 Local Provider'}。仅在本次明确批准后发送结果给模型；回复保留在手机聊天记录，后续不会自动再次传给模型。`
+                : approval.message,
+              ...(approval.scope ? { scope: approval.scope } : {}),
+            });
+            let decision: ToolApprovalDecision;
+            try {
+              decision = await new Promise<ToolApprovalDecision>((resolve, reject) => {
+                if (signal?.aborted) {
+                  reject(abortError());
+                  return;
+                }
+                const onAbort = () => reject(abortError());
+                signal?.addEventListener('abort', onAbort, { once: true });
+                requestApproval(approval).then(
+                  (value) => {
+                    signal?.removeEventListener('abort', onAbort);
+                    resolve(value);
+                  },
+                  (rejection: unknown) => {
+                    signal?.removeEventListener('abort', onAbort);
+                    reject(rejection);
+                  },
+                );
+              });
+            } catch (approvalError) {
+              if (!signal?.aborted) recordError(approvalError);
+              throw approvalError;
+            }
+            let resolution;
+            try {
+              resolution = await gateway.resolveApproval(
+                approval,
+                decision,
+                { signal },
+              );
+            } catch (resolveError) {
+              // The Host may already have executed the approved side effect.
+              // Never misclassify this uncertainty as a harmless cancellation
+              // or encourage the caller to retry automatically.
+              if (resolveError instanceof ToolGatewayError &&
+                resolveError.code === 'TOOL_APPROVAL_UNCERTAIN') {
+                recordError(resolveError);
+              }
+              throw resolveError;
+            }
+            queue.push({
+              type: 'approval-resolved',
+              invocationId: approval.invocationId,
+              callId: approval.callId,
+              name: approval.name,
+              decision,
+            });
+            if (decision === 'rejected' || resolution.status === 'rejected') {
+              approvalRejected = true;
+              throw new PiApprovalRejectedError();
+            }
+            return resolution.result;
+          }
+          if (error instanceof RecoverableToolCallError) {
+            recoverableFailures.set(request.callId, error);
+            throw error;
+          }
+          recordError(error);
+          throw error;
+        }
+      };
+
+      const executeDisclosure = async (
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<ToolCallResult> => {
+        try {
+          const disclose = gateway.discloseTools;
+          if (!disclose) {
+            throw new ToolGatewayError(
+              'TOOL_DISCLOSURE_UNSUPPORTED',
+              'The active tool gateway does not support schema disclosure',
+            );
+          }
+          const args = parseToolDisclosureArguments(params);
+          const target = resolveToolDisclosureTarget(services, args);
+          // Schema visibility is a model decision over the trusted catalog.
+          // Disclosure never grants execution authority or approves a call;
+          // the gateway revalidates and the service approval still applies.
+          const disclosure = await disclose.call(gateway, {
+            serviceId: target.serviceId,
+            ...(target.capabilityId ? { capabilityId: target.capabilityId } : {}),
+            toolNames: target.toolNames,
+            ...(catalogRevision !== undefined ? { catalogRevision } : {}),
+          }, { signal });
+          if (signal?.aborted) throw abortError();
+          if (catalogRevision !== undefined &&
+              disclosure.catalogRevision !== undefined &&
+              disclosure.catalogRevision !== catalogRevision) {
+            throw new ToolGatewayError(
+              'TOOL_DISCLOSURE_STALE',
+              'The trusted tool catalog changed during schema disclosure',
+            );
+          }
+          validateMailManifests(disclosure.tools);
+          const merged = mergeDisclosedTools({
+            current: manifests.filter(item => item.name !== TOOL_DISCLOSURE_TOOL),
+            services,
+            target,
+            incoming: disclosure.tools,
+          });
+          return {
+            content: disclosure.tools.length > 0
+              ? `已披露 ${disclosure.tools.length} 个工具定义：` +
+                `${disclosure.tools.map(tool => tool.name).join(', ')}。` +
+                '披露只改变本 run 可见的 Schema，实际调用仍检查授权与审批。'
+              : '所需工具定义已在本次运行中可用；披露不改变授权与审批。',
+            refreshedTools: merged,
+            refreshedServices: services,
+            ...(disclosure.catalogRevision !== undefined
+              ? { refreshedCatalogRevision: disclosure.catalogRevision }
+              : {}),
+          };
+        } catch (error) {
+          if (!signal?.aborted) recordError(error);
+          throw error;
+        }
+      };
+
+      const executeTool = async (
+        manifest: ToolManifest,
+        callId: string,
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<AgentToolResult> => {
+        const request = {
+          callId,
+          name: manifest.name,
+          arguments: JSON.stringify(params ?? {}),
+        };
+        const result = manifest.name === TOOL_DISCLOSURE_TOOL
+          ? await executeDisclosure(params, signal)
+          : await requestGatewayTool(manifest, request, signal);
+        if (signal?.aborted) throw abortError();
+        if (result.refreshedTools) {
+          if (result.refreshedTools.some(item => item.name === TOOL_DISCLOSURE_TOOL)) {
+            throw new ToolGatewayError(
+              'TOOL_NAME_COLLISION',
+              'A service tool collides with the Mobile disclosure entry',
+            );
+          }
+          const refreshedTools = result.refreshedTools.filter(
+            item => item.name !== TOOL_DISCLOSURE_TOOL,
+          );
+          const nextServices = result.refreshedServices ?? services;
+          if (nextServices.length > 0) {
+            validateToolServiceCatalog(nextServices, refreshedTools);
+          }
+          services = nextServices;
+          if (result.refreshedCatalogRevision !== undefined) {
+            catalogRevision = result.refreshedCatalogRevision;
+          }
+          validateMailManifests(refreshedTools);
+          // A trusted gateway result may add schemas only through this internal
+          // field. Plain ToolCallResult.content never changes the tool set.
+          manifests = buildRuntimeManifests(refreshedTools);
+          agent!.state.tools = buildAgentTools(manifests);
+        }
+        if (result.hostSelectionRequired) {
+          const candidates = result.hostCandidates ?? hostCandidates;
+          if (candidates.length < 2) {
+            const error = new ToolGatewayError(
+              'CLOUD_HOST_SELECTION_STALE',
+              'Desktop selection list is no longer valid',
+            );
+            recordError(error);
+            throw error;
+          }
+          hostSelectionReply = hostSelectionPrompt(candidates);
+        }
+        const limited = limitToolResult(result.content, maxToolResultBytes);
+        // The model owns semantic decisions over tool results. `sensitiveResult`
+        // only identifies the existing explicit disclosure/privacy contract;
+        // it never narrows the authorized tool set for later model rounds.
+        return {
+          content: [{ type: 'text', text: limited }],
+          details: { truncated: limited !== result.content },
+        };
+      };
+
+      const buildAgentTools = (items: readonly ToolManifest[]): AgentTool[] => items.map((manifest) => ({
+        name: manifest.name,
+        description: manifest.description ?? '',
+        parameters: manifest.parameters,
+        label: manifest.name,
+        executionMode: 'sequential',
+        execute: async (callId, params, signal) =>
+          executeTool(manifest, callId, params, signal),
+      }));
+
+      const preflightCalls = (calls: readonly ToolCall[]): void => {
+        validateToolBatch(calls);
+        if (notices.some((item) =>
+          item.type === 'notice' && item.code === 'tool-channel-unavailable'
+        ) && calls.length > 0) {
+          throw new ToolGatewayError(
+            'TOOL_CHANNEL_UNAVAILABLE',
+            'The model requested tools while the tool channel was unavailable',
+          );
+        }
+      };
+      const streamFn = createPiStreamFn(
+        modelCall,
+        // At the end of the allowed rounds, the next model request carries no
+        // tool schema. That request is the single final summarization round.
+        () => toolRounds >= maxToolRounds ? [] : manifests.map(toTool),
+        (messages) => withBudgetFacts(messages, {
+          strength: strength.id,
+          remainingToolRounds: maxToolRounds - toolRounds,
+          remainingTimeMs: deadline - Date.now(),
+        }),
+        () => toolRounds >= maxToolRounds,
+        preflightCalls,
+        recordError,
+      );
+
+      const handleEvent = (event: AgentEvent): void => {
+        if (event.type === 'message_update') {
+          const update: AssistantMessageEvent = event.assistantMessageEvent;
+          if (update.type === 'text_delta') {
+            queue.push({ type: 'text-delta', delta: update.delta });
+          } else if (update.type === 'toolcall_end') {
+            queue.push({
+              type: 'tool-call',
+              callId: update.toolCall.id,
+              name: update.toolCall.name,
+              arguments: JSON.stringify(update.toolCall.arguments),
+            });
+          }
+          return;
+        }
+        if (event.type === 'tool_execution_start') {
+          queue.push({
+            type: 'tool-running',
+            callId: event.toolCallId,
+            name: event.toolName,
+          });
+          return;
+        }
+        if (event.type === 'tool_execution_end') {
+          if (approvalRejected || limitReached) return;
+          if (event.isError) {
+            const failure = recoverableFailures.get(event.toolCallId);
+            if (failure) {
+              recoverableFailures.delete(event.toolCallId);
+              queue.push({
+                type: 'tool-result',
+                callId: event.toolCallId,
+                name: event.toolName,
+                content: `${failure.code}: ${failure.message}`,
+                failed: true,
+              });
+              return;
+            }
+            if (!fatalError) {
+              fatalError =
+                resultText(event.result) || `Tool failed: ${event.toolName}`;
+            }
+            return;
+          }
+          const truncated =
+            typeof event.result?.details === 'object' &&
+            event.result.details !== null &&
+            event.result.details.truncated === true;
+          queue.push({
+            type: 'tool-result',
+            callId: event.toolCallId,
+            name: event.toolName,
+            content: resultText(event.result),
+            ...(truncated ? { truncated: true } : {}),
+          });
+          return;
+        }
+        if (event.type === 'message_end' && event.message.role === 'assistant') {
+          const message = event.message as AssistantMessage;
+          lastStopReason = message.stopReason;
+          if (message.stopReason === 'aborted') {
+            terminalEmitted = true;
+            if (!timedOut) {
+              queue.push({
+                type: 'run-paused',
+                reason: shouldPause() ? 'app-suspended' : 'cancelled',
+              });
+            }
+          } else if (message.stopReason === 'error') {
+            terminalEmitted = true;
+            if (!fatalError) recordError(new Error(
+              message.errorMessage ?? 'Pi Agent request failed',
+            ));
+          } else if (toolRounds >= maxToolRounds && message.stopReason === 'length') {
+            // The one tool-less final request did not complete. Preserve text
+            // without presenting a successful run or initiating another request.
+            terminalEmitted = true;
+            if (!timedOut && !cancelled) {
+              queue.push({ type: 'run-paused', reason: 'budget-exhausted' });
+            }
+          } else {
+            queue.push({
+              type: 'finish',
+              reason: message.stopReason === 'toolUse'
+                ? 'tool_calls'
+                : message.stopReason === 'length' ? 'length' : 'stop',
+            });
+          }
+        }
+      };
+
+      try {
+        agent = new Agent({
+          initialState: {
+            model: PI_MODEL,
+            messages: toAgentMessages(serviceContext
+              ? [{ role: 'system' as const, content: serviceContext }, ...initialMessages]
+              : initialMessages),
+            tools: buildAgentTools(manifests),
+          },
+          streamFn,
+          toolExecution: 'sequential',
+          prepareNextTurnWithContext: async ({ context }) => ({
+            context: { ...context, tools: buildAgentTools(manifests) },
+          }),
+          beforeToolCall: async ({ assistantMessage, toolCall }) => {
+            try {
+              const allCalls = assistantMessage.content.filter(
+                (block): block is ToolCall => block.type === 'toolCall',
+              );
+              validateToolBatch(allCalls);
+              validateToolCall(manifests, {
+                callId: toolCall.id,
+                name: toolCall.name,
+                arguments: JSON.stringify(toolCall.arguments),
+              });
+            } catch (error) {
+              recordError(error);
+              return { block: true, terminate: true, reason: fatalError ?? 'Tool policy rejected' };
+            }
+            if (toolRounds >= maxToolRounds) {
+              limitReached = true;
+              return {
+                block: true,
+                terminate: true,
+                reason: `Tool round limit reached (${maxToolRounds})`,
+              };
+            }
+            return undefined;
+          },
+          finishTurn: (turn) => {
+            if (approvalRejected || fatalError || timedOut || limitReached || hostSelectionReply) {
+              return { action: 'end' };
+            }
+            if (
+              turn.message.role === 'assistant' &&
+              turn.message.stopReason === 'toolUse' &&
+              turn.toolResults.length > 0
+            ) {
+              toolRounds += 1;
+            }
+            return undefined;
+          },
+        });
+        unsubscribe = agent.subscribe((event) => {
+          handleEvent(event);
+          if (event.type === 'agent_end') {
+            queue.close();
+          }
+        });
+        agent.continue()
+          .finally(() => {
+            queue.close();
+          })
+          .catch(() => undefined);
+
+        const iterator = queue[Symbol.asyncIterator]();
+        while (true) {
+          const next = await iterator.next();
+          if (next.done) break;
+          yield next.value;
+        }
+      } finally {
+        if (timeout !== null) clearTimeout(timeout);
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+        unsubscribe();
+        agent?.abort();
+      }
+
+      if (hostSelectionReply && !timedOut && !cancelled && !fatalError) {
+        // This is a deterministic clarification from verified Host directory
+        // metadata. No second model request may run until the user chooses.
+        yield { type: 'text-delta', delta: hostSelectionReply };
+        yield { type: 'finish', reason: 'stop' };
+        return;
+      }
+      if (timedOut) {
+        yield { type: 'run-paused', reason: 'timeout' };
+        return;
+      }
+      if (originalError instanceof ToolGatewayError &&
+        originalError.code === 'TOOL_APPROVAL_UNCERTAIN') {
+        throw originalError;
+      }
+      if (cancelled && !terminalEmitted) {
+        yield {
+          type: 'run-paused',
+          reason: shouldPause() ? 'app-suspended' : 'cancelled',
+        };
+        return;
+      }
+      if (approvalRejected) {
+        yield { type: 'run-paused', reason: 'approval-rejected' };
+        return;
+      }
+      if (limitReached) {
+        if (!Number.isFinite(deadline) || Date.now() >= deadline) {
+          yield { type: 'run-paused', reason: 'timeout' };
+          return;
+        }
+        throw new Error(
+          'Local Agent reached its tool-round limit without a final summary',
+        );
+      }
+      if (fatalError) {
+        // Reject failed Provider/tool runs so partial answers are never
+        // persisted as successfully completed turns.
+        throw originalError ?? new Error(fatalError);
+      }
+      if (!terminalEmitted && lastStopReason === 'toolUse') {
+        throw new Error('Pi Agent stopped without completing the tool round');
+      } else if (!terminalEmitted && lastStopReason === null) {
+        throw new Error('Pi Agent run ended without a response');
+      }
+    })();
+  }
+}
+
+interface AgentToolResult {
+  content: Array<{ type: 'text'; text: string }>;
+  details: { truncated: boolean };
+}

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { releaseChannel } from 'mira-release-channel';
 import { version } from '../../package.json';
 import { miraHostClient } from '../api/miraHostClient';
+import { restoreDesktopConnection, useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
+import { activeDesktopConnectionKey, reconnectActiveDesktop } from '../connectivity/reconnectActiveDesktop';
 import { remoteMiraHostClient } from '../api/remoteMiraHost';
 import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import { useHostStore } from '../store/hostStore';
@@ -22,13 +24,19 @@ import { resolveRestoreTarget } from './restoreTarget';
 // or replace them after module import.
 const createBootstrapDeps = (): AppBootstrapDeps => ({
   isSecureStorageAvailable: () => remoteMiraHostClient.isSecureStorageAvailable(),
-  loadDeviceCredential: () => deviceCredentialStore.load(),
-  restoreConnection: () => remoteMiraHostClient.restoreConnection(),
+  loadDeviceCredential: () => useDesktopConnectionStore.getState().mode === 'direct'
+    ? deviceCredentialStore.load() : Promise.resolve(null),
+  restoreConnection: () => reconnectActiveDesktop(),
   setConnectionStatus: (status) => useHostStore.getState().setConnectionStatus(status),
   loadGeneralSettings: () => loadGeneralSettings(),
   resolveRestoreTarget: () =>
     resolveRestoreTarget({
-      loadLastOpenedSession: () => loadLastOpenedSession(),
+      loadLastOpenedSession: async () => {
+        const target = await loadLastOpenedSession();
+        if (!target || target.source === 'local-provider') return target;
+        return target.source === 'remote-host' && useDesktopConnectionStore.getState().mode === 'direct'
+          ? target : null;
+      },
       listLocalSessions: () => runtimeRegistry.local.listSessions(),
       listRemoteSessions: () => miraHostClient.listSessions(),
       isRemoteConnected: () => useHostStore.getState().connectionStatus === 'connected',
@@ -53,8 +61,26 @@ export const useAppBootstrap = (): AppBootstrapResult | null => {
 
   useEffect(() => {
     let cancelled = false;
-    void runAppBootstrap(createBootstrapDeps(), () => cancelled).then((result) => {
-      if (cancelled) return;
+    void (async () => {
+      await restoreDesktopConnection().catch(() => undefined);
+      if (cancelled) return null;
+      if (useDesktopConnectionStore.getState().mode === 'cloud') {
+        const key = activeDesktopConnectionKey();
+        useDesktopConnectionStore.setState({ cloudConnectionStatus: 'connecting' });
+        try {
+          const restored = await reconnectActiveDesktop();
+          if (!cancelled && activeDesktopConnectionKey() === key) {
+            useDesktopConnectionStore.setState({ cloudConnectionStatus: restored ? 'connected' : 'disconnected' });
+          }
+        } catch {
+          if (!cancelled && activeDesktopConnectionKey() === key) {
+            useDesktopConnectionStore.setState({ cloudConnectionStatus: 'reconnecting' });
+          }
+        }
+      }
+      return runAppBootstrap(createBootstrapDeps(), () => cancelled);
+    })().then((result) => {
+      if (cancelled || !result) return;
       setBootstrap(result);
     });
     return () => {

@@ -54,56 +54,14 @@ describe('MOB-035 remote connection diagnostics', () => {
     expect(serviceFailure.kind).toBe('session_service_error');
   });
 
-  it('maps authoritative Relay host-offline evidence to host_offline', async () => {
-    const directCode = await classifySessionLoadFailure(
-      new RemoteHostError('RELAY_HOST_OFFLINE', 'host offline'),
-      { getNetworkState: online },
-    );
-    const preservedAttempt = await classifySessionLoadFailure(
-      new RemoteHostError('NETWORK_ERROR', 'direct failed', undefined, {
-        transportAttempts: [
-          {
-            transport: 'relay',
-            code: 'RELAY_HOST_OFFLINE',
-            hostResponded: false,
-            authoritativeHostOffline: true,
-          },
-          {
-            transport: 'direct',
-            code: 'NETWORK_ERROR',
-            hostResponded: false,
-            authoritativeHostOffline: false,
-          },
-        ],
-      }),
-      { getNetworkState: online },
-    );
-    expect(directCode.kind).toBe('host_offline');
-    expect(preservedAttempt.kind).toBe('host_offline');
-  });
-
-  it('does not let earlier Relay offline evidence override a later Host response', async () => {
-    const result = await classifySessionLoadFailure(
-      new RemoteHostError('HTTP_500', 'server error', 500, {
-        transportAttempts: [
-          {
-            transport: 'relay',
-            code: 'RELAY_HOST_OFFLINE',
-            hostResponded: false,
-            authoritativeHostOffline: true,
-          },
-          {
-            transport: 'direct',
-            code: 'HTTP_500',
-            status: 500,
-            hostResponded: true,
-            authoritativeHostOffline: false,
-          },
-        ],
-      }),
-      { getNetworkState: online },
-    );
-    expect(result.kind).toBe('session_service_error');
+  it('maps authoritative Cloud Relay host-offline evidence to host_offline', async () => {
+    for (const code of ['RELAY_HOST_OFFLINE', 'CLOUD_RELAY_HOST_OFFLINE']) {
+      const result = await classifySessionLoadFailure(
+        new RemoteHostError(code, 'host offline'),
+        { getNetworkState: online },
+      );
+      expect(result.kind).toBe('host_offline');
+    }
   });
 
   it('does not infer Host offline from ordinary transport failure', async () => {

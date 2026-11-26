@@ -73,7 +73,7 @@ feat/* -> dev -> test -> prod
 | Typecheck, lint and test | Ubuntu | TypeScript、ESLint、Jest | 无 |
 | Android debug build | Ubuntu | 未签名 Release 必须被拒绝、Debug APK 构建 | `uichat-mira-mobile-dev.apk` |
 | Android signed release APK | Ubuntu | 正式签名、arm64 Release、R8/resource shrink、JS Bundle、原生库、APK 完整性和签名 | `uichat-mira-mobile-release.apk`、SHA-256 |
-| iOS simulator and unsigned device builds | macOS | CocoaPods、无签名 Simulator Debug、无签名 `iphoneos` Release、`arm64`、JS Bundle、IPA 结构与无 provisioning profile | Simulator ZIP、unsigned device IPA、SHA-256 |
+| iOS simulator and unsigned device builds | macOS | CocoaPods、ad-hoc 签名的 Simulator Debug（校验 Keychain entitlement）、无签名 `iphoneos` Release、`arm64`、JS Bundle、IPA 结构与无 provisioning profile | Simulator ZIP、unsigned device IPA、SHA-256 |
 
 iOS 两类构建复用同一个 macOS Job，避免重复安装 Node、Ruby、CocoaPods 和依赖。
 

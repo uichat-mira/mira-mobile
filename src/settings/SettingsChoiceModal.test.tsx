@@ -65,4 +65,37 @@ describe('SettingsChoiceModal drawer presentation', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     await act(async () => { tree.unmount(); });
   });
+
+  it('lets a long option description wrap instead of truncating it', async () => {
+    let tree!: ReactTestRenderer;
+    const description = '适合长链路任务；仍受运行时间和取消操作约束。';
+    // The agent-strength picker is the centered modal, not the drawer variant,
+    // so assert the presentation that actually renders the long descriptions.
+    await act(async () => {
+      tree = renderer.create(
+        <SettingsChoiceModal
+          visible
+          value="deep"
+          options={[{ value: 'deep', label: '深度', description }]}
+          onChange={jest.fn()}
+          onClose={jest.fn()}
+        />,
+      );
+    });
+
+    const descriptionNode = tree.root.find(
+      node => typeof node.props.children === 'string' && node.props.children === description,
+    );
+    // Any numberOfLines cap re-introduces the ellipsis the picker must avoid.
+    expect(descriptionNode.props.numberOfLines).toBeUndefined();
+
+    // Wrapping makes the list taller than a short screen, so the options must
+    // live in a scrollable container instead of being clipped by the menu.
+    const scrollable = tree.root.findAll(
+      node => typeof node.props.showsVerticalScrollIndicator === 'boolean',
+    );
+    expect(scrollable.length).toBeGreaterThan(0);
+
+    await act(async () => { tree.unmount(); });
+  });
 });

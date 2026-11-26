@@ -4,80 +4,98 @@
 
 适用分支：`dev`
 
-最近修订：2026-08-29
+最近修订：2026-11-24（MOB-092：退役旧配对 Relay）
 
 本文定义 Mira Mobile 首次配对、配对后远程连接与 Remote capability discovery 的权威行为。其他移动端远程连接文档必须引用本文；如有冲突，以本文为准。
 
 ## 1. Transport 边界
 
-Mira Mobile 与 Mira Host 共用同一套 `mira_device_*` 设备凭据和 scope。Relay 与 Tailscale Direct 都只是 Transport，不负责业务授权、scope 判定、Agent、Provider 或消息事实。
+Tailscale Direct 配对使用 `mira_device_*` 设备凭据和 scope；官方 Cloud Relay 使用独立的云身份、Client ticket 与 Host Grant。两者不互为备用通道。
 
-二维码可以携带：
+### 1.1 活动 Desktop 远程连接（MOB-095 / A2）
 
-- `host`：可选的 Tailscale Direct HTTPS endpoint；
-- `relay`、`relayId`、`relayToken`：可选的 Mira Relay endpoint。
+Mobile 只允许**一个**活动的 Desktop 远程连接，取值为 `none` / `direct` / `cloud`。该模式由一个 Mobile 运行时权威统一持有，不等于“是否存在凭据”：
 
-必须至少存在一种可达 endpoint。Relay-only 配对不要求 Tailscale 已开启。
+- 长期授权仍分别保存在 Direct 设备凭据与 Cloud Session 中；Cloud 账号登录、独立云服务（如狐邮）和 Local Provider 都不要求激活 Cloud Relay。
+- 只有用户显式操作才能激活或切换；切换时先在本地释放旧传输并停止/分离在途工作，绝不重放已发出的变更，也不删除 Host 持久 Run 或历史。
+- 启动时只恢复上一次**显式**激活的模式，并且仍要求对应授权有效：Direct 需要设备凭据仍在，Cloud 需要 Cloud Session 仍有效。仅有凭据或仅有登录不会推断出活动模式；Cloud 失效时回到 `none`，不会自动回退到 Direct。升级后尚无显式模式记录的用户从 `none` 开始，需在连接入口选择；既有 Direct 凭据本身不构成活动模式。
+- 启动、回前台及系统网络变化时只恢复当前模式：Direct 走现有 Tailscale 恢复；Cloud 走官方 Relay 的授权 manifest 请求；none 不建立桌面连接。迟到结果不得更新另一模式。工具披露继续复用通用 Gateway，狐邮接入 MOB-096 后与 Desktop MCP 方向另做一致性检查；本卡不建立新的专用工具协议。
+- 网络健康、登录状态和活动模式是三个独立事实：暂时断网或 Cloud 短暂不可用不会切换模式。
+- 已保存的历史会话保留原始 source/owner；非活动来源的新消息、Agent 操作和 Desktop 工具调用会被拒绝，而不是静默换传输。
+- 新建远程会话跟随活动模式：Direct → paired `createSession`；Cloud → Cloud business `createThread`（携带发起时的精确 Cloud account 与 Host 归属）；`none` → 先呈现连接选择，不创建假会话。模式/账号在创建期间变化时，不导航过期结果。
+- 连接 UI 始终同时展示两种 Desktop 连接；一种活动时另一种置灰并说明原因，并提供显式断开路径。Cloud 账号登录/退出与 Desktop 传输保持分离，使用 Direct 不要求退出 Cloud。
+- 设置页底部只保留一个按情境变化的退出操作：活动 Direct 显示「退出登录（Tailscale）」，确认后只释放当前传输并回到扫码配对入口，不撤销长期配对授权或云身份；无活动 Tailscale 但存在可信 Mira ID（含离线保留或活动 Cloud Relay）时显示「退出登录（Mira ID）」，复用既有云账号退出并回到 Mira Cloud 账户页；两者皆无时不显示。确认后若活动模式或账号已变化，不执行旧动作。
+- 扫码/粘贴/`mira://pair` 深链在存在活动连接时直接阻断，不解析、不探测、不消耗 claim。
+- Desktop 依据自身登录态拒绝 Direct 准入（DSK-018）时，Mobile 将其视为当前 Direct 路径不可用，不因此自动改用 Cloud。
 
-对用户而言，Relay 与 Tailscale Direct 不是两种需要选择的连接模式，而是客户端内部自动选择的传输路径。
+自 MOB-092（2026-11-23）起，**扫码 / 粘贴 / `mira://pair` 深链这一新设备配对入口只面向 Tailscale Direct**：
 
-## 2. 首次配对：Relay-first
+- 配对 URI 必须携带可解析、满足既有安全要求的 `host`（Tailscale Direct HTTPS endpoint）；新配对入口识别 `*.ts.net` Tailscale Serve 域名及 `100.64.0.0/10` Tailnet IPv4 origin；拒绝普通公网 HTTPS、额外路径或 URL 参数。其他 Tailnet 广告格式需实际验证后再扩展；
+- `relay`、`relayId`、`relayToken` 属于历史 Desktop 生产者字段；即使出现也只被忽略，不能参与 claim、poll 或新凭据的 Transport 选择；
+- Relay-only 链接、缺少 Host 或 Host 无效时不发起 claim，并提示重新生成包含 Tailscale Direct 地址的二维码。
+
+Cloud Relay 不依赖扫码。它通过 Mira Cloud 账号、Host 授权和既有 Cloud Relay 合同进入，由 [MOB-080 #274](https://github.com/uichat-mira/mira-mobile/issues/274) 等合同负责；本入口不得以 Relay 代替 Direct 完成配对。
+
+2026-11-24 维护者裁决：旧配对的 Relay 兼容彻底退役。保留既有 Direct 身份，移除旧 Relay endpoint/token 与自动回退；Cloud Relay 和业务会话合同保持独立。活动 Tailscale / Cloud Relay 互斥与来源路由由 [MOB-095 #374](https://github.com/uichat-mira/mira-mobile/issues/374) 落定，见本文 1.1；新远程会话跟随当前活动连接，没有活动连接时先显式选择，不隐式选源。
+
+## 2. 新设备首次配对：Tailscale Direct-only
 
 ```text
-有 Relay endpoint
-  -> Relay /health preflight
-  -> 成功：只通过 Relay 提交一次 claim
-  -> Relay transport error：claim 前检查 Direct
-      -> Direct 成功：只通过 Direct 提交一次 claim
-      -> Direct 失败：显示连接失败，不提交 claim
+扫码 / 粘贴 / mira://pair 深链
+  -> 解析必须包含有效 host（Tailscale Direct）
+  -> Direct /health preflight
+  -> Direct /app/meta 识别 Mira Host 身份
+      -> 成功：只通过 Direct 提交一次 claim
+      -> /health 成功但不是 Mira Host：拒绝配对，不提交 claim
+      -> Direct 网络不可达：显示 Tailscale 直连失败，不提交 claim
+      -> Host 无效/不满足 HTTPS 要求：显示链接错误，不提交 claim
+  -> claim 后只通过同一 Direct transport poll
 
-无 Relay endpoint
-  -> 检查 Direct
-  -> Direct 成功：提交一次 claim
+relay / relayId / relayToken 出现时：
+  -> 作为历史字段忽略
+  -> 不探测 Relay、不提交 Relay claim、不把 Relay token 保存进新凭据
+
+Relay-only / 缺少 host：
+  -> 拒绝配对，提示在 Desktop 重新生成包含 Tailscale Direct 地址的二维码
 ```
 
-`claim` 是一次性副作用。claim 发出后，即使响应超时、断网或状态不确定，也不得跨 Transport 自动重发；用户应回到 Desktop 确认是否已收到申请。
+`claim` 是一次性副作用。claim 发出后，即使响应超时、断网或状态不确定，也不得跨 Transport 自动重发，也不得改走 Relay；用户应回到 Desktop 确认是否已收到申请。
+
+历史 Relay-first / Direct fallback 已退役，不再有执行入口。
 
 ## 3. claim 通道字段
 
-Mobile 可在 `/remote/pairing/claim` body 中发送：
+Mobile 在 `/remote/pairing/claim` body 中发送：
 
 ```json
-{ "transport": "relay" }
+{ "transport": "direct" }
 ```
 
-允许值为 `relay`、`direct`。字段只用于 Desktop 展示和诊断，不参与认证、poll token、设备凭据、scope、审批或 endpoint 判定。旧版 Mobile 缺少该字段时，Desktop 显示“未知”，并继续完成配对。
+新配对入口只允许 `direct`。字段只用于 Desktop 展示和诊断，不参与认证、poll token、设备凭据、scope、审批或 endpoint 判定。旧版 Mobile 缺少该字段时，Desktop 显示“未知”，并继续完成配对；历史 Relay claim 不再由当前 Mobile 的新配对入口发起。
 
 ## 4. 配对后日常请求
 
-配对完成后的业务请求使用 Direct-first：
+所有 paired Remote Host 请求（JSON、SSE、角色、工作区、工具及恢复连接）只走保存的 Direct Host。Direct 不可达即明确报错；不会改走 Relay。一次性请求结果不确定时仍不得自动重放。
 
-```text
-Direct 可用 -> Direct
-Direct 网络/传输失败 -> Relay
-401/403、业务 HTTP 错误、协议解析错误 -> 不跨 Transport fallback
-```
-
-Transport 切换不能删除、重建或改变已经批准的 `mira_device_*` 身份。
+升级时安全存储将旧记录规范化：有 Direct Host 的记录保留 device credential、device ID、scope 和保存时间，擦除旧 Relay endpoint/token；仅 Relay 的记录删除本地配对凭据，用户须重新完成 Tailscale 配对。不会删除 Local Provider 或 Cloud Session，不调用 Cloud Relay，也不撤销服务端的 Host 授权。
 
 ## 5. Mobile 界面流程与文案
 
 ### 5.1 交互原则
 
 - 用户只需要扫码或粘贴一条配对链接，不选择 Relay、Tailscale 或其他 Transport。
+- 新配对链接必须包含 Tailscale Direct Host；页面明确这是 Tailscale 直连入口，不把 Mira Cloud 登录当作扫码配对前提。
 - 主流程只表达用户任务和当前进度，不要求用户理解 endpoint、preflight、claim 等实现术语。
-- 客户端自动按 Relay-first、Direct fallback 执行；只有两条路径都失败时才要求用户介入。
-- Relay 与 Tailscale 的实际状态、切换原因和诊断信息放在“连接详情”中，不作为主流程标题或前置条件。
+- 客户端只对所选 Direct Host 做可达性检查；Relay 不可作为新配对的静默兜底。
+- 连接状态、失败原因和诊断信息放在配对结果与“连接详情”中，不作为主流程的设置项。
 
 ### 5.2 推荐主流程文案
 
 ```text
 设备配对
-扫描 Mira Desktop 上的二维码
+仅通过 Tailscale 直连扫描 Mira Desktop 上的配对二维码
 
-正在连接桌面…
-我们会自动选择可用的安全连接
-
+正在通过 Tailscale 直连提交设备申请…
 等待桌面端批准
 
 设备已连接
@@ -85,15 +103,22 @@ Transport 切换不能删除、重建或改变已经批准的 `mira_device_*` �
 
 ### 5.3 失败与不确定状态
 
-两条 Transport 都不可用时：
+Direct Host 不可达或无效时：
 
 ```text
-暂时无法连接桌面
-请确认桌面端仍在等待配对。
-我们已尝试所有可用连接方式。
+无法通过 Tailscale 直连 Mira Desktop
+请确认手机已加入同一 Tailscale 网络、Desktop 在线，
+或让 Desktop 重新生成包含 Tailscale 直连地址的二维码。
 
 重新尝试
-查看连接详情
+```
+
+仅含 Relay / 缺少 Direct Host 时：
+
+```text
+该配对链接缺少 Tailscale 直连地址
+扫码、粘贴或深链配对仅支持 Tailscale 直连，
+请在 Mira Desktop 重新生成二维码。
 ```
 
 claim 已发出但响应不确定时：
@@ -103,11 +128,15 @@ claim 已发出但响应不确定时：
 请回到桌面端确认是否收到申请，不要重复提交。
 ```
 
-“连接详情”可以显示当前尝试的 Transport、备用 Transport、失败阶段和可操作建议，例如“当前尝试：Mira Relay”“备用连接：Tailscale Direct”。这些信息不得被设计成用户必须选择的设置。
+“连接详情”可以显示当前尝试的 Direct Host、失败阶段和可操作建议。不得把 Relay 显示为新扫码配对的备用连接或可由用户切换的选项。
 
 ## 6. Desktop 对应要求
 
-Desktop 创建配对挑战时，只要 Relay connected 或 Direct ready 任一成立即可；二维码同时携带当前可用 endpoint。收到 claim 后展示实际申请通道：Mira Relay、Tailscale Direct 或未知。
+新设备扫码配对要求 Desktop 生成的二维码携带**可用的 Tailscale Direct `host`**。即使 Desktop 同时带有 Relay 字段，Mobile 也只使用 Direct。Desktop 收到 claim 后展示实际申请通道：Tailscale Direct。
+
+如果当前 Desktop 只在二维码中广告 Relay endpoint、不携带 Direct Host，这是 Desktop 生产者缺口，不能由 Mobile 偷偷以 Relay 代替 Direct。需要先记录可复现事实并协调 Desktop 归属处理，不在 Mobile 单方面猜测新接口。
+
+Cloud Relay 与 Cloud Host 授权继续按 Mira Cloud / MITS 合同执行，不通过扫码二维码传递。
 
 ## 7. Remote capability 合同
 
@@ -133,7 +162,7 @@ Mobile 判断某项远程能力可用时，必须同时满足：
 
 ### 7.2 Canonical Chat 追加合同（DSK-013 / MOB-082）
 
-此合同适用于 **Cloud Auth + Relay** 与 **paired Remote Host（Direct / Relay）**，
+此合同适用于 **Cloud Auth + Relay** 与 **paired Remote Host（Direct）**，
 只统一业务接口，不统一身份凭据或 Transport。
 
 - 远程会话发送走 `POST /proxy/chat/default`，必须只携带**本轮一条 User 消息**、
@@ -162,8 +191,7 @@ MOB-024 增加当前能力：
   this as a transport keepalive and app lifecycle defect, not a pairing defect.
 - Desktop keeps its host WebSocket alive with native WebSocket control pings;
   the Relay V1 business frame contract is unchanged.
-- Mobile must drop stale Relay sockets when the app returns to the foreground.
-  The next request is then allowed to create a fresh Relay connection.
+- Historical paired Relay resume refresh is retired; Cloud Relay owns its own socket lifecycle.
 - Background JavaScript timers are not a reliable keepalive mechanism. Active
   requests and streams fail fast on close and are not silently replayed.
 
@@ -186,14 +214,18 @@ Workspace create / update / delete
 
 ## 8. 验收
 
-- Relay + Direct：先 Relay `/health`，成功后只发 Relay claim；
-- Relay preflight 失败：claim 前才切 Direct；
-- Relay claim 已发出：不向 Direct 重发；
-- Relay-only：无需 Tailscale 完成配对；
-- Direct-only：旧二维码继续可用；
-- 缺少 `transport`：兼容旧 Mobile；
-- 配对后 Direct 网络失败：可回 Relay；
-- 401/403 与业务错误：不触发 Transport fallback；
+- 同一时间只存在一个活动 Desktop 远程连接；Direct / Cloud 激活不能重叠，UI 与真实运行时使用同一权威；
+- Cloud 已登录 + Direct 活动是有效状态并保持 Direct；独立云服务、Local Provider 与本地聊天继续可用；
+- 显式断开后再切换可达且安全；断开不撤销无关凭据，不在失败、登出、撤权、Host 切换、重连或过期响应时自动换传输；
+- Desktop 拒绝 Direct 准入时按当前 Direct 路径不可用处理；不借此自动改走 Cloud；
+- 新建远程会话只调用一个正确客户端并携带精确 source/owner/Host；无活动连接时进入连接选择；旧本地默认与历史 source 隔离保持；
+- 新扫码 / 粘贴 / `mira://pair` 深链：必须包含有效 Tailscale Direct Host；存在活动连接时阻断且不消耗 claim；
+- `host` + 历史 `relay` / `relayHint` / `relayToken`：只做 Direct preflight/claim/poll，不调用 Relay；
+- Relay-only / 缺少 `host` / 无效 Host：准确报错且不产生 claim 副作用；
+- Direct 不可达：无 claim；claim 已发出但响应不确定：保持 uncertain，不向 Relay 重发；
+- 新配对成功保存的凭据带 Direct Host、不带二维码 Relay token，设备身份/manifest 校验继续执行；
+- 旧混合凭据清除 Relay 字段并保留 Direct 身份；仅 Relay 凭据本地清除、需重新配对；Direct 断线不回退；
+- Cloud Relay、远程会话与 Agent path 不因本卡被静默撤权或全局禁止；
 - capability discovery 以实时 manifest + device scope 为准，不以旧固定 route 表为准；
 - 已持有 `messages:write` 且 Host manifest 声明 `POST /threads` 的现有设备，无需重新配对即可创建 canonical Thread；
 - manifest 未声明 route 或设备缺 scope 时，Mobile 不得尝试创建；

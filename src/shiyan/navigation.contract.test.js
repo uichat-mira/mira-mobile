@@ -6,11 +6,11 @@ const readSource = path => readFileSync(resolve(process.cwd(), path), 'utf8');
 describe('Shiyan navigation contract', () => {
   it('keeps Drawer -> Plugins -> Shiyan wired to the real stack routes', () => {
     const drawer = readSource('src/session/CustomDrawer.tsx');
-    const shiyan = readSource('src/shiyan/ShiyanScreens.tsx');
     const app = readSource('App.tsx');
 
     expect(drawer).toContain("navigation.navigate('Plugins')");
-    expect(shiyan).toContain("navigation.navigate('ShiyanHome')");
+    expect(app).toContain("import { PluginsScreen } from './src/screens/PluginsScreen'");
+    expect(readSource('src/screens/PluginsScreen.tsx')).toContain("navigation.navigate('ShiyanHome')");
 
     expect(app).toContain('<Stack.Screen name="Plugins" component={PluginsScreen} />');
     expect(app).toContain('<Stack.Screen name="ShiyanHome" component={ShiyanHomeScreen} />');

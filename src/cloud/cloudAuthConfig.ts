@@ -16,6 +16,7 @@ const LOGOUT_PATH = '/v1/auth/logout';
 const DEVICES_PATH = '/v1/devices';
 const HOSTS_PATH = '/v1/hosts';
 const SERVICE_CREDENTIALS_PATH = '/v1/service-credentials';
+const SERVICES_PATH = '/v1/application-services';
 
 export const resolveCloudAuthBaseUrl = (): string => CLOUD_AUTH_BASE_URL;
 
@@ -63,6 +64,20 @@ export const cloudAuthHostsUrl = (baseUrl: string): string =>
 
 export const cloudAuthServiceCredentialsUrl = (baseUrl: string): string =>
   cloudAuthUrl(baseUrl, SERVICE_CREDENTIALS_PATH);
+
+/** Mira ID V1 instance service directory (cloud-auth OPS-052). */
+export const cloudAuthServicesUrl = (baseUrl: string): string =>
+  cloudAuthUrl(baseUrl, SERVICES_PATH);
+
+export const cloudAuthServiceCredentialUrl = (
+  baseUrl: string,
+  appId: string,
+  serviceId: string,
+): string =>
+  cloudAuthUrl(
+    baseUrl,
+    `${SERVICES_PATH}/${encodeURIComponent(appId)}/${encodeURIComponent(serviceId)}/credential`,
+  );
 
 export interface AuthorizationUrlInput {
   state: string;

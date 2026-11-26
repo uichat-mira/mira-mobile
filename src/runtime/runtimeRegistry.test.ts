@@ -2,6 +2,7 @@ import type { Session } from '../types';
 import type { ConversationRuntime, RuntimeEvent } from './conversationRuntime';
 import { RuntimeRegistry } from './runtimeRegistry';
 import { RemoteHostError } from '../api/remoteHttp';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 
 const session = (id: string, source: 'remote-host' | 'local-provider', updatedAt: string): Session => ({
   id,
@@ -20,6 +21,8 @@ const runtime = (kind: 'remote-host' | 'local-provider', sessions: Session[]): C
 });
 
 describe('RuntimeRegistry', () => {
+  beforeEach(() => useDesktopConnectionStore.setState({ mode: 'direct', transitioning: false }));
+  afterEach(() => useDesktopConnectionStore.setState({ mode: 'none' }));
   it('merges remote and local sessions by updated time', async () => {
     const registry = new RuntimeRegistry(
       runtime('local-provider', [session('local-1', 'local-provider', '2026-09-06T02:00:00.000Z')]) as never,
@@ -71,6 +74,7 @@ describe('RuntimeRegistry', () => {
     const pairedList = jest.spyOn(paired, 'listSessions');
     const registry = new RuntimeRegistry(local as never, paired as never, cloud as never);
 
+    useDesktopConnectionStore.setState({ mode: 'cloud' });
     await expect(registry.listSessions('cloud-host')).resolves.toMatchObject([
       { id: 'cloud-thread', source: 'cloud-host' },
     ]);
@@ -81,8 +85,12 @@ describe('RuntimeRegistry', () => {
     expect(cloudDelete).toHaveBeenCalledWith('cloud-thread');
     expect(registry.runtimeForSession('cloud-thread', 'cloud-host')).toBe(cloud);
     await registry.listSessions('all');
-    expect(cloudList).toHaveBeenCalledTimes(1);
-    expect(pairedList).toHaveBeenCalledTimes(1);
+    expect(cloudList).toHaveBeenCalledTimes(2);
+    expect(pairedList).not.toHaveBeenCalled();
+    useDesktopConnectionStore.setState({ mode: 'none' });
+    await registry.listSessions('all');
+    expect(cloudList).toHaveBeenCalledTimes(2);
+    expect(pairedList).not.toHaveBeenCalled();
   });
 
   it('routes session deletion to the matching runtime only', async () => {
@@ -96,14 +104,45 @@ describe('RuntimeRegistry', () => {
       ...runtime('remote-host', []),
       deleteSession: async (sessionId: string) => { remoteDeletes.push(sessionId); },
     };
-    const registry = new RuntimeRegistry(local as never, remote as never);
+    const endedThreads: string[] = [];
+    const registry = new RuntimeRegistry(
+      local as never,
+      remote as never,
+      undefined,
+      async (threadId: string) => {
+        endedThreads.push(threadId);
+        return { kind: 'no_remote_work', threadId };
+      },
+    );
 
     await registry.deleteSession('local-1', 'local-provider');
     await registry.deleteSession('remote-1', 'remote-host');
     await registry.deleteSession('local-looking-remote', 'remote-host');
 
+    expect(endedThreads).toEqual(['local-1']);
     expect(localDeletes).toEqual(['local-1']);
     expect(remoteDeletes).toEqual(['remote-1', 'local-looking-remote']);
+  });
+
+  it('keeps the local thread when its remote end is not confirmed', async () => {
+    const localDeletes: string[] = [];
+    const local = {
+      ...runtime('local-provider', []),
+      deleteSession: async (sessionId: string) => { localDeletes.push(sessionId); },
+    };
+    const registry = new RuntimeRegistry(
+      local as never,
+      runtime('remote-host', []) as never,
+      undefined,
+      async () => {
+        throw new Error('remote cleanup not confirmed');
+      },
+    );
+
+    await expect(
+      registry.deleteSession('local-1', 'local-provider'),
+    ).rejects.toThrow('remote cleanup not confirmed');
+    expect(localDeletes).toEqual([]);
   });
 
   it('shows an empty list instead of a Remote failure with no Desktop pairing', async () => {

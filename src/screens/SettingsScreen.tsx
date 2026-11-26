@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -21,7 +21,6 @@ import {
   Moon,
   Settings as GearIcon,
   Bell,
-  Volume2,
   ShieldCheck,
   HardDrive,
   Bug,
@@ -30,13 +29,12 @@ import {
   MessageCircle,
   Palette,
   Cloud,
-  Mail,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme, type AccentColor, type ThemeMode } from '../theme/ThemeContext';
 import { themePresets } from '../theme/palette';
-import { miraHostClient } from '../api/miraHostClient';
 import { useTailscaleConnectivityStore } from '../store/tailscaleConnectivityStore';
+import { useDesktopConnectionStore, type DesktopConnectionMode } from '../connectivity/desktopConnectionAuthority';
 import {
   SettingsGroup as RowGroup,
   SettingsRow as Row,
@@ -46,7 +44,7 @@ import { SettingsChoiceModal, type SettingsChoice } from '../settings/SettingsCh
 import { ConnectionStatusDot, type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { useHostStore } from '../store/hostStore';
-import { useCloudAccountStore } from '../cloud/cloudAccountStore';
+import { useCloudAccountStore, type CloudAccountStatus } from '../cloud/cloudAccountStore';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const miraLogo = require('../../assets/branding/mira-logo-square.png');
@@ -64,6 +62,32 @@ const accentOptionDefinitions: readonly SettingsChoice<AccentColor>[] = [
   { value: 'slate-ocean', label: themePresets['slate-ocean'].label, swatch: themePresets['slate-ocean'].swatch },
 ];
 
+type LogoutMethod = 'tailscale' | 'mira-id';
+
+interface LogoutSnapshot {
+  method: LogoutMethod;
+  desktopMode: DesktopConnectionMode;
+  cloudAccountId: string | null;
+}
+
+const hasCloudIdentity = (
+  status: CloudAccountStatus,
+  account: { id: string } | null,
+): boolean =>
+  account !== null &&
+  (status === 'signed_in' || status === 'cloud_unavailable');
+
+const resolveLogoutMethod = (
+  desktopMode: DesktopConnectionMode,
+  status: CloudAccountStatus,
+  account: { id: string } | null,
+): LogoutMethod | null => {
+  // An active Tailscale transport owns the exit action even while a Mira ID is
+  // also signed in: logout must never silently revoke the cloud identity.
+  if (desktopMode === 'direct') return 'tailscale';
+  return hasCloudIdentity(status, account) ? 'mira-id' : null;
+};
+
 export function SettingsScreen() {
   const navigation = useNavigation<NavProp>();
   const {
@@ -77,12 +101,16 @@ export function SettingsScreen() {
   } = useTheme();
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [accentOpen, setAccentOpen] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const logoutInFlightRef = useRef(false);
   const { config: hostConfig, connectionStatus } = useHostStore();
   const remoteConnectivityState = useTailscaleConnectivityStore((state) => state.state);
   const [providerCount, setProviderCount] = useState(0);
   const cloudStatus = useCloudAccountStore((state) => state.status);
   const cloudAccount = useCloudAccountStore((state) => state.account);
+  const cloudSignOut = useCloudAccountStore((state) => state.signOut);
+  const desktopConnectionMode = useDesktopConnectionStore((state) => state.mode);
+  const disconnectDesktop = useDesktopConnectionStore((state) => state.disconnect);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -112,40 +140,158 @@ export function SettingsScreen() {
           ? 'disconnected'
           : 'not-configured';
 
-  const requestDisconnect = () => {
-    if (disconnecting) return;
+  const logoutMethod = resolveLogoutMethod(
+    desktopConnectionMode,
+    cloudStatus,
+    cloudAccount,
+  );
+  const cloudIdentityPresent = hasCloudIdentity(cloudStatus, cloudAccount);
 
-    Alert.alert(
-      '断开 Mira Host？',
-      '这会清除本机配对凭据并断开当前 Host，不会删除桌面端的会话、项目或其它数据。',
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '断开',
-          style: 'destructive',
-          onPress: () => {
-            setDisconnecting(true);
-            void miraHostClient
-              .disconnect()
-              .then(() => {
-                useTailscaleConnectivityStore.getState().reset();
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: 'HostConfig' }],
-                });
-              })
-              .catch((error: unknown) => {
-                const message =
-                  error instanceof Error ? error.message : '无法断开 Mira Host，请稍后重试。';
-                Alert.alert('断开失败', message);
-              })
-              .finally(() => {
-                setDisconnecting(false);
-              });
-          },
-        },
-      ],
+  const isLogoutSnapshotCurrent = (snapshot: LogoutSnapshot): boolean => {
+    const currentDesktop = useDesktopConnectionStore.getState();
+    const currentCloud = useCloudAccountStore.getState();
+    return (
+      resolveLogoutMethod(
+        currentDesktop.mode,
+        currentCloud.status,
+        currentCloud.account,
+      ) === snapshot.method &&
+      currentDesktop.mode === snapshot.desktopMode &&
+      (currentCloud.account?.id ?? null) === snapshot.cloudAccountId
     );
+  };
+
+  const rejectChangedLogout = () => {
+    Alert.alert('状态已变化', '连接或账号状态已更新，请重新确认退出操作。');
+  };
+
+  const beginLogout = (): boolean => {
+    // The confirm button holds the handler from the render that opened the
+    // dialog, so React state alone cannot stop a second tap.
+    if (logoutInFlightRef.current) return false;
+    logoutInFlightRef.current = true;
+    setLoggingOut(true);
+    return true;
+  };
+
+  const finishLogout = () => {
+    logoutInFlightRef.current = false;
+    setLoggingOut(false);
+  };
+
+  const performTailscaleLogout = async (snapshot: LogoutSnapshot) => {
+    if (!beginLogout()) return;
+    try {
+      if (snapshot.method !== 'tailscale' || !isLogoutSnapshotCurrent(snapshot)) {
+        rejectChangedLogout();
+        return;
+      }
+
+      await disconnectDesktop();
+      const modeAfterRelease = useDesktopConnectionStore.getState().mode;
+      if (modeAfterRelease !== 'none') {
+        if (modeAfterRelease !== snapshot.desktopMode) {
+          rejectChangedLogout();
+        } else {
+          Alert.alert('退出失败', '未能释放 Tailscale 直连，请稍后重试。');
+        }
+        return;
+      }
+
+      // Only the active transport and its transient health are released. The
+      // retained Direct pairing authorization and every Cloud identity stay.
+      useTailscaleConnectivityStore.getState().reset();
+      useHostStore.getState().setConnectionStatus('disconnected');
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'HostConfig' }],
+      });
+    } catch (error) {
+      Alert.alert(
+        '退出失败',
+        error instanceof Error
+          ? error.message
+          : '无法断开 Tailscale 直连，请稍后重试。',
+      );
+    } finally {
+      finishLogout();
+    }
+  };
+
+  const performMiraIdLogout = async (snapshot: LogoutSnapshot) => {
+    if (!beginLogout()) return;
+    try {
+      if (snapshot.method !== 'mira-id' || !isLogoutSnapshotCurrent(snapshot)) {
+        rejectChangedLogout();
+        return;
+      }
+
+      // The Cloud Account store owns secure-session clearing, Relay/device
+      // invalidation and the Cloud-connection lifecycle fence.
+      await cloudSignOut();
+      const state = useCloudAccountStore.getState();
+      if (state.status !== 'signed_out' || state.account !== null) {
+        Alert.alert(
+          '退出失败',
+          state.message ?? '退出 Mira ID 未完成，请稍后重试。',
+        );
+        return;
+      }
+
+      navigation.navigate('CloudAccount');
+    } catch (error) {
+      Alert.alert(
+        '退出失败',
+        error instanceof Error
+          ? error.message
+          : '退出 Mira ID 未完成，请稍后重试。',
+      );
+    } finally {
+      finishLogout();
+    }
+  };
+
+  const requestLogout = () => {
+    if (logoutInFlightRef.current) return;
+    const method = logoutMethod;
+    if (!method) return;
+
+    const snapshot: LogoutSnapshot = {
+      method,
+      desktopMode: desktopConnectionMode,
+      cloudAccountId: cloudAccount?.id ?? null,
+    };
+
+    if (method === 'tailscale') {
+      Alert.alert(
+        '退出登录（Tailscale）？',
+        cloudIdentityPresent
+          ? '将断开 Tailscale，Mira ID 保持登录。'
+          : '将断开当前 Tailscale 直连；本地模型、历史与桌面配对授权保留。',
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '退出',
+            style: 'destructive',
+            onPress: () => {
+              void performTailscaleLogout(snapshot);
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    Alert.alert('退出登录（Mira ID）？', '退出后云端功能不可用。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '退出',
+        style: 'destructive',
+        onPress: () => {
+          void performMiraIdLogout(snapshot);
+        },
+      },
+    ]);
   };
 
   const handleSettingAction = (actionId: string) => {
@@ -171,14 +317,11 @@ export function SettingsScreen() {
       case 'local-provider':
         navigation.navigate('LocalProviderList');
         break;
-      case 'disconnect-host':
-        requestDisconnect();
+      case 'logout':
+        requestLogout();
         break;
       case 'cloud-account':
         navigation.navigate('CloudAccount');
-        break;
-      case 'who-you':
-        navigation.navigate('WhoYou');
         break;
       case 'plugins':
         navigation.navigate('Plugins');
@@ -291,17 +434,6 @@ export function SettingsScreen() {
             isFirst
             isLast={false}
           />
-          <Row
-            icon={Mail}
-            title="狐邮 Who You"
-            subtitle={
-              cloudStatus === 'signed_in'
-                ? '云端只读邮箱'
-                : '需要登录 Mira Cloud'
-            }
-            actionId="who-you"
-            isLast={false}
-          />
           <Row icon={Smile} title="个性化" actionId="personalization" isLast={false} />
           <Row icon={BookOpen} title="记忆" actionId="memory" isLast={false} />
           <Row icon={Grid3x3} title="插件" actionId="plugins" isLast />
@@ -328,7 +460,7 @@ export function SettingsScreen() {
             title="重点色"
             subtitle={`${accentOption.label}${persistenceSuffix}`}
             actionId="accent"
-            isLast={false}
+            isLast
             right={
               <View style={styles.accentRow}>
                 <View style={[styles.accentDot, { backgroundColor: accentOption.swatch ?? colors.text.soft }]} />
@@ -336,12 +468,6 @@ export function SettingsScreen() {
               </View>
             }
             showChevron={false}
-          />
-          <Row
-            icon={Monitor}
-            title="设备同步"
-            subtitle="所有设备"
-            isLast
           />
         </RowGroup>
 
@@ -355,24 +481,31 @@ export function SettingsScreen() {
             isLast={false}
           />
           <Row icon={Bell} title="通知" actionId="notifications" isLast={false} />
-          <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
           <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
           <Row icon={Bug} title="报告错误" actionId="report-error" isLast={false} />
           <Row icon={Info} title="关于" actionId="about" isLast />
         </RowGroup>
 
-        <View style={styles.logoutSpacer} />
-        <RowGroup onAction={handleSettingAction}>
-          <Row
-            icon={LogOut}
-            title={disconnecting ? '正在断开…' : '退出登录'}
-            actionId="disconnect-host"
-            isFirst
-            isLast
-            destructive
-          />
-        </RowGroup>
+        {logoutMethod ? (
+          <>
+            <View style={styles.logoutSpacer} />
+            <RowGroup onAction={handleSettingAction}>
+              <Row
+                icon={LogOut}
+                title={
+                  logoutMethod === 'tailscale'
+                    ? '退出登录（Tailscale）'
+                    : '退出登录（Mira ID）'
+                }
+                actionId={loggingOut ? undefined : 'logout'}
+                isFirst
+                isLast
+                destructive
+              />
+            </RowGroup>
+          </>
+        ) : null}
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
@@ -399,19 +532,18 @@ const styles = StyleSheet.create({
   },
   headerSpacer: { flex: 1 },
   scrollContent: {
-    paddingTop: 8,
+    paddingTop: 0,
     paddingHorizontal: 20,
     paddingBottom: 48,
   },
   profileSection: {
     alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 24,
+    paddingTop: 0,
+    paddingBottom: 8,
   },
   avatarWrap: {
     width: 96,
     height: 96,
-    marginBottom: 16,
   },
   avatar: {
     width: 96,

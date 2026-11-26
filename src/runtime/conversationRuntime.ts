@@ -1,5 +1,6 @@
 import type { ChatMessage, Session } from '../types';
 import type { ToolApprovalDecision } from '../tools/toolGatewayClient';
+import type { LocalProviderModelOption } from './localProviderModelSelection';
 
 export type RuntimeKind = 'remote-host' | 'local-provider';
 
@@ -19,6 +20,7 @@ export type RuntimeEvent =
       name: string;
       content: string;
       truncated?: boolean;
+      failed?: boolean;
     }
   | {
       type: 'approval-required';
@@ -37,7 +39,7 @@ export type RuntimeEvent =
     }
   | {
       type: 'run-paused';
-      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected';
+      reason: 'app-suspended' | 'timeout' | 'cancelled' | 'approval-rejected' | 'budget-exhausted';
     }
   /**
    * Non-error, user-visible signal that does not stop the turn. Emitted, for
@@ -53,7 +55,8 @@ export type RuntimeEvent =
         | 'cloud-tools-unavailable'
         | 'cloud-tools-unauthorized'
         | 'cloud-tools-session-invalid'
-        | 'cloud-tools-host-ambiguous';
+        | 'cloud-tools-host-ambiguous'
+        | 'mcp-service-degraded';
     }
   | { type: 'error'; message: string };
 
@@ -71,11 +74,37 @@ export interface ConversationRuntime {
   sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>>;
   cancelActiveRun(): void;
-  getAgentEnabled?(sessionId: string): Promise<boolean>;
-  setAgentEnabled?(sessionId: string, enabled: boolean): Promise<void>;
+  /** Local Provider thread-level execution-strength APIs. */
+  getAgentStrengthOverride?(
+    sessionId: string,
+  ): Promise<import('../settings/agentExecutionStrength').AgentExecutionStrengthId | null>;
+  setAgentStrength?(
+    sessionId: string,
+    strength: import('../settings/agentExecutionStrength').AgentExecutionStrengthId,
+  ): Promise<void>;
+  resetAgentStrength?(sessionId: string): Promise<void>;
+  getEffectiveAgentStrength?(
+    sessionId: string,
+  ): Promise<import('../settings/agentExecutionStrength').AgentExecutionStrengthId>;
+  /**
+   * Local Provider model selection for the conversation composer. Options come
+   * only from the user's configured Providers; `selected` reflects the
+   * persisted session selection. Selecting persists the Provider/model pair for
+   * the next send without recreating the conversation.
+   */
+  listLocalProviderModels?(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption[]>;
+  getSelectedLocalProviderModel?(
+    sessionId: string,
+  ): Promise<LocalProviderModelOption | null>;
+  selectLocalProviderModel?(
+    sessionId: string,
+    providerId: string,
+  ): Promise<LocalProviderModelOption>;
   resolveToolApproval?(
     invocationId: string,
     decision: ToolApprovalDecision,

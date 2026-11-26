@@ -4,10 +4,30 @@ import {
   type RemoteJsonRequest,
 } from './remoteHttp';
 import { unwrapApiEnvelope } from '../protocol/remoteHostV1';
-import {
-  normalizeRelayEndpoint,
-  type RemoteRelayEndpoint,
-} from '../protocol/remotePairingV1';
+const normalizeRelayEndpoint = (value: string): string => {
+  const trimmed = value.trim().replace(/\/+$/, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error('Mira Relay address is not a valid URL');
+  }
+
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('Mira Relay URL must not contain credentials, query, or hash');
+  }
+  if (parsed.pathname !== '/' && parsed.pathname !== '') {
+    throw new Error('Mira Relay URL must be a base URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Mira Relay must use HTTPS');
+  }
+  if (!parsed.hostname) {
+    throw new Error('Mira Relay URL must include a hostname');
+  }
+
+  return `${parsed.protocol}//${parsed.host}`;
+};
 
 const RELAY_PROTOCOL_VERSION = 1;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -302,12 +322,14 @@ const createHeaders = (input: {
   credential?: string;
   body?: unknown;
   sse?: boolean;
+  extra?: Record<string, string>;
 }) => {
   const headers: Record<string, string> = {
     Accept: input.sse ? 'text/event-stream' : 'application/json',
   };
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.credential) headers.Authorization = `Bearer ${input.credential}`;
+  if (input.extra) Object.assign(headers, input.extra);
   return headers;
 };
 
@@ -317,8 +339,7 @@ export interface RelayTransportTarget {
 }
 
 /**
- * Admission is the only part of the Relay transport that differs between the
- * Legacy pairing token and the Cloud transport ticket. The frame engine below
+ * Cloud admission supplies a fresh transport ticket. The frame engine below
  * must never see a business credential.
  */
 export interface RelayAdmission {
@@ -327,15 +348,6 @@ export interface RelayAdmission {
   ): Record<string, unknown> | Promise<Record<string, unknown>>;
   mapAdmissionErrorCode(code: string): string;
 }
-
-export const legacyRelayAdmission = (token: string): RelayAdmission => ({
-  createHello: target => ({
-    role: 'client',
-    relayId: target.relayId,
-    token,
-  }),
-  mapAdmissionErrorCode: code => `RELAY_${code}`,
-});
 
 const isPromiseLike = <T>(value: T | Promise<T>): value is Promise<T> =>
   typeof (value as Promise<T> | null)?.then === 'function';
@@ -490,6 +502,7 @@ export class RelayConnection {
         headers: createHeaders({
           credential: request.credential,
           body: request.body,
+          ...(request.headers ? { extra: request.headers } : {}),
         }),
         ...(request.body === undefined
           ? {}
@@ -547,6 +560,7 @@ export class RelayConnection {
               credential: request.credential,
               body: request.body,
               sse: true,
+              ...(request.headers ? { extra: request.headers } : {}),
             }),
             bodyBase64: base64Encode(
               utf8Encode(JSON.stringify(request.body)),
@@ -1061,39 +1075,3 @@ export class RelayConnection {
     this.pending.clear();
   }
 }
-
-const connections = new Map<string, RelayConnection>();
-
-const connectionFor = (relay: RemoteRelayEndpoint) => {
-  const key = `${relay.endpoint}\n${relay.relayId}\n${relay.token}`;
-  let connection = connections.get(key);
-  if (!connection) {
-    connection = new RelayConnection(
-      relay,
-      legacyRelayAdmission(relay.token),
-      () => {
-        connections.delete(key);
-      },
-    );
-    connections.set(key, connection);
-  }
-  return connection;
-};
-
-export const requestRelayJson = <T>(
-  relay: RemoteRelayEndpoint,
-  request: RemoteJsonRequest<T>,
-) => connectionFor(relay).requestJson(request);
-
-export const openRelayPostSse = <T>(
-  relay: RemoteRelayEndpoint,
-  request: PostSseRequest<T>,
-) => connectionFor(relay).openSse(request);
-
-export const closeRelayConnections = () => {
-  for (const connection of connections.values()) connection.close();
-  connections.clear();
-};
-
-export const isRelayTransportError = (error: unknown) =>
-  error instanceof RemoteHostError && error.code.startsWith('RELAY_');

@@ -34,6 +34,21 @@ const channelModulePath = path.resolve(
   'channel',
   channelModuleFilename,
 );
+const piAuthContextFile = path.resolve(
+  __dirname,
+  'node_modules',
+  '@earendil-works',
+  'pi-ai',
+  'dist',
+  'auth',
+  'context.js',
+);
+const piAuthContextShimFile = path.resolve(
+  __dirname,
+  'src',
+  'runtime',
+  'piAiAuthContextShim.ts',
+);
 
 /**
  * Metro configuration
@@ -49,7 +64,17 @@ const config = {
       if (moduleName === 'mira-release-channel') {
         return { type: 'sourceFile', filePath: channelModulePath };
       }
-      return context.resolveRequest(context, moduleName, platform);
+      const resolution = context.resolveRequest(context, moduleName, platform);
+      // Pi's default auth context uses a variable-specifier dynamic import for
+      // node:fs, which Metro cannot transform. Mira owns Local Provider auth,
+      // so the Pi provider-auth default is replaced by its browser-safe shape.
+      if (
+        resolution?.type === 'sourceFile' &&
+        resolution.filePath === piAuthContextFile
+      ) {
+        return { type: 'sourceFile', filePath: piAuthContextShimFile };
+      }
+      return resolution;
     },
   },
 };

@@ -17,6 +17,7 @@ class MainApplication : Application(), ReactApplication {
           add(MiraSecureCredentialStorePackage())
           add(MiraLocalStorePackage())
           add(MiraNetworkMonitorPackage())
+          add(MiraWebFetcherPackage())
           add(MiraAudioRecorderPackage())
           add(MiraImageSharePackage())
           add(MiraNotificationsPackage())

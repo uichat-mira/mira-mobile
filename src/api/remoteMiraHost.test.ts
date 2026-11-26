@@ -3,25 +3,12 @@ import { RemoteHostError } from './remoteHttp';
 import { RemoteMiraHostClient, type PendingPairing } from './remoteMiraHost';
 import type { PostSseRequest, PostSseSession } from './postSse';
 import { MemoryDeviceCredentialStore } from '../security/deviceCredentialStore';
-import type { RemoteRelayEndpoint } from '../protocol/remotePairingV1';
 
 type JsonTransport = <T>(request: RemoteJsonRequest<T>) => Promise<T>;
-type RelayJsonTransport = <T>(
-  relay: RemoteRelayEndpoint,
-  request: RemoteJsonRequest<T>,
-) => Promise<T>;
-
-const relay: RemoteRelayEndpoint = {
-  endpoint: 'https://relay.tomz.io',
-  relayId: 'relay_1234567890abcdef',
-  token: 'r'.repeat(43),
-};
-
 const pending: PendingPairing = {
   descriptor: {
     version: 1,
     hostUrl: 'https://mira.example.ts.net',
-    relay: null,
     challengeId: 'challenge-1',
     code: 'ABCD2345',
   },
@@ -90,7 +77,6 @@ const createManifestPayload = {
 const pairingDescriptor = {
   version: 1 as const,
   hostUrl: 'https://mira.example.ts.net',
-  relay,
   challengeId: 'challenge-1',
   code: 'ABCD2345',
 };
@@ -100,6 +86,12 @@ const claimPayload = {
   pollToken: 'poll-token',
   status: 'claimed' as const,
   expiresAt: '2026-08-02T00:05:00.000Z',
+};
+
+const miraHostMeta = {
+  name: 'Mira Host',
+  displayName: 'Mira Desktop',
+  version: '0.4.0',
 };
 
 describe('RemoteMiraHostClient pairing credential retention', () => {
@@ -118,7 +110,6 @@ describe('RemoteMiraHostClient pairing credential retention', () => {
 
     expect(await store.load()).toMatchObject({
       hostUrl: pending.descriptor.hostUrl,
-      relay: null,
       credential: pollPayload.credential,
       deviceId: 'device-1',
       scopes: ['threads:read'],
@@ -165,51 +156,16 @@ describe('RemoteMiraHostClient pairing credential retention', () => {
 });
 
 describe('RemoteMiraHostClient transport selection', () => {
-  it('prefers Relay for pairing and reports the selected transport', async () => {
+  it('claims only over the Direct Host and never probes Relay', async () => {
     const store = new MemoryDeviceCredentialStore();
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
-      return request.parse({ status: 'ok' });
+      if (request.path === '/health') return request.parse({ status: 'ok' });
+      if (request.path === '/app/meta') return request.parse(miraHostMeta);
+      return request.parse(claimPayload);
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
-      return request.path === '/health'
-        ? request.parse({ status: 'ok' })
-        : request.parse(claimPayload);
-    };
-    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
-
-    await expect(
-      client.claimPairing(pairingDescriptor, {
-        name: 'Android phone',
-        platform: 'android',
-      }),
-    ).resolves.toMatchObject({ ...claimPayload, transport: 'relay' });
-    expect(directMock).not.toHaveBeenCalled();
-    expect(relayJsonMock.mock.calls.map(call => call[1].path)).toEqual([
-      '/health',
-      '/remote/pairing/claim',
-    ]);
-    expect(relayJsonMock.mock.calls[1][1].body).toMatchObject({ transport: 'relay' });
-  });
-
-  it('falls back to Direct only when the Relay preflight fails', async () => {
-    const store = new MemoryDeviceCredentialStore();
-    const directMock = jest.fn();
-    const direct: JsonTransport = async request => {
-      directMock(request);
-      return request.path === '/health'
-        ? request.parse({ status: 'ok' })
-        : request.parse(claimPayload);
-    };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
-      throw new RemoteHostError('RELAY_NETWORK_ERROR', 'relay unavailable');
-    };
-    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(
       client.claimPairing(pairingDescriptor, {
@@ -217,28 +173,42 @@ describe('RemoteMiraHostClient transport selection', () => {
         platform: 'android',
       }),
     ).resolves.toMatchObject({ ...claimPayload, transport: 'direct' });
-    expect(relayJsonMock).toHaveBeenCalledTimes(1);
     expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
       '/health',
+      '/app/meta',
       '/remote/pairing/claim',
     ]);
-    expect(directMock.mock.calls[1][0].body).toMatchObject({ transport: 'direct' });
+    expect(directMock.mock.calls[2][0].body).toMatchObject({ transport: 'direct' });
   });
 
-  it('does not retry a dispatched Relay claim through Direct', async () => {
+  it('does not submit a claim when the Direct preflight is unreachable', async () => {
     const store = new MemoryDeviceCredentialStore();
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
-      return request.parse(claimPayload);
+      throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (endpoint, request) => {
-      relayJsonMock(endpoint, request);
+    const client = new RemoteMiraHostClient(store, direct);
+
+    await expect(
+      client.claimPairing(pairingDescriptor, {
+        name: 'Android phone',
+        platform: 'android',
+      }),
+    ).rejects.toMatchObject({ code: 'PAIRING_DIRECT_UNREACHABLE' });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual(['/health']);
+  });
+
+  it('keeps an ambiguous Direct claim uncertain without trying Relay', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
       if (request.path === '/health') return request.parse({ status: 'ok' });
-      throw new RemoteHostError('RELAY_DISCONNECTED', 'relay disconnected');
+      if (request.path === '/app/meta') return request.parse(miraHostMeta);
+      throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     };
-    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(
       client.claimPairing(pairingDescriptor, {
@@ -246,96 +216,120 @@ describe('RemoteMiraHostClient transport selection', () => {
         platform: 'android',
       }),
     ).rejects.toMatchObject({ code: 'PAIRING_CLAIM_UNCERTAIN' });
-    expect(relayJsonMock).toHaveBeenCalledTimes(2);
-    expect(directMock).not.toHaveBeenCalled();
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/health',
+      '/app/meta',
+      '/remote/pairing/claim',
+    ]);
   });
 
-  it('falls back from Direct network failure to Relay for idempotent JSON requests', async () => {
+  it('refuses a publicly reachable HTTPS host before any preflight or claim', async () => {
+    const directSpy = jest.fn();
+    const direct: JsonTransport = async request => {
+      directSpy(request);
+      return request.parse({ status: 'ok' });
+    };
+    const client = new RemoteMiraHostClient(
+      new MemoryDeviceCredentialStore(),
+      direct,
+    );
+    await expect(client.claimPairing(
+      { ...pairingDescriptor, hostUrl: 'https://public.example.org' },
+      { name: 'Android phone' },
+    )).rejects.toThrow('Tailscale Direct Host');
+    expect(directSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fake /health 200 service without a valid Mira Host identity', async () => {
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      if (request.path === '/health') return request.parse({ status: 'ok' });
+      if (request.path === '/app/meta') {
+        return request.parse({ name: 'Another service', displayName: 'Public server', version: '1' });
+      }
+      throw new Error('Unexpected pairing claim');
+    };
+    const client = new RemoteMiraHostClient(
+      new MemoryDeviceCredentialStore(),
+      direct,
+    );
+    await expect(client.claimPairing(pairingDescriptor, {
+      name: 'Android phone',
+    })).rejects.toMatchObject({ code: 'PAIRING_DIRECT_NOT_MIRA_HOST' });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
+      '/health', '/app/meta',
+    ]);
+  });
+
+  it('polls a claimed pairing only over its Direct transport', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      return request.parse({
+        status: 'pending',
+        expiresAt: pending.expiresAt,
+        deviceId: null,
+        scopes: [],
+      });
+    };
+    const client = new RemoteMiraHostClient(store, direct);
+
+    await expect(client.pollPairing(pending)).resolves.toMatchObject({
+      status: 'pending',
+    });
+    expect(directMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/remote/pairing/claims/claim-1/poll',
+      }),
+    );
+  });
+
+  it('reports Direct network failure and keeps the paired credential', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read'],
       savedAt: '2026-08-02T00:00:00.000Z',
     });
-
-    const directMock = jest.fn();
-    const direct: JsonTransport = async _request => {
-      directMock();
-      throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
-    };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      if (request.path === '/remote/v1/manifest') {
-        return request.parse(manifestPayload);
-      }
-      return request.parse([]);
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
-
-    await expect(client.restoreConnection()).resolves.toMatchObject({
-      manifest: manifestPayload,
-    });
-    expect(directMock).toHaveBeenCalledTimes(1);
-    expect(relayJsonMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('selects a reachable transport and sends an empty body for untitled thread creation', async () => {
-    const store = new MemoryDeviceCredentialStore();
-    await store.save({
-      hostUrl: 'https://mira.example.ts.net',
-      relay,
-      credential: 'mira_device_device-1.secret',
-      deviceId: 'device-1',
-      scopes: ['threads:read', 'messages:write'],
-      savedAt: '2026-08-29T00:00:00.000Z',
-    });
-
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
       throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      if (request.path === '/remote/v1/manifest') {
-        return request.parse(createManifestPayload);
-      }
-      return request.parse(createdThreadPayload);
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
-
-    await expect(client.createThread()).resolves.toMatchObject({
-      id: 'thread-new',
-      title: '新对话',
-    });
+    const client = new RemoteMiraHostClient(store, direct);
+    await expect(client.restoreConnection()).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
     expect(directMock).toHaveBeenCalledTimes(1);
-    expect(relayJsonMock.mock.calls.map(call => call[1].path)).toEqual([
-      '/remote/v1/manifest',
-      '/threads',
-    ]);
-    expect(relayJsonMock.mock.calls[1][1].body).toEqual({});
+    await expect(store.load()).resolves.toMatchObject({ deviceId: 'device-1' });
+  });
+
+  it('preflights Direct and sends an empty body for untitled thread creation', async () => {
+    const store = new MemoryDeviceCredentialStore();
+    await store.save({
+      hostUrl: 'https://mira.example.ts.net',
+      credential: 'mira_device_device-1.secret',
+      deviceId: 'device-1',
+      scopes: ['threads:read', 'messages:write'],
+      savedAt: '2026-08-29T00:00:00.000Z',
+    });
+    const directMock = jest.fn();
+    const direct: JsonTransport = async request => {
+      directMock(request);
+      return request.parse(request.path === '/remote/v1/manifest' ? createManifestPayload : createdThreadPayload);
+    };
+    const client = new RemoteMiraHostClient(store, direct);
+    await expect(client.createThread()).resolves.toMatchObject({ id: 'thread-new', title: '新对话' });
+    expect(directMock.mock.calls.map(call => call[0].path)).toEqual(['/remote/v1/manifest', '/threads']);
+    expect(directMock.mock.calls[1][0].body).toEqual({});
   });
 
   it('does not replay an uncertain dispatched thread create through Relay', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read', 'messages:write'],
@@ -350,17 +344,7 @@ describe('RemoteMiraHostClient transport selection', () => {
       }
       throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      return request.parse(createdThreadPayload);
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(client.createThread()).rejects.toMatchObject({
       code: 'THREAD_CREATE_UNCERTAIN',
@@ -369,14 +353,12 @@ describe('RemoteMiraHostClient transport selection', () => {
       '/remote/v1/manifest',
       '/threads',
     ]);
-    expect(relayJsonMock).not.toHaveBeenCalled();
   });
 
-  it('does not hide Host authorization errors behind Relay fallback', async () => {
+  it('surfaces Host authorization errors', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read'],
@@ -386,20 +368,9 @@ describe('RemoteMiraHostClient transport selection', () => {
     const direct: JsonTransport = async _request => {
       throw new RemoteHostError('HTTP_403', 'revoked', 403);
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      return request.parse(manifestPayload);
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(client.restoreConnection()).rejects.toMatchObject({ status: 403 });
-    expect(relayJsonMock).not.toHaveBeenCalled();
     await expect(store.load()).resolves.toBeNull();
   });
 });
@@ -409,7 +380,6 @@ describe('RemoteMiraHostClient Push binding capability', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read'],
@@ -439,7 +409,6 @@ describe('RemoteMiraHostClient Push binding capability', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read'],
@@ -489,7 +458,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read'],
@@ -513,7 +481,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read', 'tools:read'],
@@ -537,7 +504,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:read'],
@@ -577,7 +543,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:read', 'tools:invoke'],
@@ -617,7 +582,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:invoke'],
@@ -661,7 +625,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:read'],
@@ -681,7 +644,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:control'],
@@ -703,67 +665,32 @@ describe('RemoteMiraHostClient tool gateway', () => {
     );
   });
 
-  it('falls back from Direct to Relay for idempotent tool cancellation', async () => {
+  it('reports Direct network failure during tool cancellation without replay', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:control'],
       savedAt: '2026-09-07T00:00:00.000Z',
     });
-
     const directMock = jest.fn();
     const direct: JsonTransport = async request => {
       directMock(request);
-      if (request.path === '/remote/v1/manifest') {
-        return request.parse(toolManifestPayload);
-      }
+      if (request.path === '/remote/v1/manifest') return request.parse(toolManifestPayload);
       throw new RemoteHostError('NETWORK_ERROR', 'tailnet unavailable');
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      if (request.path === '/remote/v1/manifest') {
-        return request.parse(toolManifestPayload);
-      }
-      return request.parse({
-        invocationId: 'inv-1',
-        accepted: true,
-        status: 'cancelling',
-      });
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
-
-    await expect(client.cancelToolInvocation('inv-1')).resolves.toEqual({
-      invocationId: 'inv-1',
-      accepted: true,
-      status: 'cancelling',
-    });
+    const client = new RemoteMiraHostClient(store, direct);
+    await expect(client.cancelToolInvocation('inv-1')).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
     expect(directMock.mock.calls.map(call => call[0].path)).toEqual([
-      '/remote/v1/manifest',
-      '/remote/v1/tool-invocations/inv-1/cancel',
+      '/remote/v1/manifest', '/remote/v1/tool-invocations/inv-1/cancel',
     ]);
-    expect(relayJsonMock).toHaveBeenCalledWith(
-      relay,
-      expect.objectContaining({
-        path: '/remote/v1/tool-invocations/inv-1/cancel',
-        method: 'POST',
-      }),
-    );
   });
 
   it('does not replay an uncertain approved invocation through another transport', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['tools:approve'],
@@ -778,17 +705,7 @@ describe('RemoteMiraHostClient tool gateway', () => {
       }
       throw new RemoteHostError('NETWORK_ERROR', 'response lost');
     };
-    const relayJsonMock = jest.fn();
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayJsonMock(_relay, request);
-      return request.parse(toolManifestPayload);
-    };
-    const client = new RemoteMiraHostClient(
-      store,
-      direct,
-      undefined,
-      relayJson,
-    );
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(
       client.resolveToolApproval({
@@ -804,7 +721,6 @@ describe('RemoteMiraHostClient tool gateway', () => {
       '/remote/v1/manifest',
       '/remote/v1/tool-invocations/inv-1/approval',
     ]);
-    expect(relayJsonMock).not.toHaveBeenCalled();
   });
 });
 
@@ -873,7 +789,6 @@ describe('RemoteMiraHostClient chat request', () => {
     const { store, json, sse, sseMock } = makeChatJournal();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read', 'messages:read', 'messages:write'],
@@ -909,7 +824,6 @@ describe('RemoteMiraHostClient chat request', () => {
     const { store, sse, sseMock } = makeChatJournal();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['threads:read', 'messages:read', 'messages:write'],
@@ -946,7 +860,6 @@ describe('RemoteMiraHostClient abortable durable reads', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['agent:read'],
@@ -1030,7 +943,6 @@ describe('RemoteMiraHostClient memory surface', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['memory:write'],
@@ -1050,7 +962,6 @@ describe('RemoteMiraHostClient memory surface', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['memory:read', 'memory:write'],
@@ -1069,7 +980,6 @@ describe('RemoteMiraHostClient memory surface', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['memory:read'],
@@ -1093,7 +1003,6 @@ describe('RemoteMiraHostClient memory surface', () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay: null,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['memory:write'],
@@ -1126,11 +1035,10 @@ describe('RemoteMiraHostClient memory surface', () => {
     });
   });
 
-  it('dispatches memory deletes once even when both transports are configured', async () => {
+  it('dispatches Direct memory deletes once', async () => {
     const store = new MemoryDeviceCredentialStore();
     await store.save({
       hostUrl: 'https://mira.example.ts.net',
-      relay,
       credential: 'mira_device_device-1.secret',
       deviceId: 'device-1',
       scopes: ['memory:write'],
@@ -1144,16 +1052,10 @@ describe('RemoteMiraHostClient memory surface', () => {
       }
       return request.parse(memoryOverviewPayload);
     };
-    let relayCalls = 0;
-    const relayJson: RelayJsonTransport = async (_relay, request) => {
-      relayCalls += 1;
-      return request.parse(memoryOverviewPayload);
-    };
-    const client = new RemoteMiraHostClient(store, direct, undefined, relayJson);
+    const client = new RemoteMiraHostClient(store, direct);
 
     await expect(client.deleteMemory('m-1')).resolves.toEqual(memoryOverviewPayload);
 
     expect(directCalls).toBe(2);
-    expect(relayCalls).toBe(0);
   });
 });

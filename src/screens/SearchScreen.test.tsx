@@ -4,6 +4,7 @@ import renderer, { act } from 'react-test-renderer';
 
 import { SearchScreen } from './SearchScreen';
 import { SEARCH_DEBOUNCE_MS } from '../search/globalSearch';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 
 const mockNavigate = jest.fn();
 
@@ -106,6 +107,7 @@ const collectText = (tree: ReactTestRenderer): string[] =>
 
 describe('SearchScreen result semantics', () => {
   beforeEach(() => {
+    useDesktopConnectionStore.setState({ mode: 'direct', transitioning: false });
     mockNavigate.mockReset();
     mockListSessions.mockReset();
     mockGetMessages.mockReset();
@@ -114,12 +116,21 @@ describe('SearchScreen result semantics', () => {
   });
 
   afterEach(() => {
+    useDesktopConnectionStore.setState({ mode: 'none' });
     jest.useRealTimers();
   });
 
   it('shows the remote collection as browse results before any query', async () => {
     const tree = await renderScreen();
     expect(collectText(tree)).toContain('需求评审');
+    await act(async () => tree.unmount());
+  });
+
+  it('does not read the paired Desktop while no connection is selected', async () => {
+    useDesktopConnectionStore.setState({ mode: 'none' });
+    const tree = await renderScreen();
+    expect(mockListSessions).not.toHaveBeenCalled();
+    expect(mockGetMessages).not.toHaveBeenCalled();
     await act(async () => tree.unmount());
   });
 

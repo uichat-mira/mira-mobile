@@ -4,6 +4,11 @@ Status: Tracked by MOB-037 (DOING, Phase A)
 Date: 2026-09-05
 Scope: `uichat-mira-mobile` client architecture and interaction design
 
+> 历史设计档案：本文记录 2026-09 的决策过程，其中 8 轮 / 5 分钟属于旧版方案，
+> 不再是当前默认值。2026-11-23 的实现请以
+> [Pi Core Local Agent 工程说明](../engineering/pi-core-mobile-bridge.md)
+> 和源码 src/settings/agentExecutionStrength.ts 为准（五档执行强度，默认 `standard`；数值上限仅内部使用）。
+
 ## 1. Decision Summary
 
 Mira Mobile will expose two conversation sources behind one stable task-list UI:
@@ -186,9 +191,12 @@ interface ConversationRuntime {
   sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>>;
   cancelActiveRun(): void;
+  getEffectiveAgentStrength?(sessionId: string): Promise<AgentExecutionStrengthId>;
+  setAgentStrength?(sessionId: string, strength: AgentExecutionStrengthId): Promise<void>;
+  resetAgentStrength?(sessionId: string): Promise<void>;
 }
 ```
 
@@ -341,7 +349,7 @@ device tests and real Tool Gateway measurements.
 src/runtime/
   conversationRuntime.ts       # runtime-neutral interface and events
   runtimeRegistry.ts           # selects Remote Host or Local Provider
-  mobileAgentLoop.ts            # bounded foreground loop
+  piAgentLoop.ts                # Pi Core bounded foreground loop
 
 src/provider/
   openAiCompatibleClient.ts     # provider HTTP/SSE adapter
@@ -359,12 +367,13 @@ src/local/
 
 ### 13.1 Implemented bounded-loop boundary
 
-`src/runtime/mobileAgentLoop.ts` now provides the protocol-neutral foreground
-loop used by `LocalProviderRuntime` when `agentEnabled` is explicitly enabled
-and a `ToolGatewayClient` is injected. The loop exposes a conservative maximum
-of eight tool rounds, an overall timeout, cancellation, tool-result truncation,
-and an explicit `run-paused` event when the app loses its foreground execution
-window. `src/tools/toolGatewayClient.ts` remains an adapter contract only:
+`src/runtime/piAgentLoop.ts` now provides the protocol-neutral foreground
+loop used by `LocalProviderRuntime` when the thread's effective execution
+strength is non-plain and a `ToolGatewayClient` is injected. The central
+strength table supplies the tool-round cap and timeout (including the deep
+192-round option), with cancellation, tool-result truncation, trusted budget
+facts, and an explicit `run-paused` event when the app loses its foreground
+execution window or the hard timeout expires. `src/tools/toolGatewayClient.ts` remains an adapter contract only:
 endpoint, authentication, discovery, approval, and MCP transport are not
 invented by the mobile client.
 

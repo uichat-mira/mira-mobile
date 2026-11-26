@@ -5,6 +5,7 @@ import renderer, { act } from 'react-test-renderer';
 
 import { SessionListScreen } from './SessionListScreen';
 import { resolveSessionOpenTarget } from '../session/sessionNavigation';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 
 let mockFocusCallback: (() => void) | null = null;
 
@@ -43,10 +44,11 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('../connectivity/ConnectionSourceDropdown', () => ({
   ConnectionSourceDropdown: ({
-    onChange, options,
+    onChange, options, footerAction,
   }: {
     onChange: (value: 'all' | 'remote-host' | 'local-provider' | 'cloud-host') => void;
-    options: Array<{ value: string; disabled?: boolean }>;
+    options: Array<{ value: string; disabled?: boolean; description?: string }>;
+    footerAction?: { label: string; onPress: () => void };
   }) => {
     const { Pressable, Text, View } = jest.requireActual('react-native');
     return (
@@ -65,7 +67,26 @@ jest.mock('../connectivity/ConnectionSourceDropdown', () => ({
           onPress={() => onChange('cloud-host')}
         >
           <Text>切换到 Mira Cloud</Text>
+          <Text>{options.find(option => option.value === 'cloud-host')?.description}</Text>
         </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="切换到 Tailscale 直连"
+          disabled={options.find(option => option.value === 'remote-host')?.disabled}
+          onPress={() => onChange('remote-host')}
+        >
+          <Text>切换到 Tailscale 直连</Text>
+          <Text>{options.find(option => option.value === 'remote-host')?.description}</Text>
+        </Pressable>
+        {footerAction ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`断开连接 ${footerAction.label}`}
+            onPress={footerAction.onPress}
+          >
+            <Text>{footerAction.label}</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   },
@@ -178,6 +199,13 @@ describe('SessionListScreen session collection', () => {
     });
     runtimeRegistry.listSessions.mockReset();
     runtimeRegistry.deleteSession.mockReset();
+    useDesktopConnectionStore.setState({
+      mode: 'none',
+      generation: 0,
+      hydrated: true,
+      transitioning: false,
+      message: null,
+    });
   });
 
   it('renders the loaded collection ordered with pinned sessions first', async () => {
@@ -253,6 +281,7 @@ describe('SessionListScreen session collection', () => {
       account: { id: 'account-a', username: 'alice' },
       initialized: true,
     });
+    useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
 
     let tree!: ReactTestRenderer;
     try {
@@ -301,6 +330,7 @@ describe('SessionListScreen session collection', () => {
       status: 'signed_in', account: { id: 'account-a', username: 'alice' },
       initialized: true,
     });
+    useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
     let tree!: ReactTestRenderer;
     try {
       tree = await renderScreen();
@@ -322,6 +352,112 @@ describe('SessionListScreen session collection', () => {
     } finally {
       if (tree) await act(async () => tree.unmount());
       useCloudAccountStore.setState(previous);
+    }
+  });
+
+  it('ignores Cloud selection while Direct is active and exposes an explicit disconnect path', async () => {
+    const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
+    const original = useCloudAccountStore.getState();
+    runtimeRegistry.listSessions.mockResolvedValue([]);
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: { id: 'account-a', username: 'alice' },
+      initialized: true,
+    });
+    useDesktopConnectionStore.setState({ mode: 'direct', hydrated: true });
+
+    let tree!: ReactTestRenderer;
+    try {
+      tree = await renderScreen();
+      const cloudPicker = tree.root.findAll(
+        node => node.props.accessibilityLabel === '切换到 Mira Cloud',
+      )[0];
+      expect(cloudPicker.props.disabled).toBe(true);
+      const directPicker = tree.root.findAll(
+        node => node.props.accessibilityLabel === '切换到 Tailscale 直连',
+      )[0];
+      expect(directPicker.props.disabled).toBe(false);
+      expect(collectText(tree)).toContain('先断开 Tailscale 直连');
+      expect(
+        tree.root.findAll(
+          node => node.props.accessibilityLabel === '断开连接 断开 Tailscale 直连',
+        ).length,
+      ).toBeGreaterThan(0);
+    } finally {
+      if (tree) await act(async () => tree.unmount());
+      useCloudAccountStore.setState(original);
+    }
+  });
+
+  it('activates Cloud only after the explicit connection selection', async () => {
+    const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
+    const original = useCloudAccountStore.getState();
+    runtimeRegistry.listSessions.mockResolvedValue([]);
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: { id: 'account-a', username: 'alice' },
+      initialized: true,
+    });
+    useDesktopConnectionStore.setState({ mode: 'none', hydrated: true });
+
+    let tree!: ReactTestRenderer;
+    try {
+      tree = await renderScreen();
+      expect(useDesktopConnectionStore.getState().mode).toBe('none');
+      const picker = tree.root.findAll(
+        node => node.props.accessibilityLabel === '切换到 Mira Cloud',
+      )[0];
+      expect(picker.props.disabled).toBe(false);
+
+      await act(async () => {
+        picker.props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(useDesktopConnectionStore.getState().mode).toBe('cloud');
+      expect(runtimeRegistry.listSessions).toHaveBeenCalledWith('cloud-host');
+    } finally {
+      if (tree) await act(async () => tree.unmount());
+      useCloudAccountStore.setState(original);
+    }
+  });
+
+  it('disconnects the active transport without changing the Cloud account', async () => {
+    const { useCloudAccountStore } = jest.requireActual('../cloud/cloudAccountStore');
+    const original = useCloudAccountStore.getState();
+    const originalDisconnect = useDesktopConnectionStore.getState().disconnect;
+    const disconnect = jest.fn(async () => {
+      useDesktopConnectionStore.setState({ mode: 'none' });
+    });
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    runtimeRegistry.listSessions.mockResolvedValue([]);
+    useCloudAccountStore.setState({
+      status: 'signed_in',
+      account: { id: 'account-a', username: 'alice' },
+      initialized: true,
+    });
+    useDesktopConnectionStore.setState({
+      mode: 'cloud', hydrated: true, disconnect,
+    });
+
+    let tree!: ReactTestRenderer;
+    try {
+      tree = await renderScreen();
+      const action = tree.root.findAll(
+        node => node.props.accessibilityLabel === '断开连接 断开 Mira Cloud 桌面连接',
+      )[0];
+      await act(async () => action.props.onPress());
+      const buttons = alert.mock.calls[0]?.[2] as Array<{ text: string; onPress?: () => void }>;
+      await act(async () => buttons.find(button => button.text === '断开')?.onPress?.());
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(useCloudAccountStore.getState().account?.id).toBe('account-a');
+    } finally {
+      if (tree) await act(async () => tree.unmount());
+      useDesktopConnectionStore.setState({ disconnect: originalDisconnect });
+      useCloudAccountStore.setState(original);
+      alert.mockRestore();
     }
   });
 

@@ -26,12 +26,9 @@ import { AboutScreen } from './src/screens/AboutScreen';
 import { LicenseScreen } from './src/screens/LicenseScreen';
 import { SecurityScreen } from './src/screens/SecurityScreen';
 import { CloudAccountScreen } from './src/screens/CloudAccountScreen';
-import { WhoYouScreen } from './src/screens/WhoYouScreen';
 import { CloudAuthCallbackScreen } from './src/screens/CloudAuthCallbackScreen';
-import {
-  PluginsScreen,
-  ShiyanSceneConfigScreen,
-} from './src/shiyan/ShiyanScreens';
+import { PluginsScreen } from './src/screens/PluginsScreen';
+import { ShiyanSceneConfigScreen } from './src/shiyan/ShiyanScreens';
 import { ShiyanHomeScreen } from './src/shiyan/ShiyanHomeScreen';
 import { ShiyanSceneSelectScreen } from './src/shiyan/ShiyanSceneSelectScreen';
 import { ShiyanRecordScreen } from './src/shiyan/ShiyanRecordScreen';
@@ -43,6 +40,7 @@ import { ShiyanOrganizeRulesScreen } from './src/shiyan/ShiyanOrganizeRulesScree
 import { ShiyanTaskDetailWithDeliveryScreen } from './src/shiyan/ShiyanTaskDetailWithDeliveryScreen';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import { TailscaleConnectivityLifecycle } from './src/connectivity/TailscaleConnectivityLifecycle';
+import { useDesktopConnectionBootstrap } from './src/connectivity/useDesktopConnectionBootstrap';
 import { useAppBootstrap } from './src/bootstrap/useAppBootstrap';
 import { useAppLifecycle } from './src/bootstrap/useAppLifecycle';
 import { useCloudAccountBootstrap } from './src/cloud/useCloudAccountBootstrap';
@@ -85,6 +83,7 @@ function AppInner() {
 
   useAppLifecycle();
   useCloudAccountBootstrap();
+  useDesktopConnectionBootstrap();
 
   // SessionList is always the root, even without paired Desktop credentials.
   // A last-opened Chat is pushed above it so Back reaches sessions/Settings.
@@ -117,7 +116,6 @@ function AppInner() {
         <Stack.Screen name="LocalProviderList" component={LocalProviderListScreen} />
         <Stack.Screen name="LocalProviderEdit" component={LocalProviderEditScreen} />
         <Stack.Screen name="CloudAccount" component={CloudAccountScreen} />
-        <Stack.Screen name="WhoYou" component={WhoYouScreen} />
         <Stack.Screen name="CloudAuthCallback" component={CloudAuthCallbackScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />

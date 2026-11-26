@@ -14,6 +14,7 @@ import type {
 } from './localProviderExecution';
 import type { LocalRequestContext } from './localRequestContext';
 import { consolidateLocalTurn, isCompletedTurn } from './localTurnConsolidation';
+import type { AgentExecutionStrengthId } from '../settings/agentExecutionStrength';
 
 // Canonical Local conversation turn execution.
 //
@@ -42,7 +43,6 @@ export interface LocalConversationTurnInput {
   session: Session;
   input: string;
   messageId?: string;
-  agentEnabled?: boolean;
 }
 
 export interface LocalConversationExecutionDependencies {
@@ -50,6 +50,8 @@ export interface LocalConversationExecutionDependencies {
   executor: LocalProviderExecutor;
   providerExecution: LocalProviderExecutionController;
   agentRun: LocalAgentRunController | null;
+  /** Resolved once per turn so a mid-run setting change cannot alter the run. */
+  resolveAgentStrength(sessionId: string): Promise<AgentExecutionStrengthId>;
   assembleRequest(
     canonicalMessages: readonly ChatMessage[],
   ): Promise<LocalRequestContext>;
@@ -66,6 +68,7 @@ export async function executeLocalConversationTurn(
     executor,
     providerExecution,
     agentRun,
+    resolveAgentStrength,
     assembleRequest,
     memoryService,
     config,
@@ -97,7 +100,11 @@ export async function executeLocalConversationTurn(
   }
 
   const request = await assembleRequest(canonicalMessages);
-  const useAgent = Boolean(turn.agentEnabled && agentRun);
+  // Snapshot the effective strength before any model request. The global
+  // setting and the thread override are read once for this run; later changes
+  // only affect the next send.
+  const strength = await resolveAgentStrength(turn.session.id);
+  const useAgent = Boolean(agentRun && strength !== 'plain');
 
   // Preserve existing replacement semantics: a newer Agent turn supersedes the
   // current Agent's Provider request before starting its own execution.
@@ -114,8 +121,10 @@ export async function executeLocalConversationTurn(
     if (useAgent && agentRun) {
       agentRunHandle = await agentRun.beginRun({
         executor,
+        strength,
         initialMessages: request.messages,
         approvalRecipient: `${config.name.slice(0, 80)} (${new URL(config.baseUrl).hostname}) · ${config.model.slice(0, 80)}`,
+        threadId: turn.session.id,
         selectionText: turn.input,
         previousAssistantText: previous[previous.length - 1]?.role === 'assistant'
           ? previous[previous.length - 1].content : undefined,

@@ -13,17 +13,25 @@ export interface ConnectionSourceOption<T extends string> {
   disabled?: boolean;
 }
 
+export interface ConnectionSourceAction {
+  label: string;
+  accessibilityLabel?: string;
+  onPress: () => void;
+}
+
 interface ConnectionSourceDropdownProps<T extends string> {
   value: T;
   options: readonly ConnectionSourceOption<T>[];
   onChange: (value: T) => void;
+  /** Reachable explicit transport disconnect/switch path. */
+  footerAction?: ConnectionSourceAction;
 }
 
 const visualStatusForOption = <T extends string>(
   option: ConnectionSourceOption<T>,
 ): ConnectionVisualStatus => (option.disabled ? 'not-configured' : option.status);
 
-export function ConnectionSourceDropdown<T extends string>({ value, options, onChange }: ConnectionSourceDropdownProps<T>) {
+export function ConnectionSourceDropdown<T extends string>({ value, options, onChange, footerAction }: ConnectionSourceDropdownProps<T>) {
   const { colors } = useTheme();
   const [visible, setVisible] = React.useState(false);
   const selected = options.find((option) => option.value === value) ?? options[0];
@@ -96,6 +104,24 @@ export function ConnectionSourceDropdown<T extends string>({ value, options, onC
                 </Pressable>
               );
             })}
+            {footerAction ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={footerAction.accessibilityLabel ?? footerAction.label}
+                onPress={() => {
+                  setVisible(false);
+                  footerAction.onPress();
+                }}
+                style={({ pressed }) => [
+                  styles.footerAction,
+                  pressed && { backgroundColor: colors.bg.soft },
+                ]}
+              >
+                <Text style={[styles.footerActionText, { color: colors.text.muted }]}>
+                  {footerAction.label}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -123,4 +149,6 @@ const styles = StyleSheet.create({
   optionText: { flex: 1, minWidth: 0, gap: spacing.xs },
   optionLabel: { fontSize: fontSize.bodyMd, fontWeight: '600' },
   optionDescription: { fontSize: fontSize.caption },
+  footerAction: { minHeight: 52, justifyContent: 'center', alignItems: 'center', marginTop: spacing.xs },
+  footerActionText: { fontSize: fontSize.button, fontWeight: '600' },
 });

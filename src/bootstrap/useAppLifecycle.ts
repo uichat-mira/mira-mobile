@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
-import { remoteMiraHostClient } from '../api/remoteMiraHost';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
+import { activeDesktopConnectionKey, reconnectActiveDesktop } from '../connectivity/reconnectActiveDesktop';
 import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import { useHostStore } from '../store/hostStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { createAppLifecycleController } from './appLifecycle';
+import { accountServiceCatalogCache } from '../mcp/accountServiceRegistry';
 import { pushBindingService } from '../push/pushBindingService';
 import { subscribePushProviderRegistration } from '../push/providerToken';
 
@@ -14,20 +16,32 @@ import { subscribePushProviderRegistration } from '../push/providerToken';
 export const useAppLifecycle = (): void => {
   useEffect(() => {
     const controller = createAppLifecycleController(AppState.currentState, {
+      invalidateAccountServices: () => accountServiceCatalogCache.invalidate(),
       setLocalExecutionSuspended: (suspended) =>
         runtimeRegistry.local.setExecutionSuspended(suspended),
-      refreshRelayConnection: () => remoteMiraHostClient.refreshRelayConnection(),
-      getConnectionStatus: () => useHostStore.getState().connectionStatus,
-      setConnectionStatus: (status) =>
-        useHostStore.getState().setConnectionStatus(status),
+      connectionKey: activeDesktopConnectionKey,
+      getConnectionStatus: () => useDesktopConnectionStore.getState().mode === 'cloud'
+        ? useDesktopConnectionStore.getState().cloudConnectionStatus
+        : useHostStore.getState().connectionStatus,
+      setConnectionStatus: (status) => {
+        const mode = useDesktopConnectionStore.getState().mode;
+        if (mode === 'cloud') useDesktopConnectionStore.setState({ cloudConnectionStatus: status });
+        if (mode === 'direct') useHostStore.getState().setConnectionStatus(status);
+      },
       restoreConnection: async () => {
+        const key = activeDesktopConnectionKey();
+        if (useDesktopConnectionStore.getState().mode !== 'direct') {
+          return reconnectActiveDesktop();
+        }
         try {
-          const restored = await remoteMiraHostClient.restoreConnection();
+          const restored = await reconnectActiveDesktop();
+          if (activeDesktopConnectionKey() !== key) return null;
           if (!restored) {
             await pushBindingService.reconcileWithPairedDevice(false);
           }
           return restored;
         } catch (error) {
+          if (activeDesktopConnectionKey() !== key) return null;
           try {
             const storedCredential = await deviceCredentialStore.load();
             if (!storedCredential) {
