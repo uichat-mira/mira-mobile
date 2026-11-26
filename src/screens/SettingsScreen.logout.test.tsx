@@ -241,6 +241,16 @@ describe('SettingsScreen contextual logout', () => {
     },
   );
 
+  it('does not preinstall a mail service merely because Mira ID is signed in', async () => {
+    setCloudState('signed_in', true);
+    const tree = await renderScreen();
+    expect(tree.root.findAll(node =>
+      typeof node.props.accessibilityLabel === 'string' &&
+      node.props.accessibilityLabel.includes('狐邮'),
+    )).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('狐邮');
+  });
+
   it('keeps Mira ID signed in when logging out of an active Tailscale connection', async () => {
     setDesktopMode('direct');
     setCloudState('signed_in', true);

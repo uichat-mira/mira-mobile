@@ -93,27 +93,18 @@ Desktop Host/设备和连接代际，换线程、账号或 Host 不会串用。
 的调用和终端会话，已有成果文件保留。真实 Desktop + Mobile 的持久任务终止与成果
 检查仍以 #258 T4 为准。
 
-## 狐邮 Who You · 移动端只读接入
+## Mira ID 授权应用服务
 
-在 Mira Cloud 登录后，Mobile 可以独立通过狐邮 MCP 查看当前账号的已绑定邮箱，
-并由用户主动搜索、阅读**已同步**邮件的纯文本正文，不依赖 Desktop 或 Relay。
-同步不完整时，搜索不到不代表 Gmail 中没有这封邮件；同步、重授权、解绑继续由狐邮网页管理。
-
-Local Provider 的 Agent 工具注册不止狐邮两项：内置 `web` 与
-`whoyou_mail_search`、`whoyou_mail_message_get`；在具备相应云账号身份与权限时，
-还可通过 `mira_desktop_hosts` 按需发现授权的 Desktop 工具。工具**被注册**不代表
-当前账号已获权、Host 已就绪或 Provider 本轮已经看见对应 Schema。
-`web(url)` 只读取公开 HTTP(S) 网页：模型可自行构造普通搜索引擎 URL、读取结果并沿链接继续，
-没有 query/search 模式、专用搜索供应商或天气接口。它在本机执行并遵守公开地址边界，
-单次下载上限 1 MiB、结果上限 16 KiB、超时 30 秒，不登录、不提交表单、不执行页面脚本，
-不加载图片/视频/字体。页面内容是不可信第三方数据，不能作为指令。
-**每次**将狐邮搜索结果或正文发送给用户配置的外部模型前，都展示接收方、用途和范围并请求确认。
-邮件属于不可信输入，不能用于后续工具执行或权限提升；发信、附件及后台同步不在本能力范围。
-含邮件信息的回答可在手机**本地会话历史**查看，但会携带私密标记，
-不自动加入未来的模型请求上下文或自动记忆整理。
-
-行为与验收合同以 [MOB-086](https://github.com/uichat-mira/mira-mobile/issues/337) 为准。
-此段描述代码能力，不代表 Android 真机完整链路已经验收。
+Mobile 仅从当前账号的 `GET /v1/application-services` 发现授权 MCP 服务。
+按 APP_ID + serviceId + resource 隔离实例，使用实例级短期凭据及 MCP 2026-07-28
+discovery / tools/list / tools/call。不预置第三方设置入口，不支持旧目录或取票 fallback。
+工具 Schema 来自实际 tools/list；账号目录和授权声明不替代工具执行权限。
+Local Provider 内置 `web(url)` 仍只读取公开 HTTP(S) 网页。
+真实邮件读取工具继续执行独立披露确认、最多 10 封收件箱摘要及最多 8000 字符纯文本正文的
+本地治理，不发送附件，不执行邮件中的指令，不自动将私密结果加入未来模型上下文。
+验收合同见 [MOB-105](https://github.com/uichat-mira/mira-mobile/issues/392)、
+[MOB-107](https://github.com/uichat-mira/mira-mobile/issues/403) 与
+[OPS-053](https://github.com/uichat-mira/cloud-auth/issues/213)。
 
 ## 分支流程
 

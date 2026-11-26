@@ -175,10 +175,6 @@ const fetchFixture = (input: {
       });
     }
     const serviceId = new URL(url).hostname.split('.')[0];
-    if (serviceId === 'who-you' && new URL(url).pathname === '/.well-known/oauth-protected-resource/mcp') {
-      expect(init?.headers).not.toHaveProperty('authorization');
-      return json(200, { resource: 'https://who-you.example/mcp', authorization_servers: [BASE_URL], scopes_supported: ['whoyou.read'], bearer_methods_supported: ['header'] });
-    }
     const request = parseRequest(init);
     if (request.method === 'server/discover') {
       return mcpRpc(request.id, {
@@ -401,24 +397,19 @@ describe('Mira ID service registry catalog', () => {
     if (approved.status === 'completed') expect(JSON.parse(approved.result.content).nextCursor).toBe('page-two-fixture');
     await expect(ready.gateway.callTool({ ...search, callId: 'page-two', arguments: '{"cursor":"page-two-fixture"}' })).rejects.toBeInstanceOf(ToolApprovalRequiredError);
     await expect(ready.gateway.callTool({ ...search, name: 'whoyou_mail_send' })).rejects.toMatchObject({ code: 'TOOL_NOT_DECLARED' });
-    const snapshot = await registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN });
-    expect(snapshot.identity.accountId).toBe(ACCOUNT_ID);
-    expect(snapshot.mailboxes).toEqual([]);
     expect(fixture.credentialCalls.every(c => c.serviceId === 'who-you')).toBe(true);
     const previousCalls = fixture.mcpCalls.length;
     // Catalog refresh observes revocation while the original offline bearer
-    // still has time left. Neither old approvals nor settings can bypass it.
+    // still has time left. Neither old approvals nor the old binding can bypass it.
     active = false;
     now += 5 * 60_000 + 1;
     expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
     await expect(ready.gateway.callTool(search)).rejects.toBeDefined();
-    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
-      .rejects.toMatchObject({ code: 'SERVICE_REGISTRATION_NOT_FOUND' });
     expect(fixture.mcpCalls).toHaveLength(previousCalls);
 
   });
 
-  it('refreshes a previously empty settings catalog after active facility login and revokes an in-flight binding at the catalog deadline', async () => {
+  it('refreshes a previously empty catalog after application authorization and revokes an in-flight binding at the catalog deadline', async () => {
     let active = false;
     let now = NOW;
     const fixture = fetchFixture({
@@ -430,8 +421,7 @@ describe('Mira ID service registry catalog', () => {
     const registry = directory({ fetchImpl: fixture.fetchImpl, now: () => now });
     expect(await registry.bindings({ accountId: ACCOUNT_ID })).toEqual([]);
     active = true;
-    await expect(registry.loadWhoYouSnapshot({ accountId: ACCOUNT_ID, sessionToken: SESSION_TOKEN }))
-      .resolves.toMatchObject({ identity: { accountId: ACCOUNT_ID } });
+    now += 5 * 60_000 + 1;
     const [binding] = await registry.bindings({ accountId: ACCOUNT_ID });
     const ready = await binding.discover({ accountId: ACCOUNT_ID });
     expect(ready.status).toBe('ready');

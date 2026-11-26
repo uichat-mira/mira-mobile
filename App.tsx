@@ -26,7 +26,6 @@ import { AboutScreen } from './src/screens/AboutScreen';
 import { LicenseScreen } from './src/screens/LicenseScreen';
 import { SecurityScreen } from './src/screens/SecurityScreen';
 import { CloudAccountScreen } from './src/screens/CloudAccountScreen';
-import { WhoYouScreen } from './src/screens/WhoYouScreen';
 import { CloudAuthCallbackScreen } from './src/screens/CloudAuthCallbackScreen';
 import {
   PluginsScreen,
@@ -119,7 +118,6 @@ function AppInner() {
         <Stack.Screen name="LocalProviderList" component={LocalProviderListScreen} />
         <Stack.Screen name="LocalProviderEdit" component={LocalProviderEditScreen} />
         <Stack.Screen name="CloudAccount" component={CloudAccountScreen} />
-        <Stack.Screen name="WhoYou" component={WhoYouScreen} />
         <Stack.Screen name="CloudAuthCallback" component={CloudAuthCallbackScreen} />
         <Stack.Screen name="Search" component={SearchScreen} options={{ animation: 'none' }} />
         <Stack.Screen name="Personalization" component={PersonalizationScreen} />
