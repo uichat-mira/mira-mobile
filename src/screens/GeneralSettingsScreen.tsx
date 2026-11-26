@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
+import { Bot, ChevronDown, History, MessageCircle, Type } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing, type TextScaleId } from '../theme/tokens';
@@ -24,6 +24,10 @@ import {
   type LaunchBehavior,
 } from '../settings/generalSettings';
 import { startContinuousVibration, stopContinuousVibration } from '../haptics/haptics';
+import {
+  AGENT_EXECUTION_STRENGTHS,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 
 const defaultSessionSourceOptions: readonly SettingsChoice<DefaultSessionSource>[] = [
   { value: 'ask', label: '每次询问（默认）' },
@@ -42,6 +46,15 @@ const textScaleOptions: readonly SettingsChoice<TextScaleId>[] = [
   { value: 'large', label: '大' },
 ];
 
+// Names come from the single strength table. Numeric rounds/minutes are
+// deliberately internal and never rendered as an editable free-form budget.
+const agentStrengthOptions: readonly SettingsChoice<AgentExecutionStrengthId>[] =
+  AGENT_EXECUTION_STRENGTHS.map((strength) => ({
+    value: strength.id,
+    label: strength.label,
+    description: strength.description,
+  }));
+
 const errorMessage = (error: unknown) =>
   error instanceof Error && error.message ? error.message : '无法保存常规设置，请稍后重试。';
 
@@ -52,6 +65,7 @@ export function GeneralSettingsScreen() {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [textScaleOpen, setTextScaleOpen] = useState(false);
+  const [agentStrengthOpen, setAgentStrengthOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -60,6 +74,9 @@ export function GeneralSettingsScreen() {
   // Last value known to be on disk. A failed write rolls back to this instead of
   // leaving the UI on an optimistic value the user can no longer recover from.
   const persistedRef = useRef<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
+  // A slider's completion event can capture an older render. Keep the freshest
+  // draft synchronously so editing one budget field never resets its sibling.
+  const draftRef = useRef<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
 
   const loadSettings = useCallback(() => {
     let cancelled = false;
@@ -68,6 +85,7 @@ export function GeneralSettingsScreen() {
       .then((loaded) => {
         if (cancelled) return;
         persistedRef.current = loaded;
+        draftRef.current = loaded;
         setSettings(loaded);
         setPersistenceError(null);
         setLoadFailed(false);
@@ -97,6 +115,7 @@ export function GeneralSettingsScreen() {
   }, []);
 
   const applySettings = useCallback((next: GeneralSettings) => {
+    draftRef.current = next;
     setSettings(next);
     setPersistenceError(null);
     setSaving(true);
@@ -106,6 +125,7 @@ export function GeneralSettingsScreen() {
       })
       .catch((error) => {
         // Roll back so the screen keeps showing what is actually persisted.
+        draftRef.current = persistedRef.current;
         setSettings(persistedRef.current);
         setPersistenceError(errorMessage(error));
       })
@@ -135,6 +155,9 @@ export function GeneralSettingsScreen() {
       case 'text-scale':
         setTextScaleOpen(true);
         break;
+      case 'agent-execution-strength':
+        setAgentStrengthOpen(true);
+        break;
     }
   }, []);
 
@@ -147,6 +170,10 @@ export function GeneralSettingsScreen() {
     launchBehaviorOptions.find((option) => option.value === settings.launchBehavior)?.label ?? '';
   const textScaleLabel =
     textScaleOptions.find((option) => option.value === settings.textScale)?.label ?? '';
+  const agentStrengthLabel =
+    agentStrengthOptions.find(
+      (option) => option.value === settings.agentExecutionStrength,
+    )?.label ?? '';
 
   return (
     <SafeAreaView
@@ -205,6 +232,24 @@ export function GeneralSettingsScreen() {
           新建会话时默认使用的连接来源；选择“每次询问”会在新建时单独确认。
         </Text>
 
+        <SettingsSectionHeader>智能体执行强度</SettingsSectionHeader>
+        <SettingsGroup onAction={handleAction}>
+          <SettingsRow
+            icon={Bot}
+            title="默认执行强度"
+            subtitle={agentStrengthLabel}
+            actionId="agent-execution-strength"
+            isFirst
+            isLast
+            right={<ChevronDown size={20} color={colors.text.soft} />}
+            showChevron={false}
+          />
+        </SettingsGroup>
+        <Text style={[styles.help, { color: colors.text.muted }]}>
+          仅作用于本机 Local Provider 对话。新线程默认跟随此强度，已有线程可继承或单独覆盖；
+          修改只影响之后的运行，不限制模型推理档位或费用。
+        </Text>
+
         <SettingsSectionHeader>显示</SettingsSectionHeader>
         <SettingsGroup onAction={handleAction}>
           <SettingsRow
@@ -255,10 +300,12 @@ export function GeneralSettingsScreen() {
               // Live-update state so the slider thumb follows the finger
               // smoothly. Persistence is debounced until the user releases,
               // otherwise every drag frame would hit storage.
-              setSettings((current) => ({ ...current, hapticsStrength: Math.round(value) }));
+              const next = { ...draftRef.current, hapticsStrength: Math.round(value) };
+              draftRef.current = next;
+              setSettings(next);
             }}
             onSlidingComplete={(value) => {
-              applySettings({ ...settings, hapticsStrength: Math.round(value) });
+              applySettings({ ...draftRef.current, hapticsStrength: Math.round(value) });
             }}
           />
           <Text style={[styles.strengthValue, { color: colors.text.muted }]}>
@@ -320,6 +367,15 @@ export function GeneralSettingsScreen() {
         options={textScaleOptions}
         onChange={(value) => applySettings({ ...settings, textScale: value })}
         onClose={() => setTextScaleOpen(false)}
+      />
+      <SettingsChoiceModal
+        visible={agentStrengthOpen}
+        value={settings.agentExecutionStrength}
+        options={agentStrengthOptions}
+        onChange={(value) =>
+          applySettings({ ...settings, agentExecutionStrength: value })
+        }
+        onClose={() => setAgentStrengthOpen(false)}
       />
     </SafeAreaView>
   );

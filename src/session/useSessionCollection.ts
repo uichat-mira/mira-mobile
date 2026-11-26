@@ -16,6 +16,7 @@ export interface UseSessionCollectionOptions {
   /** Defaults to true. SessionList disables this and drives reads from focus. */
   autoLoad?: boolean;
   filter?: SessionSourceFilter;
+  connectionGeneration?: number;
 }
 
 export interface SessionCollectionHandle {
@@ -104,10 +105,13 @@ export const useSessionCollection = (
   }, [reload]);
 
   const filter = options.filter ?? 'all';
+  const connectionGeneration = options.connectionGeneration;
   const previousFilterRef = useRef(filter);
+  const previousGenerationRef = useRef(connectionGeneration);
   useEffect(() => {
-    if (previousFilterRef.current === filter) return;
+    if (previousFilterRef.current === filter && previousGenerationRef.current === connectionGeneration) return;
     previousFilterRef.current = filter;
+    previousGenerationRef.current = connectionGeneration;
     // A source transition changes the collection's authority. Do not keep
     // rendering rows from the previous source while the new read is pending.
     setSessions([]);
@@ -115,7 +119,7 @@ export const useSessionCollection = (
     setDiagnostic(null);
     setLoading(true);
     reload().catch(() => undefined);
-  }, [filter, reload]);
+  }, [filter, connectionGeneration, reload]);
 
   const removeSession = useCallback((sessionId: string) => {
     setSessions((current) => current.filter((item) => item.id !== sessionId));

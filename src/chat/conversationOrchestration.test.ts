@@ -125,6 +125,25 @@ const reduceAgentState = (events: ConversationLifecycleEvent[]) => {
 };
 
 describe('ConversationOrchestrator', () => {
+  it('keeps an incomplete budget summary paused instead of showing completion', async () => {
+    const harness = buildHarness({
+      runtime: runtimeFor('local-provider'),
+      send: async () => streamOf([
+        { type: 'text-delta', delta: 'partial summary' },
+        { type: 'run-paused', reason: 'budget-exhausted' },
+      ]),
+    });
+    await harness.orchestrator.dispatchTurn(
+      { content: 'work', messageId: 'u1', userTimestamp: 1000, agentEnabled: true },
+      harness.emit,
+      () => 'generated',
+    );
+    expect(reduceAgentState(harness.events)).toMatchObject({
+      phase: 'paused', pauseReason: 'budget-exhausted',
+    });
+    expect(harness.events).not.toContainEqual({ type: 'phase', phase: 'completed' });
+  });
+
   it('streams a successful turn and performs a canonical reload', async () => {
     const harness = buildHarness({});
 
@@ -136,7 +155,7 @@ describe('ConversationOrchestrator', () => {
 
     expect(outcome).toEqual({ messageId: 'u1', cancelled: false, failed: false });
     expect(harness.sends).toEqual([
-      { content: 'hi', messageId: 'u1', agentEnabled: false },
+      { content: 'hi', messageId: 'u1' },
     ]);
     expect(harness.events).toContainEqual({ type: 'text', text: 'hello' });
     expect(harness.events).toContainEqual({

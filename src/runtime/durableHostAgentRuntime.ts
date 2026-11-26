@@ -3,6 +3,7 @@ import {
   remoteMiraHostClient,
   type RemoteMiraHostClient,
 } from '../api/remoteMiraHost';
+import { assertDesktopConnectionActive } from '../connectivity/desktopConnectionAuthority';
 import type {
   RemoteAgentRun,
   RemoteDeviceScope,
@@ -90,6 +91,7 @@ export class DurableHostAgentRuntimeAdapter {
   constructor(
     private readonly remote: HostAgentRunClient = remoteMiraHostClient,
     private readonly pollIntervalMs = 1_200,
+    private readonly assertTransportActive: () => void = () => undefined,
   ) {}
 
   private assertCapability(
@@ -129,6 +131,9 @@ export class DurableHostAgentRuntimeAdapter {
     runId: string,
     action: DurableHostAgentAction,
   ): Promise<RemoteAgentRun> {
+    // Approval/rejection/cancel are new Host mutations, so they must obey the
+    // active Desktop transport even for an already-open Agent thread.
+    this.assertTransportActive();
     const manifest = await this.remote.getManifest();
     this.assertCapability(manifest, 'read');
     this.assertCapability(manifest, action);
@@ -185,4 +190,8 @@ export class DurableHostAgentRuntimeAdapter {
   }
 }
 
-export const durableHostAgentRuntime = new DurableHostAgentRuntimeAdapter();
+export const durableHostAgentRuntime = new DurableHostAgentRuntimeAdapter(
+  remoteMiraHostClient,
+  1_200,
+  () => assertDesktopConnectionActive('direct'),
+);

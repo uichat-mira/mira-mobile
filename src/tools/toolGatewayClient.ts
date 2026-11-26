@@ -4,8 +4,39 @@ export interface ToolManifest {
   parameters: Record<string, unknown>;
   destructive?: boolean;
   requiresApproval?: boolean;
-  /** Private data: restrict subsequent tool exposure after it reaches a model. */
+  /**
+   * Private data that requires the existing explicit disclosure approval before
+   * results reach a model. It never filters tools or authorizes later calls.
+   */
   sensitiveResult?: 'mail-search' | 'mail-body';
+}
+
+/**
+ * A trusted adapter's semantic grouping of real tools. Mobile display code must
+ * not invent these groups for a service that did not declare them.
+ */
+export interface ToolCapabilityDescriptor {
+  /** Stable within its service. */
+  id: string;
+  name: string;
+  description?: string;
+  /** Real tool names declared by the owning service. */
+  toolNames: readonly string[];
+}
+
+/**
+ * A trusted service/environment declaration. `toolNames` may include tools
+ * whose schemas are still deferred; disclosure only changes what Pi can see,
+ * never execution authority or approval.
+ */
+export interface ToolServiceDescriptor {
+  /** Stable source identity for this run; do not derive it from model text. */
+  id: string;
+  name: string;
+  description?: string;
+  toolNames: readonly string[];
+  /** Absent or empty means the adapter has no semantic capability grouping. */
+  capabilities?: readonly ToolCapabilityDescriptor[];
 }
 
 export interface ToolCallRequest {
@@ -20,10 +51,36 @@ export interface ToolCallResult {
   hostSelectionRequired?: boolean;
   /** Fresh, authorized candidates, re-checked when the model requests discovery. */
   hostCandidates?: readonly ToolDiscoveryHostCandidate[];
+  /** Verified run-bound tools exposed only after the model explicitly discovers a single Host. */
+  refreshedTools?: readonly ToolManifest[];
+  /** Trusted service/capability catalog for `refreshedTools`, when it changed. */
+  refreshedServices?: readonly ToolServiceDescriptor[];
+  /** Opaque adapter revision that must be echoed by later disclosures. */
+  refreshedCatalogRevision?: string;
 }
 
 /** Model-visible, read-only entry for finding an authorized Mira Desktop. */
 export const DESKTOP_HOST_DISCOVERY_TOOL = 'mira_desktop_hosts';
+
+/**
+ * Mobile-owned, read-only entry for loading real tool definitions from a
+ * trusted service/capability catalog. It cannot execute a tool or grant access.
+ */
+export const TOOL_DISCLOSURE_TOOL = 'mira_tools_disclose';
+
+export interface ToolDisclosureRequest {
+  serviceId: string;
+  capabilityId?: string;
+  toolNames?: readonly string[];
+  /** Must equal the catalog revision supplied with the current discovery. */
+  catalogRevision?: string;
+}
+
+export interface ToolDisclosureResult {
+  tools: readonly ToolManifest[];
+  /** Adapter revision after disclosure; omitted when unchanged. */
+  catalogRevision?: string;
+}
 
 export interface ToolApprovalRequest {
   invocationId: string;
@@ -45,7 +102,8 @@ export type ToolDiscoveryNoticeCode =
   | 'cloud-tools-unavailable'
   | 'cloud-tools-unauthorized'
   | 'cloud-tools-session-invalid'
-  | 'cloud-tools-host-ambiguous';
+  | 'cloud-tools-host-ambiguous'
+  | 'mcp-service-degraded';
 
 export interface ToolDiscoveryNotice {
   code: ToolDiscoveryNoticeCode;
@@ -70,6 +128,10 @@ export interface ToolDiscoveryResult {
    * grant checks. The Local Agent must ask instead of guessing.
    */
   hostCandidates?: readonly ToolDiscoveryHostCandidate[];
+  /** Trusted service/capability catalog. Omit when the adapter has none. */
+  services?: readonly ToolServiceDescriptor[];
+  /** Opaque adapter revision that later disclosures must echo. */
+  catalogRevision?: string;
 }
 
 export type ToolApprovalResolution =
@@ -95,6 +157,10 @@ export class ToolGatewayError extends Error {
   }
 }
 
+/** A completed, failed read-only operation that leaves the run usable.
+ * Only a trusted executor can classify its own expected failures this way. */
+export class RecoverableToolCallError extends ToolGatewayError {}
+
 /**
  * Protocol-neutral boundary for approved remote tools. The concrete transport
  * stays behind an adapter; model/provider credentials never enter this contract.
@@ -107,6 +173,16 @@ export interface ToolGatewayClient {
    * implement this; callers fall back to `listTools()` when absent.
    */
   discoverTools?(): Promise<ToolDiscoveryResult>;
+  /**
+   * Loads schemas for tools already declared by the trusted service catalog.
+   * The model may skip this call for tools it already sees. Implementations
+   * must reject undeclared names, stale catalog revisions and lost authority;
+   * the returned schemas stay owned by the original gateway/adapter.
+   */
+  discloseTools?(
+    request: ToolDisclosureRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<ToolDisclosureResult>;
   callTool(
     request: ToolCallRequest,
     options?: { signal?: AbortSignal },

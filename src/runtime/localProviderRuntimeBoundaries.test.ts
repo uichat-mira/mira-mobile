@@ -1,3 +1,10 @@
+// General settings are native IO; inject the persisted boundary.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentExecutionStrength: 'standard',
+  })),
+}));
+
 import { LocalSessionRepository } from '../local/localSessionRepository';
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
@@ -33,6 +40,9 @@ const drain = async (stream: AsyncIterable<RuntimeEvent>) => {
   for await (const event of stream) events.push(event);
   return events;
 };
+
+const enableStandardAgent = (runtime: LocalProviderRuntime, sessionId: string) =>
+  runtime.setAgentStrength(sessionId, 'standard');
 
 const createMemoryService = (store = new MemoryLocalKeyValueStore()) =>
   new LocalMemoryService(
@@ -129,6 +139,7 @@ describe('#227 boundary routing', () => {
       toolGateway: gateway,
     });
     const session = await harness.runtime.createSession('Chat', config.id);
+    await harness.runtime.setAgentStrength(session.id, 'plain');
 
     await drain(await harness.runtime.sendMessage(session.id, '你好'));
 
@@ -159,8 +170,9 @@ describe('#227 boundary routing', () => {
     // Each Agent model round must go through the executor, so the counter is
     // driven by the number of recorded requests.
     const session = await harness.runtime.createSession('Agent', config.id);
+    await enableStandardAgent(harness.runtime, session.id);
 
-    await drain(await harness.runtime.sendMessage(session.id, '跑一下', { agentEnabled: true }));
+    await drain(await harness.runtime.sendMessage(session.id, '跑一下'));
 
     expect(harness.requests.length).toBeGreaterThanOrEqual(2);
     expect(harness.requests[0].tools).toBeDefined();
@@ -177,20 +189,14 @@ describe('#227 boundary routing', () => {
     });
     const first = await harness.runtime.createSession('First', config.id);
     const second = await harness.runtime.createSession('Second', config.id);
+    await enableStandardAgent(harness.runtime, first.id);
+    await enableStandardAgent(harness.runtime, second.id);
 
-    const firstStream = await harness.runtime.sendMessage(
-      first.id,
-      'first',
-      { agentEnabled: true },
-    );
+    const firstStream = await harness.runtime.sendMessage(first.id, 'first');
     const firstIterator = firstStream[Symbol.asyncIterator]();
     await expect(firstIterator.next()).resolves.toMatchObject({ done: false });
 
-    const secondStream = await harness.runtime.sendMessage(
-      second.id,
-      'second',
-      { agentEnabled: true },
-    );
+    const secondStream = await harness.runtime.sendMessage(second.id, 'second');
     const secondIterator = secondStream[Symbol.asyncIterator]();
     await expect(secondIterator.next()).resolves.toMatchObject({ done: false });
 
@@ -212,11 +218,8 @@ describe('#227 boundary routing', () => {
     });
     const session = await harness.runtime.createSession('Agent', config.id);
 
-    const stream = await harness.runtime.sendMessage(
-      session.id,
-      'hi',
-      { agentEnabled: true },
-    );
+    await enableStandardAgent(harness.runtime, session.id);
+    const stream = await harness.runtime.sendMessage(session.id, 'hi');
     const iterator = stream[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({ done: false });
 
@@ -234,6 +237,7 @@ describe('#227 boundary routing', () => {
       ],
     });
     const session = await harness.runtime.createSession('Chat', config.id);
+    await harness.runtime.setAgentStrength(session.id, 'plain');
 
     const stream = await harness.runtime.sendMessage(session.id, '你好');
     const iterator = stream[Symbol.asyncIterator]();
@@ -254,6 +258,7 @@ describe('#227 boundary routing', () => {
       ],
     });
     const session = await harness.runtime.createSession('Chat', config.id);
+    await harness.runtime.setAgentStrength(session.id, 'plain');
 
     const stream = await harness.runtime.sendMessage(session.id, '你好');
     const iterator = stream[Symbol.asyncIterator]();
@@ -276,12 +281,9 @@ describe('#227 boundary routing', () => {
       toolGateway: gateway,
     });
     const session = await harness.runtime.createSession('Agent', config.id);
+    await enableStandardAgent(harness.runtime, session.id);
 
-    await drain(
-      await harness.runtime.sendMessage(session.id, 'done', {
-        agentEnabled: true,
-      }),
-    );
+    await drain(await harness.runtime.sendMessage(session.id, 'done'));
     expect(harness.clients[0].cancelActiveRun).not.toHaveBeenCalled();
 
     harness.runtime.cancelActiveRun();
@@ -298,6 +300,7 @@ describe('#227 boundary routing', () => {
       memoryService: service,
     });
     const session = await harness.runtime.createSession('Chat', config.id);
+    await harness.runtime.setAgentStrength(session.id, 'plain');
 
     await drain(await harness.runtime.sendMessage(session.id, '你好'));
 

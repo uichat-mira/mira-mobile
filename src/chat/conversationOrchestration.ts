@@ -24,7 +24,8 @@ export type ConversationActivityStatus =
   | 'approved'
   | 'rejected'
   | 'completed'
-  | 'truncated';
+  | 'truncated'
+  | 'failed';
 
 export interface ConversationStreamApproval {
   invocationId: string;
@@ -38,7 +39,8 @@ export type ConversationStreamPauseReason =
   | 'app-suspended'
   | 'timeout'
   | 'cancelled'
-  | 'approval-rejected';
+  | 'approval-rejected'
+  | 'budget-exhausted';
 
 export type ConversationStreamErrorKind =
   | 'provider-or-host'
@@ -71,7 +73,8 @@ export type ConversationLifecycleEvent =
         | 'cloud-tools-unavailable'
         | 'cloud-tools-unauthorized'
         | 'cloud-tools-session-invalid'
-        | 'cloud-tools-host-ambiguous';
+        | 'cloud-tools-host-ambiguous'
+        | 'mcp-service-degraded';
     }
   | { type: 'pause'; reason: ConversationStreamPauseReason }
   | { type: 'canonical-reload'; messages: ChatMessage[] }
@@ -96,7 +99,6 @@ export interface ConversationLifecycleOptions {
 export interface ConversationSendInput {
   content: string;
   messageId: string;
-  agentEnabled?: boolean;
 }
 
 export interface DispatchConversationTurnOptions {
@@ -158,7 +160,6 @@ export class ConversationOrchestrator {
       const stream = await this.send({
         content: input.content,
         messageId,
-        agentEnabled: useLocalAgent,
       });
       for await (const event of stream) {
         if (this.abortRequested) break;
@@ -216,7 +217,7 @@ export class ConversationOrchestrator {
                 sink,
                 event.callId,
                 event.name,
-                event.truncated ? 'truncated' : 'completed',
+                event.failed ? 'failed' : event.truncated ? 'truncated' : 'completed',
                 event.truncated
                   ? `结果超过上下文限制，已截断后继续：${event.content}`
                   : event.content,

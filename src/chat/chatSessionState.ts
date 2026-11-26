@@ -7,17 +7,35 @@ import type { Session } from '../types';
 
 type SessionReader = Pick<MiraHostApi, 'getSession'>;
 
-type WeatherErrorCode =
-  | 'WEATHER_ARGUMENTS_INVALID'
-  | 'WEATHER_CITY_NOT_FOUND'
-  | 'WEATHER_TIMEOUT'
-  | 'WEATHER_UPSTREAM_FAILED';
+type WebErrorCode =
+  | 'WEB_ARGUMENTS_INVALID'
+  | 'WEB_URL_FORBIDDEN'
+  | 'WEB_TIMEOUT'
+  | 'WEB_UPSTREAM_FAILED'
+  | 'WEB_HTTP_ERROR'
+  | 'WEB_RESPONSE_TOO_LARGE'
+  | 'WEB_UNSUPPORTED_CONTENT_TYPE'
+  | 'WEB_EXTRACT_FAILED'
+  | 'WEB_TRANSPORT_UNAVAILABLE'
+  | 'WEB_DNS_FAILED'
+  | 'WEB_REDIRECT_LIMIT'
+  | 'WEB_REDIRECT_FORBIDDEN'
+  | 'WEB_BUSY';
 
-const WEATHER_ERROR_MESSAGES: Record<WeatherErrorCode, string> = {
-  WEATHER_ARGUMENTS_INVALID: '天气查询参数无效，请检查城市名或预报天数',
-  WEATHER_CITY_NOT_FOUND: '没有找到这个城市，请换一个更具体的城市名',
-  WEATHER_TIMEOUT: '天气服务响应超时，请稍后重试',
-  WEATHER_UPSTREAM_FAILED: '天气服务暂时不可用，请稍后重试',
+const WEB_ERROR_MESSAGES: Record<WebErrorCode, string> = {
+  WEB_ARGUMENTS_INVALID: '网页读取参数无效，请提供一个公开 URL',
+  WEB_URL_FORBIDDEN: '只能读取公开互联网的 HTTP(S) 网页',
+  WEB_TIMEOUT: '网页读取超时，请稍后重试或换一个页面',
+  WEB_UPSTREAM_FAILED: '网页暂时无法读取，请稍后重试',
+  WEB_HTTP_ERROR: '网页返回了错误状态，请稍后重试或换一个页面',
+  WEB_RESPONSE_TOO_LARGE: '网页超过 1 MiB 下载上限，已停止读取',
+  WEB_UNSUPPORTED_CONTENT_TYPE: '网页不是可提取的文本内容',
+  WEB_EXTRACT_FAILED: '网页内容无法提取',
+  WEB_TRANSPORT_UNAVAILABLE: '当前安装不支持本机网页读取',
+  WEB_DNS_FAILED: '网页域名无法解析或不是公开地址',
+  WEB_REDIRECT_LIMIT: '网页重定向次数过多，已停止读取',
+  WEB_REDIRECT_FORBIDDEN: '网页重定向到了不允许的地址',
+  WEB_BUSY: '已有网页正在读取，请等待上一次读取结束',
 };
 
 interface LocalSessionTitleReader {
@@ -83,6 +101,7 @@ export const getChatSendErrorMessage = (
     if (
       error.code === 'CLOUD_TOOL_GRANT_REQUIRED' ||
       error.code === 'CLOUD_HOST_GRANT_REQUIRED' ||
+      error.code === 'RELAY_CLOUD_GRANT_REQUIRED' ||
       error.code === 'CLOUD_TOOL_ROUTE_UNAVAILABLE'
     ) {
       return '所选 Desktop 未授予本机所需的工具权限，本轮已停止。请在桌面端检查 Cloud Host 授权。';
@@ -110,6 +129,13 @@ export const getChatSendErrorMessage = (
     }
     if (error.code === 'REMOTE_TOOL_ROUTE_UNAVAILABLE') {
       return '当前 Mira Host 还没有提供工具能力';
+    }
+    if (
+      error.code === 'RELAY_NO_RESPONSE_STATUS' ||
+      error.code === 'RELAY_PROTOCOL_ERROR' ||
+      error.code === 'CLOUD_RELAY_INVALID_RESPONSE'
+    ) {
+      return 'Desktop 工具通道返回了异常协议响应。本机聊天不受影响，请检查 Desktop Relay 连接。';
     }
     if (error.code === 'REMOTE_ENDPOINT_UNAVAILABLE') {
       return '当前没有可用的远程工具通道，Agent 工具暂不可用';
@@ -143,12 +169,21 @@ export const getChatSendErrorMessage = (
       return '工具审批结果暂时无法确认，请刷新状态后再决定是否重试';
     }
     if (
-      error.code === 'WEATHER_ARGUMENTS_INVALID' ||
-      error.code === 'WEATHER_CITY_NOT_FOUND' ||
-      error.code === 'WEATHER_TIMEOUT' ||
-      error.code === 'WEATHER_UPSTREAM_FAILED'
+      error.code === 'WEB_ARGUMENTS_INVALID' ||
+      error.code === 'WEB_URL_FORBIDDEN' ||
+      error.code === 'WEB_TIMEOUT' ||
+      error.code === 'WEB_UPSTREAM_FAILED' ||
+      error.code === 'WEB_HTTP_ERROR' ||
+      error.code === 'WEB_RESPONSE_TOO_LARGE' ||
+      error.code === 'WEB_UNSUPPORTED_CONTENT_TYPE' ||
+      error.code === 'WEB_EXTRACT_FAILED' ||
+      error.code === 'WEB_TRANSPORT_UNAVAILABLE' ||
+      error.code === 'WEB_DNS_FAILED' ||
+      error.code === 'WEB_REDIRECT_LIMIT' ||
+      error.code === 'WEB_REDIRECT_FORBIDDEN' ||
+      error.code === 'WEB_BUSY'
     ) {
-      return error.suggestedAction || WEATHER_ERROR_MESSAGES[error.code];
+      return error.suggestedAction || WEB_ERROR_MESSAGES[error.code];
     }
     return error.message || '远程工具执行失败，请重试';
   }

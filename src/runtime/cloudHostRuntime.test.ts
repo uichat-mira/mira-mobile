@@ -1,4 +1,5 @@
 import { CloudHostRuntime } from './cloudHostRuntime';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { RemoteHostError } from '../api/remoteHttp';
 
 const thread = {
@@ -29,6 +30,10 @@ const api = () => ({
 });
 
 describe('CloudHostRuntime independent Cloud business origin', () => {
+  beforeEach(() => {
+    useDesktopConnectionStore.setState({ mode: 'cloud', hydrated: true });
+  });
+
   it('converts canonical Cloud threads and messages without paired-client access', async () => {
     const client = api();
     const runtime = new CloudHostRuntime(client as never);
@@ -69,6 +74,17 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     });
   });
 
+  it('rejects new Cloud sends while another transport is active', async () => {
+    const client = api();
+    const runtime = new CloudHostRuntime(client as never);
+    useDesktopConnectionStore.setState({ mode: 'direct', hydrated: true });
+
+    await expect(
+      runtime.sendMessage('remote-1', 'Hello', { messageId: 'stable-msg' }),
+    ).rejects.toMatchObject({ code: 'DESKTOP_CONNECTION_INACTIVE' });
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('sends Host-owned private Agent threads as Agent (not Mobile local Agent)', async () => {
     const client = api();
     client.getThread.mockResolvedValueOnce({
@@ -76,7 +92,7 @@ describe('CloudHostRuntime independent Cloud business origin', () => {
     });
     const runtime = new CloudHostRuntime(client as never);
     await expect(runtime.getMessages('remote-1')).resolves.toHaveLength(1);
-    await runtime.sendMessage('remote-1', 'run on Host', { agentEnabled: false });
+    await runtime.sendMessage('remote-1', 'run on Host');
     expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       threadId: 'remote-1', agentEnabled: true, content: 'run on Host',
     }));

@@ -1,3 +1,10 @@
+// General settings are a native IO boundary in unit tests.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentExecutionStrength: 'standard',
+  })),
+}));
+
 import { RemoteHostError } from '../api/remoteHttp';
 import { MemoryLocalKeyValueStore } from '../storage/localKeyValueStore';
 import {
@@ -7,6 +14,10 @@ import {
 import { ProviderConfigStore, type LocalProviderConfig } from '../provider/providerConfigStore';
 import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import { MemoryProviderCredentialStore } from '../security/providerCredentialStore';
+import {
+  ToolApprovalRequiredError,
+  type ToolApprovalRequest,
+} from '../tools/toolGatewayClient';
 import {
   DEFAULT_PERSONALIZATION_SETTINGS,
   type PersonalizationSettings,
@@ -39,6 +50,7 @@ const createSendReadyRuntime = async () => {
     configStore,
     credentialStore,
     sessionRepository: repository,
+    loadGlobalAgentStrength: async () => 'plain',
     clientFactory: () => ({
       cancelActiveRun: jest.fn(),
       streamMessages: jest.fn(async () => (async function* () {})()),
@@ -52,6 +64,7 @@ const createConfiguredRuntime = async (options: {
   configStore?: ProviderConfigStore;
   clientFactory?: LocalProviderRuntimeOptions['clientFactory'];
   toolGateway?: LocalProviderRuntimeOptions['toolGateway'];
+  loadGlobalAgentStrength?: LocalProviderRuntimeOptions['loadGlobalAgentStrength'];
 }) => {
   const providerConfig = options.providerConfig ?? config;
   const configStore =
@@ -69,12 +82,17 @@ const createConfiguredRuntime = async (options: {
     sessionRepository: repository,
     ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
     ...(options.toolGateway ? { toolGateway: options.toolGateway } : {}),
+    loadGlobalAgentStrength:
+      options.loadGlobalAgentStrength ?? (async () => 'plain'),
   });
   return { runtime, repository, configStore, credentialStore };
 };
 
+const enableStandardAgent = (runtime: LocalProviderRuntime, sessionId: string) =>
+  runtime.setAgentStrength(sessionId, 'standard');
+
 describe('LocalProviderRuntime', () => {
-  it('persists Agent mode on the local session', async () => {
+  it('persists a thread strength override separately from inheritance', async () => {
     const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
     await configStore.save([config]);
     const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
@@ -82,6 +100,7 @@ describe('LocalProviderRuntime', () => {
       configStore,
       credentialStore: new MemoryProviderCredentialStore(),
       sessionRepository: repository,
+      loadGlobalAgentStrength: async () => 'light',
       toolGateway: {
         listTools: async () => [],
         callTool: async () => ({ content: 'unused' }),
@@ -89,14 +108,21 @@ describe('LocalProviderRuntime', () => {
     });
     const session = await runtime.createSession('Agent session', 'provider-a');
 
-    await expect(runtime.getAgentEnabled(session.id)).resolves.toBe(false);
-    await runtime.setAgentEnabled(session.id, true);
+    await expect(runtime.getAgentStrengthOverride(session.id)).resolves.toBeNull();
+    await expect(runtime.getEffectiveAgentStrength(session.id)).resolves.toBe('light');
 
-    await expect(runtime.getAgentEnabled(session.id)).resolves.toBe(true);
+    await runtime.setAgentStrength(session.id, 'deep');
+    await expect(runtime.getAgentStrengthOverride(session.id)).resolves.toBe('deep');
+    await expect(runtime.getEffectiveAgentStrength(session.id)).resolves.toBe('deep');
+
+    await runtime.resetAgentStrength(session.id);
+    await expect(runtime.getAgentStrengthOverride(session.id)).resolves.toBeNull();
+    await expect(runtime.getEffectiveAgentStrength(session.id)).resolves.toBe('light');
     await expect(runtime.listSessions()).resolves.toEqual([
       expect.objectContaining({
         id: session.id,
         agentEnabled: true,
+        agentStrengthOverride: null,
       }),
     ]);
   });
@@ -128,20 +154,14 @@ describe('LocalProviderRuntime', () => {
     });
     const firstSession = await runtime.createSession('First', config.id);
     const secondSession = await runtime.createSession('Second', config.id);
+    await enableStandardAgent(runtime, firstSession.id);
+    await enableStandardAgent(runtime, secondSession.id);
 
-    const firstStream = await runtime.sendMessage(
-      firstSession.id,
-      'first',
-      { agentEnabled: true },
-    );
+    const firstStream = await runtime.sendMessage(firstSession.id, 'first');
     const firstIterator = firstStream[Symbol.asyncIterator]();
     await expect(firstIterator.next()).resolves.toMatchObject({ done: false });
 
-    const secondStream = await runtime.sendMessage(
-      secondSession.id,
-      'second',
-      { agentEnabled: true },
-    );
+    const secondStream = await runtime.sendMessage(secondSession.id, 'second');
     const secondIterator = secondStream[Symbol.asyncIterator]();
     await expect(secondIterator.next()).resolves.toMatchObject({ done: false });
 
@@ -251,8 +271,106 @@ describe('LocalProviderRuntime standard protocol routing', () => {
   });
 });
 
-describe('LocalProviderRuntime Responses Agent client reuse', () => {
-  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
+describe('LocalProviderRuntime Pi Core Agent engine (default)', () => {
+  it('keeps ConversationRuntime approval, tool gateway, and assistant persistence around the real Pi loop', async () => {
+    const approval: ToolApprovalRequest = {
+      invocationId: 'pi-inv-1',
+      callId: 'pi-call-1',
+      name: 'terminal_session',
+      arguments: '{"command":"pwd"}',
+      message: 'Run terminal command',
+      scope: 'terminal',
+    };
+    const streamMessages = jest
+      .fn()
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield {
+            type: 'tool-call' as const,
+            callId: 'pi-call-1',
+            name: 'terminal_session',
+            arguments: '{"command":"pwd"}',
+          };
+          yield { type: 'finish' as const, reason: 'tool_calls' };
+        })(),
+      )
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield { type: 'text-delta' as const, delta: 'pi-done' };
+          yield { type: 'finish' as const, reason: 'stop' };
+        })(),
+      );
+    const resolveApproval = jest.fn(async () => ({
+      status: 'completed' as const,
+      result: { content: '/workspace' },
+    }));
+    const callTool = jest.fn(async () => {
+      throw new ToolApprovalRequiredError(approval);
+    });
+    const { runtime, repository } = await createConfiguredRuntime({
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages,
+      } as unknown as OpenAiStandardClient),
+      toolGateway: {
+        listTools: async () => [{
+          name: 'terminal_session',
+          description: 'Run a terminal command',
+          parameters: {
+            type: 'object',
+            properties: { command: { type: 'string' } },
+          },
+          requiresApproval: true,
+        }],
+        callTool,
+        resolveApproval,
+      },
+    });
+    const session = await runtime.createSession('Pi Agent', config.id);
+    await enableStandardAgent(runtime, session.id);
+    const events: unknown[] = [];
+
+    for await (const event of await runtime.sendMessage(session.id, 'show cwd')) {
+      events.push(event);
+      if (event.type === 'approval-required') {
+        runtime.resolveToolApproval(event.invocationId, 'approved');
+      }
+    }
+
+    expect(streamMessages).toHaveBeenCalledTimes(2);
+    expect(resolveApproval).toHaveBeenCalledWith(
+      approval,
+      'approved',
+      expect.anything(),
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'approval-required',
+        invocationId: 'pi-inv-1',
+      }),
+      expect.objectContaining({
+        type: 'tool-result',
+        callId: 'pi-call-1',
+        content: '/workspace',
+      }),
+      { type: 'text-delta', delta: 'pi-done' },
+    ]));
+    await expect(repository.getMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({ role: 'user', content: 'show cwd' }),
+      expect.objectContaining({ role: 'assistant', content: 'pi-done' }),
+    ]);
+  });
+
+  it('uses Pi Core as the sole Local Agent engine', async () => {
+    const { runtime } = await createConfiguredRuntime({
+      toolGateway: { listTools: async () => [], callTool: async () => ({ content: 'unused' }) },
+      loadGlobalAgentStrength: async () => 'standard',
+    });
+    expect(runtime.supportsAgent).toBe(true);
+  });
+});
+
+describe('LocalProviderRuntime Responses Agent client reuse', () => {  it('reuses one Responses client across model rounds in the same Agent turn', async () => {
     const responsesConfig: LocalProviderConfig = {
       ...config,
       protocol: 'openai-responses',
@@ -295,10 +413,9 @@ describe('LocalProviderRuntime Responses Agent client reuse', () => {
       },
     });
     const session = await runtime.createSession('Responses Agent', config.id);
+    await enableStandardAgent(runtime, session.id);
 
-    const events = await drain(await runtime.sendMessage(session.id, 'find', {
-      agentEnabled: true,
-    }));
+    const events = await drain(await runtime.sendMessage(session.id, 'find'));
 
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(streamMessages).toHaveBeenCalledTimes(2);
@@ -371,9 +488,8 @@ describe('LocalProviderRuntime rejected provider streams', () => {
       } as unknown as OpenAiStandardClient),
     });
     const session = await runtime.createSession('Agent failure', config.id);
-    const stream = await runtime.sendMessage(session.id, 'find', {
-      agentEnabled: true,
-    });
+    await enableStandardAgent(runtime, session.id);
+    const stream = await runtime.sendMessage(session.id, 'find');
 
     await expect(drain(stream)).rejects.toMatchObject({
       code: 'INVALID_PROVIDER_EVENT',
@@ -1316,6 +1432,7 @@ const createPersonalizationRuntime = async (
       streamMessages,
     } as unknown as OpenAiStandardClient),
     loadPersonalization,
+    loadGlobalAgentStrength: async () => 'plain',
     toolGateway: {
       listTools: async () => [],
       callTool: async () => ({ content: 'unused' }),
@@ -1364,8 +1481,9 @@ describe('LocalProviderRuntime personalization context', () => {
   it('injects the same Personalization context into Local Agent requests', async () => {
     const { runtime, streamMessages } = await createPersonalizationRuntime(personalized);
     const session = await runtime.createSession('Agent', config.id);
+    await enableStandardAgent(runtime, session.id);
 
-    await drain(await runtime.sendMessage(session.id, '你好', { agentEnabled: true }));
+    await drain(await runtime.sendMessage(session.id, '你好'));
 
     const messages = firstRequestMessages(streamMessages);
     expect(messages[0].role).toBe('system');
@@ -1416,6 +1534,171 @@ describe('LocalProviderRuntime personalization context', () => {
 
     const messages = firstRequestMessages(streamMessages);
     expect(messages.some((message) => message.role === 'system')).toBe(false);
+  });
+});
+
+describe('LocalProviderRuntime execution strengths', () => {
+  const budgetStrength = (
+    messages: ReadonlyArray<{ role: string; content: string | null }>,
+  ): string | null => {
+    const message = messages.find((item) =>
+      item.role === 'system' &&
+      typeof item.content === 'string' &&
+      item.content.includes('[Trusted execution budget')
+    );
+    const match = message?.content?.match(/strength: (plain|light|standard|enhanced|deep)/);
+    return match?.[1] ?? null;
+  };
+
+  const createStrengthRuntime = async (options: {
+    globalStrength: () => string;
+    onModel?: (
+      messages: ReadonlyArray<{ role: string; content: string | null }>,
+    ) => Promise<void> | void;
+  }) => {
+    const configStore = new ProviderConfigStore(new MemoryLocalKeyValueStore());
+    await configStore.save([config]);
+    const credentialStore = new MemoryProviderCredentialStore();
+    await credentialStore.save(config.id, 'sk-test');
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+    const requests: Array<{
+      messages: Array<{ role: string; content: string | null }>;
+      tools?: unknown[];
+    }> = [];
+    const listTools = jest.fn(async () => [{
+      name: 'echo',
+      parameters: { type: 'object' },
+    }]);
+    const runtime = new LocalProviderRuntime({
+      configStore,
+      credentialStore,
+      sessionRepository: repository,
+      loadGlobalAgentStrength: async () =>
+        options.globalStrength() as 'plain',
+      toolGateway: {
+        listTools,
+        callTool: async () => ({ content: 'ok' }),
+      },
+      clientFactory: () => ({
+        cancelActiveRun: jest.fn(),
+        streamMessages: async (request: typeof requests[number]) => {
+          requests.push(request);
+          await options.onModel?.(request.messages);
+          return (async function* () {
+            yield { type: 'text-delta' as const, delta: 'done' };
+            yield { type: 'finish' as const, reason: 'stop' };
+          })();
+        },
+      } as unknown as OpenAiStandardClient),
+    });
+    return { runtime, repository, requests, listTools };
+  };
+
+  it('keeps pure conversation on the plain model path without tool schemas', async () => {
+    const { runtime, requests, listTools } = await createStrengthRuntime({
+      globalStrength: () => 'plain',
+    });
+    const session = await runtime.createSession('Plain', config.id);
+
+    await drain(await runtime.sendMessage(session.id, 'hello'));
+
+    expect(listTools).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].tools).toBeUndefined();
+  });
+
+  it('uses Pi Core for non-plain strengths and applies thread override over global', async () => {
+    let globalStrength = 'standard';
+    const { runtime, requests, listTools } = await createStrengthRuntime({
+      globalStrength: () => globalStrength,
+    });
+    const overridden = await runtime.createSession('Overridden', config.id);
+    const inherited = await runtime.createSession('Inherited', config.id);
+    await runtime.setAgentStrength(overridden.id, 'light');
+
+    await drain(await runtime.sendMessage(overridden.id, 'one'));
+    await drain(await runtime.sendMessage(inherited.id, 'two'));
+    expect(listTools).toHaveBeenCalledTimes(2);
+    expect(requests.map((request) => budgetStrength(request.messages))).toEqual([
+      'light',
+      'standard',
+    ]);
+
+    // A global change must not move an overridden thread's next run.
+    globalStrength = 'deep';
+    await drain(await runtime.sendMessage(overridden.id, 'three'));
+    await drain(await runtime.sendMessage(inherited.id, 'four'));
+    expect(requests.slice(2).map((request) => budgetStrength(request.messages)))
+      .toEqual(['light', 'deep']);
+  });
+
+  it('snapshots the effective strength when a run starts, not when settings change', async () => {
+    let globalStrength = 'light';
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runtime, requests } = await createStrengthRuntime({
+      globalStrength: () => globalStrength,
+      onModel: async () => {
+        started();
+        await released;
+      },
+    });
+    const session = await runtime.createSession('Snapshot', config.id);
+
+    const stream = await runtime.sendMessage(session.id, 'snapshot');
+    const iterator = stream[Symbol.asyncIterator]();
+    const firstEvent = iterator.next();
+    await startedPromise;
+    // The model request has already been sent with the start-of-run snapshot.
+    expect(budgetStrength(requests[0].messages)).toBe('light');
+
+    globalStrength = 'deep';
+    release();
+    const events: unknown[] = [await firstEvent];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+      events.push(next.value);
+    }
+    expect(events).toContainEqual({ type: 'finish', reason: 'stop' });
+    expect(requests).toHaveLength(1);
+    expect(budgetStrength(requests[0].messages)).toBe('light');
+  });
+
+  it('keeps an explicit thread override usable when global settings cannot be read', async () => {
+    const { runtime } = await createStrengthRuntime({
+      globalStrength: () => {
+        throw new Error('storage unavailable');
+      },
+    });
+    const session = await runtime.createSession('Overridden', config.id);
+    await runtime.setAgentStrength(session.id, 'deep');
+
+    await expect(runtime.getEffectiveAgentStrength(session.id)).resolves.toBe('deep');
+    await expect(drain(await runtime.sendMessage(session.id, 'hello'))).resolves.toEqual([
+      { type: 'text-delta', delta: 'done' },
+      { type: 'finish', reason: 'stop' },
+    ]);
+  });
+
+  it('fails closed when an inherited effective strength cannot be read', async () => {
+    const { runtime } = await createStrengthRuntime({
+      globalStrength: () => {
+        throw new Error('storage unavailable');
+      },
+    });
+    const session = await runtime.createSession('Unavailable', config.id);
+
+    await expect(
+      drain(await runtime.sendMessage(session.id, 'hello')),
+    ).rejects.toMatchObject({
+      code: 'LOCAL_AGENT_STRENGTH_UNAVAILABLE',
+      message: expect.stringContaining('通用'),
+    });
   });
 });
 

@@ -1,3 +1,10 @@
+// General settings are native IO; inject the persisted boundary.
+jest.mock('../settings/generalSettings', () => ({
+  loadGeneralSettings: jest.fn(async () => ({
+    agentExecutionStrength: 'standard',
+  })),
+}));
+
 import { LocalSessionRepository } from '../local/localSessionRepository';
 import type { OpenAiStandardClient } from '../provider/openAiStandardClient';
 import {
@@ -174,6 +181,9 @@ const agentGateway = (): ToolGatewayClient => ({
   callTool: async () => ({ content: 'unused' }),
 });
 
+const enableAgent = (runtime: LocalProviderRuntime, sessionId: string) =>
+  runtime.setAgentStrength(sessionId, 'standard');
+
 /**
  * A gateway whose first tool call asks for approval. Because the test runtime
  * never resolves that approval within the run deadline, the mobile Agent loop
@@ -253,11 +263,10 @@ describe('MOB-064 Local Memory runtime integration', () => {
       toolGateway: agentGateway(),
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
     await drain(
-      await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-        agentEnabled: true,
-      }),
+      await runtime.sendMessage(session.id, '以后技术问题先给我结论。'),
     );
     await settleConsolidation(
       async () => (await service.getOverview()).records.length === 1,
@@ -277,12 +286,11 @@ describe('MOB-064 Local Memory runtime integration', () => {
       toolGateway: approvalPausedGateway(),
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
     const events = await pauseAndCancel(
       runtime,
-      await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-        agentEnabled: true,
-      }),
+      await runtime.sendMessage(session.id, '以后技术问题先给我结论。'),
     );
 
     expect(events.some(event => event.type === 'run-paused')).toBe(true);
@@ -300,10 +308,9 @@ describe('MOB-064 Local Memory runtime integration', () => {
       toolGateway: approvalPausedGateway(),
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
-    const stream = await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-      agentEnabled: true,
-    });
+    const stream = await runtime.sendMessage(session.id, '以后技术问题先给我结论。');
     // Cancel as soon as the run starts waiting, so it ends via the cancellation
     // boundary rather than the overall timeout.
     const iterator = stream[Symbol.asyncIterator]();
@@ -329,14 +336,13 @@ describe('MOB-064 Local Memory runtime integration', () => {
       toolGateway: agentGateway(),
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
-    const events = await drain(
-      await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-        agentEnabled: true,
-      }),
-    );
-
-    expect(events).toContainEqual({ type: 'error', message: 'provider exploded' });
+    // Pi propagates failed model streams as errors so the partial response
+    // cannot be treated as a completed canonical turn.
+    await expect(drain(
+      await runtime.sendMessage(session.id, '以后技术问题先给我结论。'),
+    )).rejects.toThrow('provider exploded');
     // A failed run produced no canonical reply, so nothing is consolidated.
     expect((await service.getOverview()).records).toHaveLength(0);
     expect(stats().consolidation).toBe(0);
@@ -605,11 +611,10 @@ describe('MOB-064 Local Memory runtime integration', () => {
         toolGateway: agentGateway(),
       });
       const session = await runtime.createSession('Agent', config.id);
+      await enableAgent(runtime, session.id);
 
       await drain(
-        await runtime.sendMessage(session.id, '请继续。', {
-          agentEnabled: true,
-        }),
+        await runtime.sendMessage(session.id, '请继续。'),
       );
 
       expect(stats().consolidation).toBe(0);
@@ -629,17 +634,11 @@ describe('MOB-064 Local Memory runtime integration', () => {
       toolGateway: agentGateway(),
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
-    const events = await drain(
-      await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-        agentEnabled: true,
-      }),
-    );
-
-    expect(events).toContainEqual({
-      type: 'error',
-      message: 'provider exploded mid-run',
-    });
+    await expect(drain(
+      await runtime.sendMessage(session.id, '以后技术问题先给我结论。'),
+    )).rejects.toThrow('provider exploded mid-run');
     // A partial reply followed by a real error is not a completed turn.
     expect(stats().consolidation).toBe(0);
     expect((await service.getOverview()).records).toHaveLength(0);
@@ -683,17 +682,18 @@ describe('MOB-064 Local Memory runtime integration', () => {
       loadPersonalization: async () => DEFAULT_PERSONALIZATION_SETTINGS,
     });
     const session = await runtime.createSession('Agent', config.id);
+    await enableAgent(runtime, session.id);
 
     const events = await drain(
-      await runtime.sendMessage(session.id, '以后技术问题先给我结论。', {
-        agentEnabled: true,
-      }),
+      await runtime.sendMessage(session.id, '以后技术问题先给我结论。'),
     );
 
-    expect(events.some(event => event.type === 'error')).toBe(true);
-    // The turn stopped on the tool-round limit, not a final reply, so no Memory
-    // is written and nothing is marked processed. The only Provider calls were
-    // model rounds; consolidation was never attempted.
+    // Exhausting the budget is not a hard error, but this scripted final
+    // summary still asks for tools, so it is paused rather than treated
+    // as a completed answer. No Memory is written and nothing is processed.
+    expect(events.some(event => event.type === 'error')).toBe(false);
+    expect(events).toContainEqual({ type: 'run-paused', reason: 'budget-exhausted' });
+    expect(events).not.toContainEqual({ type: 'finish', reason: 'stop' });
     expect(modelCalls).toBeGreaterThan(1);
     expect((await service.getOverview()).records).toHaveLength(0);
   });

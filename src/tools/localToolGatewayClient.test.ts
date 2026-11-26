@@ -1,5 +1,6 @@
 import {
   LocalToolGatewayClient,
+  localToolGatewayClient,
   type LocalToolDefinition,
 } from './localToolGatewayClient';
 import { ToolApprovalRequiredError, type ToolManifest } from './toolGatewayClient';
@@ -22,6 +23,15 @@ const echoTool: LocalToolDefinition = {
 };
 
 describe('LocalToolGatewayClient', () => {
+  it('registers the local web tool and no dedicated weather tool', async () => {
+    const names = (await localToolGatewayClient.listTools()).map(tool => tool.name);
+    expect(names).toContain('web');
+    expect(names).not.toContain('local_weather_current');
+    expect(names).not.toContain('web_fetch');
+    expect(names).not.toContain('whoyou_mail_search');
+    expect(names).not.toContain('whoyou_mail_message_get');
+  });
+
   it('lists compiled-in local tools', async () => {
     const gateway = new LocalToolGatewayClient([echoTool]);
 

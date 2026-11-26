@@ -70,7 +70,6 @@ describe('loadSecurityStatus', () => {
 
     await deviceStore.save({
       hostUrl: 'https://host.example.com',
-      relay: null,
       credential: 'mira_device_super_secret',
       deviceId: 'dev-1',
       scopes: ['messages:read'],

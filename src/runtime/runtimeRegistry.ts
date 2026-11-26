@@ -1,10 +1,12 @@
 import type { Session, SessionSource } from '../types';
 import { RemoteHostError } from '../api/remoteHttp';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { LocalProviderRuntime } from './localProviderRuntime';
 import { RemoteHostRuntime } from './remoteHostRuntime';
 import { CloudHostRuntime } from './cloudHostRuntime';
 import type { ConversationRuntime } from './conversationRuntime';
 import { createLocalAgentToolGateway } from '../tools/localAgentToolGateway';
+import { desktopThreadWorkspaceService } from '../mcp/desktopThreadWorkspace';
 
 export type SessionSourceFilter = 'all' | SessionSource;
 
@@ -19,6 +21,8 @@ export class RuntimeRegistry {
     }),
     remote = new RemoteHostRuntime(),
     cloud = new CloudHostRuntime(),
+    private readonly endLocalThread: (threadId: string) => Promise<unknown> =
+      threadId => desktopThreadWorkspaceService.endThread(threadId),
   ) {
     this.local = local;
     this.remote = remote;
@@ -37,11 +41,25 @@ export class RuntimeRegistry {
   }
 
   async listSessions(filter: SessionSourceFilter = 'all'): Promise<Session[]> {
-    if (filter === 'remote-host') return this.remote.listSessions();
-    if (filter === 'cloud-host') return this.cloud.listSessions();
+    const { mode, generation, transitioning } = useDesktopConnectionStore.getState();
+    const selected = !transitioning && mode === 'direct' ? this.remote
+      : !transitioning && mode === 'cloud' ? this.cloud : null;
+    const readSelected = async (): Promise<Session[]> => {
+      if (!selected) return [];
+      const sessions = await selected.listSessions();
+      const current = useDesktopConnectionStore.getState();
+      if (current.generation !== generation || current.mode !== mode || current.transitioning) return [];
+      if (mode === 'cloud') useDesktopConnectionStore.setState({ cloudConnectionStatus: 'connected' });
+      return sessions;
+    };
+    if (filter === 'remote-host' || filter === 'cloud-host') {
+      if ((filter === 'remote-host' && selected !== this.remote) ||
+          (filter === 'cloud-host' && selected !== this.cloud)) return [];
+      return readSelected();
+    }
     if (filter === 'local-provider') return this.local.listSessions();
     const results = await Promise.allSettled([
-      this.remote.listSessions(),
+      readSelected(),
       this.local.listSessions(),
     ]);
     const sessions = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
@@ -59,7 +77,15 @@ export class RuntimeRegistry {
     return sessions.sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
   }
 
-  deleteSession(sessionId: string, source?: SessionSource): Promise<void> {
+  async deleteSession(sessionId: string, source?: SessionSource): Promise<void> {
+    const isLocalThread = source === 'local-provider' ||
+      (source === undefined && sessionId.startsWith('local-'));
+    if (isLocalThread) {
+      // Deleting the Mobile thread is an explicit end of its remote work. The
+      // dedicated end action retries idempotently; only a confirmed end allows
+      // the local record to disappear.
+      await this.endLocalThread(sessionId);
+    }
     return this.runtimeForSession(sessionId, source).deleteSession(sessionId);
   }
 

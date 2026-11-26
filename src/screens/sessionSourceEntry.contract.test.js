@@ -11,9 +11,9 @@ describe('MOB-039 dual-entry session source flow', () => {
 
   it('opens an explicit source picker instead of cycling filters', () => {
     expect(sessionList).toContain('ConnectionSourceDropdown');
-    expect(sessionList).toContain("value: 'all', label: '全部任务'");
-    expect(sessionList).toContain("value: 'remote-host', label: '远程连接'");
-    expect(sessionList).toContain("value: 'local-provider', label: '本地连接'");
+    expect(sessionList).toContain("label: '全部任务'");
+    expect(sessionList).toContain("label: 'Tailscale 直连'");
+    expect(sessionList).toContain("label: '本地连接'");
     expect(readSource('src/connectivity/ConnectionSourceDropdown.tsx')).toContain('disabled: option.disabled');
   });
 
@@ -38,6 +38,8 @@ describe('MOB-039 dual-entry session source flow', () => {
     // chat must request Agent mode instead of creating a legacy plain thread.
     expect(drawer).toContain('miraHostClient.createSession(undefined, {');
     expect(drawer).toContain('agentEnabled: true');
+    expect(drawer).toContain('cloudRemoteBusinessClient.createThread(undefined, {');
+    expect(drawer).toContain("source: 'cloud-host'");
     expect(drawer).toContain("value: 'local', label: '本地连接'");
     expect(drawer).toContain("navigation.navigate('LocalProviderList', forChat ? { mode: 'create' } : undefined)");
     expect(drawer).toContain('handleOpenLocalProvider(true)');

@@ -9,8 +9,7 @@ import {
   type ToolGatewayClient,
   type ToolManifest,
 } from './toolGatewayClient';
-import { weatherToolDefinition } from './localTools/weatherTool';
-import { whoYouMailSearchTool, whoYouMailMessageTool } from './localTools/whoYouMailTools';
+import { webToolDefinition } from './localTools/webTool';
 
 export interface LocalToolContext {
   signal?: AbortSignal;
@@ -19,7 +18,15 @@ export interface LocalToolContext {
 export interface LocalToolDefinition {
   manifest: ToolManifest;
   /** Consent to send this tool's private result to the user's Local Provider. */
-  disclosure?: { message: string; scope: string };
+  disclosure?: {
+    message: string;
+    scope: string;
+    /** Trusted per-tool argument policy and exact approval rendering. */
+    normalizeArguments?: (args: Record<string, unknown>) => {
+      args: Record<string, unknown>;
+      detail: string;
+    };
+  };
   call: (
     args: Record<string, unknown>,
     context: LocalToolContext,
@@ -29,10 +36,13 @@ export interface LocalToolDefinition {
 // Consent text is trusted UI. Never interpolate raw model-controlled strings
 // as extra lines or display a truncated value different from the executed one.
 const disclosureArguments = (
-  tool: string,
+  tool: LocalToolDefinition,
   args: Record<string, unknown>,
 ): { args: Record<string, unknown>; detail: string } => {
-  if (tool === 'whoyou_mail_search') {
+  if (tool.disclosure?.normalizeArguments) {
+    return tool.disclosure.normalizeArguments(args);
+  }
+  if (tool.manifest.name === 'whoyou_mail_search') {
     if (Object.keys(args).some(key => key !== 'query') ||
         (args.query !== undefined && typeof args.query !== 'string')) {
       throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '搜索参数无效');
@@ -45,7 +55,7 @@ const disclosureArguments = (
       .replace(/[\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
     return { args: query ? { query } : {}, detail: `\n搜索词：${safe}` };
   }
-  if (tool === 'whoyou_mail_message_get') {
+  if (tool.manifest.name === 'whoyou_mail_message_get') {
     if (Object.keys(args).some(key => key !== 'messageId') ||
         typeof args.messageId !== 'string') {
       throw new ToolGatewayError('WHOYOU_ARGUMENT_INVALID', '邮件标识无效');
@@ -125,7 +135,7 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
 
     const args = parseArguments(request.arguments);
     if (tool.disclosure) {
-      const display = disclosureArguments(request.name, args);
+      const display = disclosureArguments(tool, args);
       const approval: ToolApprovalRequest = {
         invocationId: `local-disclosure-${++this.nextApprovalId}`,
         callId: request.callId,
@@ -176,7 +186,5 @@ export class LocalToolGatewayClient implements ToolGatewayClient {
 }
 
 export const localToolGatewayClient = new LocalToolGatewayClient([
-  weatherToolDefinition,
-  whoYouMailSearchTool,
-  whoYouMailMessageTool,
+  webToolDefinition,
 ]);

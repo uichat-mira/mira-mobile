@@ -1,5 +1,9 @@
 import type { OpenAiMessage } from '../provider/openAiStandardClient';
-import { MobileAgentLoop } from './mobileAgentLoop';
+import { PiCoreAgentLoop } from './piAgentLoop';
+import {
+  getAgentExecutionStrength,
+  type AgentExecutionStrengthId,
+} from '../settings/agentExecutionStrength';
 import type { LocalProviderExecutor } from './localProviderExecution';
 import type { RuntimeEvent } from './conversationRuntime';
 import type {
@@ -25,8 +29,12 @@ interface PendingApproval {
 
 export interface LocalAgentRunInput {
   executor: LocalProviderExecutor;
+  /** Effective thread strength, already snapshotted for this run. */
+  strength: AgentExecutionStrengthId;
   initialMessages: readonly OpenAiMessage[];
   approvalRecipient?: string;
+  /** Local Provider conversation id used as the Desktop MCP thread context. */
+  threadId?: string;
   /** Current user turn used only to bind an explicitly named Cloud Host. */
   selectionText?: string;
   previousAssistantText?: string;
@@ -41,14 +49,34 @@ export interface LocalAgentRun {
 
 export type LocalAgentToolGatewaySource =
   | ToolGatewayClient
-  | ((selectionText?: string, previousAssistantText?: string) => ToolGatewayClient);
+  | ((
+      selectionText?: string,
+      previousAssistantText?: string,
+      threadId?: string,
+    ) => ToolGatewayClient);
 
 const resolveToolGateway = (
   source: LocalAgentToolGatewaySource,
   selectionText?: string,
   previousAssistantText?: string,
+  threadId?: string,
 ): ToolGatewayClient =>
-  typeof source === 'function' ? source(selectionText, previousAssistantText) : source;
+  typeof source === 'function'
+    ? source(selectionText, previousAssistantText, threadId)
+    : source;
+
+/**
+ * A configured execution strength is a user safety boundary. If the effective
+ * value cannot be read, never silently replace it with a different strength.
+ */
+export class LocalAgentExecutionStrengthUnavailableError extends Error {
+  readonly code = 'LOCAL_AGENT_STRENGTH_UNAVAILABLE';
+
+  constructor() {
+    super('无法读取智能体执行强度，请打开「设置 → 通用 → 常规」检查设置后重试。');
+    this.name = 'LocalAgentExecutionStrengthUnavailableError';
+  }
+}
 
 export class LocalAgentRunController {
   private activeAbortController: AbortController | null = null;
@@ -71,12 +99,24 @@ export class LocalAgentRunController {
     try {
       // A source factory supplies a fresh gateway for each run so Cloud account
       // / Host authority and tool aliases never leak into a later Agent run.
-      const stream = await new MobileAgentLoop(
-        resolveToolGateway(this.toolGateway, input.selectionText, input.previousAssistantText),
-      ).run(
+      const gateway = resolveToolGateway(
+        this.toolGateway,
+        input.selectionText,
+        input.previousAssistantText,
+        input.threadId,
+      );
+      const strength = getAgentExecutionStrength(input.strength);
+      const loop = new PiCoreAgentLoop(gateway);
+      const stream = await loop.run(
         input.initialMessages,
         (messages, tools) => input.executor.streamMessages(messages, tools),
         {
+          strength: strength.id,
+          maxToolRounds: strength.maxToolRounds,
+          overallTimeoutMs:
+            strength.maxDurationMinutes === null
+              ? undefined
+              : strength.maxDurationMinutes * 60_000,
           shouldPause: input.shouldPause,
           approvalRecipient: input.approvalRecipient,
           signal: abortController.signal,

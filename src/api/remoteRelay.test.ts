@@ -1,15 +1,15 @@
 import {
-  closeRelayConnections,
-  openRelayPostSse,
-  requestRelayJson,
-} from './remoteRelay';
-import type { RemoteRelayEndpoint } from '../protocol/remotePairingV1';
+  closeCloudRelayConnections,
+  openCloudRelayPostSse,
+  requestCloudRelayJson,
+} from './cloudRelay';
 
-const relay: RemoteRelayEndpoint = {
+const relay = {
   endpoint: 'https://relay.tomz.io',
-  relayId: 'relay_1234567890abcdef',
-  token: 'r'.repeat(43),
+  room: 'relay_1234567890abcdef',
 };
+const ticket = 'short-lived-cloud-ticket';
+const tickets = { acquireClientTicket: async () => ticket };
 
 const BASE64_ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -102,18 +102,21 @@ const base64 = (value: string) => {
 
 const connect = async (socket: FakeWebSocket) => {
   socket.open();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
   expect(parseSent(socket)[0]).toEqual({
     version: 1,
     type: 'hello',
     role: 'client',
-    relayId: relay.relayId,
-    token: relay.token,
+    relayId: relay.room,
+    token: ticket,
   });
   socket.message({
     version: 1,
     type: 'hello_ack',
     role: 'client',
-    relayId: relay.relayId,
+    relayId: relay.room,
     protocolVersion: 1,
     hostConnected: true,
   });
@@ -121,7 +124,7 @@ const connect = async (socket: FakeWebSocket) => {
 };
 
 beforeEach(() => {
-  closeRelayConnections();
+  closeCloudRelayConnections();
   FakeWebSocket.instances = [];
   Object.defineProperty(globalThis, 'WebSocket', {
     configurable: true,
@@ -131,15 +134,62 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  closeRelayConnections();
+  closeCloudRelayConnections();
 });
 
 describe('Mira Relay transport', () => {
+  it('forwards contract-scoped headers without replacing transport auth', async () => {
+    const request = requestCloudRelayJson(relay, tickets, {
+      hostUrl: relay.endpoint,
+      path: '/mcp',
+      method: 'POST',
+      credential: '',
+      body: { jsonrpc: '2.0', id: 1, method: 'tools/call' },
+      headers: { 'X-Mira-Thread-Id': 'local-thread-1' },
+      raw: true,
+      parse: value => value as { ok: boolean },
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    await connect(socket);
+    const requestFrame = parseSent(socket).find(frame => frame.type === 'request');
+    expect(requestFrame).toMatchObject({
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Mira-Thread-Id': 'local-thread-1',
+      },
+    });
+    expect(
+      (requestFrame?.headers as Record<string, string>).Authorization,
+    ).toBeUndefined();
+
+    const requestId = String(requestFrame?.requestId);
+    socket.message({
+      version: 1,
+      type: 'response',
+      requestId,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    socket.message({
+      version: 1,
+      type: 'chunk',
+      requestId,
+      encoding: 'base64',
+      data: base64(JSON.stringify({ ok: true })),
+    });
+    socket.message({ version: 1, type: 'complete', requestId });
+    await expect(request).resolves.toEqual({ ok: true });
+  });
+
   it('forwards authenticated JSON and unwraps the Host response', async () => {
-    const request = requestRelayJson(relay, {
+    const request = requestCloudRelayJson(relay, tickets, {
       hostUrl: relay.endpoint,
       path: '/remote/v1/manifest',
-      credential: 'mira_device_device-1.secret',
+      credential: 'host-grant-token',
       parse: value => value as { ok: boolean },
     });
 
@@ -155,7 +205,7 @@ describe('Mira Relay transport', () => {
       path: '/remote/v1/manifest',
       headers: {
         Accept: 'application/json',
-        Authorization: 'Bearer mira_device_device-1.secret',
+        Authorization: 'Bearer host-grant-token',
       },
     });
     const requestId = String(requestFrame?.requestId);
@@ -186,10 +236,10 @@ describe('Mira Relay transport', () => {
   });
 
   it('decodes Relay chunks as the existing SSE stream contract', async () => {
-    const session = openRelayPostSse(relay, {
+    const session = openCloudRelayPostSse(relay, tickets, {
       hostUrl: relay.endpoint,
       path: '/proxy/chat/default',
-      credential: 'mira_device_device-1.secret',
+      credential: 'host-grant-token',
       body: { id: 'thread-1', messageId: 'message-1' },
       parse: value => value as { type: string; delta: string },
     });
@@ -234,10 +284,10 @@ describe('Mira Relay transport', () => {
   });
 
   it('propagates stream cancellation to Desktop through Relay', async () => {
-    const session = openRelayPostSse(relay, {
+    const session = openCloudRelayPostSse(relay, tickets, {
       hostUrl: relay.endpoint,
       path: '/proxy/chat/default',
-      credential: 'mira_device_device-1.secret',
+      credential: 'host-grant-token',
       body: { id: 'thread-1', messageId: 'message-1' },
       parse: value => value,
     });

@@ -23,11 +23,14 @@ import {
   Search,
   Smartphone,
   SquarePen,
+  User as UserIcon,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import type { Session } from '../types';
 import { useTheme } from '../theme/ThemeContext';
 import { miraHostClient } from '../api/miraHostClient';
+import { cloudRemoteBusinessClient } from '../cloud/cloudRemoteBusiness';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
@@ -38,10 +41,12 @@ import {
 } from '../store/threadReadStore';
 import { DEFAULT_GENERAL_SETTINGS, loadGeneralSettings } from '../settings/generalSettings';
 import { SettingsChoiceModal } from '../settings/SettingsChoiceModal';
+import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import {
   getSessionVisualKindLabel,
   SessionKindIcon,
 } from './SessionKindIcon';
+import { projectDrawerAccountEntry } from './drawerAccountEntry';
 import { RemoteDiagnosticNotice } from '../connectivity/RemoteDiagnosticNotice';
 import type {
   RemoteConnectionDiagnosticAction,
@@ -90,9 +95,15 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
   const progressByThreadId = useThreadReadStore((state) => state.progressByThreadId);
   const hydrateReads = useThreadReadStore((state) => state.hydrate);
   const syncUnreadSessions = useThreadReadStore((state) => state.syncSessions);
+  const cloudStatus = useCloudAccountStore((state) => state.status);
+  const cloudAccount = useCloudAccountStore((state) => state.account);
+  const connectionGeneration = useDesktopConnectionStore((state) => state.generation);
+  const activateDirect = useDesktopConnectionStore((state) => state.activateDirect);
+  const activateCloud = useDesktopConnectionStore((state) => state.activateCloud);
   const [creatingChat, setCreatingChat] = useState(false);
   const creatingChatRef = useRef(false);
   const [sourcePickerVisible, setSourcePickerVisible] = useState(false);
+  const [connectionPickerVisible, setConnectionPickerVisible] = useState(false);
 
   const hydrateLocalState = useCallback(
     () =>
@@ -125,6 +136,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     syncUnreadSessions: syncCappedUnread,
     hydrateLocalState,
     filter: 'all',
+    connectionGeneration,
   });
 
   // Group by device-local pin state first, then apply the Recent display cap.
@@ -165,6 +177,7 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
       sessionId: session.id,
       title: session.title,
       source: session.source,
+      ...(session.source === 'cloud-host' ? { cloudAccountId: useCloudAccountStore.getState().account?.id } : {}),
       providerName: session.providerName,
       providerModel: session.providerModel,
     });
@@ -190,6 +203,13 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
     navigation.navigate('Plugins');
   };
 
+  const handleOpenCloudAccount = useCallback(() => {
+    onClose();
+    navigation.navigate('CloudAccount');
+  }, [navigation, onClose]);
+
+  const accountEntry = projectDrawerAccountEntry(cloudStatus, cloudAccount);
+
   const handleDiagnosticAction = useCallback(
     (action: RemoteConnectionDiagnosticAction) => {
       if (action === 'retry') {
@@ -203,20 +223,60 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
 
   const createRemoteChat = useCallback(async () => {
     if (creatingChatRef.current) return;
+    const authority = useDesktopConnectionStore.getState();
+    if (authority.mode === 'none') {
+      // Never create a Desktop thread without an active transport.
+      setConnectionPickerVisible(true);
+      return;
+    }
+
     creatingChatRef.current = true;
     setCreatingChat(true);
     try {
-      // Desktop's current canonical conversation is an Agent thread. Creating a
-      // legacy non-Agent thread here produced conversations the Desktop UI no
-      // longer defaults to, so a new Remote chat asks for Agent explicitly.
-      const session = await miraHostClient.createSession(undefined, {
+      if (authority.mode === 'direct') {
+        // Desktop's current canonical conversation is an Agent thread. Creating
+        // a legacy non-Agent thread here produced conversations the Desktop UI
+        // no longer defaults to, so a new Direct chat asks for Agent explicitly.
+        const session = await miraHostClient.createSession(undefined, {
+          agentEnabled: true,
+        });
+        const current = useDesktopConnectionStore.getState();
+        if (current.mode !== 'direct' ||
+            current.generation !== authority.generation) {
+          // The transport changed while the mutation was in flight. The Host
+          // owns the created thread; do not navigate a stale result or replay.
+          return;
+        }
+        onClose();
+        navigation.navigate('Chat', {
+          sessionId: session.id,
+          title: session.title,
+          source: 'remote-host',
+        });
+        return;
+      }
+
+      const initiatingAccountId = useCloudAccountStore.getState().account?.id;
+      if (!initiatingAccountId) {
+        throw new Error('Mira Cloud 登录状态已改变，请重新选择连接。');
+      }
+      const thread = await cloudRemoteBusinessClient.createThread(undefined, {
         agentEnabled: true,
       });
+      const current = useDesktopConnectionStore.getState();
+      const currentAccountId = useCloudAccountStore.getState().account?.id;
+      if (current.mode !== 'cloud' ||
+          current.generation !== authority.generation ||
+          currentAccountId !== initiatingAccountId) {
+        // Do not navigate a thread created under a replaced mode or account.
+        return;
+      }
       onClose();
       navigation.navigate('Chat', {
-        sessionId: session.id,
-        title: session.title,
-        source: session.source,
+        sessionId: thread.id,
+        title: thread.title,
+        source: 'cloud-host',
+        cloudAccountId: initiatingAccountId,
       });
     } catch (error) {
       const message =
@@ -229,6 +289,33 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
       setCreatingChat(false);
     }
   }, [navigation, onClose]);
+
+  const chooseConnection = useCallback(
+    async (source: 'direct' | 'cloud') => {
+      setConnectionPickerVisible(false);
+      if (source === 'direct') {
+        if (await activateDirect()) {
+          void createRemoteChat();
+          return;
+        }
+        onClose();
+        navigation.navigate('HostConfig');
+        return;
+      }
+      if (useCloudAccountStore.getState().status !== 'signed_in') {
+        onClose();
+        navigation.navigate('CloudAccount');
+        return;
+      }
+      if (await activateCloud()) {
+        void createRemoteChat();
+        return;
+      }
+      onClose();
+      navigation.navigate('CloudAccount');
+    },
+    [activateCloud, activateDirect, createRemoteChat, navigation, onClose],
+  );
 
   const handleCreateChat = useCallback(async () => {
     if (creatingChat) return;
@@ -485,17 +572,87 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
             {creatingChat ? '新建中…' : '聊天'}
           </Text>
         </Pressable>
-        <View
-          style={[
-            styles.avatar,
-            {
-              backgroundColor: colors.bg.card,
-              borderColor: colors.border.default,
-            },
+        <Pressable
+          testID="drawer-account-entry"
+          accessibilityRole="button"
+          accessibilityLabel={accountEntry.accessibilityLabel}
+          onPress={handleOpenCloudAccount}
+          style={({ pressed }) => [
+            styles.accountEntry,
+            pressed && { backgroundColor: colors.bg.soft },
           ]}
         >
-          <Text style={[styles.avatarLabel, { color: colors.primary }]}>M</Text>
-        </View>
+          <View
+            style={[
+              styles.accountAvatar,
+              {
+                backgroundColor: colors.bg.card,
+                borderColor:
+                  accountEntry.tone === 'error'
+                    ? colors.status.error
+                    : colors.border.default,
+              },
+            ]}
+          >
+            {accountEntry.initial ? (
+              <Text
+                style={[
+                  styles.accountInitial,
+                  {
+                    color:
+                      accountEntry.tone === 'warning'
+                        ? colors.status.warning
+                        : colors.primary,
+                  },
+                ]}
+              >
+                {accountEntry.initial}
+              </Text>
+            ) : (
+              <UserIcon
+                size={18}
+                strokeWidth={1.9}
+                color={
+                  accountEntry.tone === 'error'
+                    ? colors.status.error
+                    : colors.text.soft
+                }
+              />
+            )}
+          </View>
+          <View style={styles.accountText}>
+            <Text
+              style={[
+                styles.accountLabel,
+                {
+                  color:
+                    accountEntry.tone === 'error'
+                      ? colors.status.error
+                      : colors.text.base,
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {accountEntry.label}
+            </Text>
+            {accountEntry.detail ? (
+              <Text
+                style={[
+                  styles.accountDetail,
+                  {
+                    color:
+                      accountEntry.tone === 'warning'
+                        ? colors.status.warning
+                        : colors.text.soft,
+                  },
+                ]}
+                numberOfLines={1}
+              >
+                {accountEntry.detail}
+              </Text>
+            ) : null}
+          </View>
+        </Pressable>
       </View>
       <SettingsChoiceModal
         withinModal
@@ -511,6 +668,26 @@ export function CustomDrawer({ onClose }: CustomDrawerProps) {
         ]}
         onChange={handleChooseSource}
         onClose={() => setSourcePickerVisible(false)}
+      />
+      <SettingsChoiceModal
+        withinModal
+        title="连接 Mira Desktop"
+        visible={connectionPickerVisible}
+        value="direct"
+        options={[
+          {
+            value: 'direct',
+            label: 'Tailscale 直连',
+            description: '连接已配对的 Mira Desktop',
+          },
+          {
+            value: 'cloud',
+            label: 'Mira Cloud',
+            description: '使用云账号和官方 Relay 连接桌面',
+          },
+        ]}
+        onChange={(source) => void chooseConnection(source)}
+        onClose={() => setConnectionPickerVisible(false)}
       />
     </View>
   );
@@ -611,6 +788,7 @@ const styles = StyleSheet.create({
   chatButton: {
     minWidth: 136,
     height: sizing.touchTarget,
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -619,13 +797,27 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   chatButtonLabel: { fontSize: fontSize.bodyMd, fontWeight: '600' },
-  avatar: {
-    width: sizing.touchTarget,
-    height: sizing.touchTarget,
+  accountEntry: {
+    minWidth: 0,
+    minHeight: sizing.touchTarget,
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.md,
+  },
+  accountAvatar: {
+    width: 34,
+    height: 34,
     borderRadius: radius.full,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarLabel: { fontSize: fontSize.button, fontWeight: '700' },
+  accountInitial: { fontSize: fontSize.button, fontWeight: '700' },
+  accountText: { flexShrink: 1, minWidth: 0 },
+  accountLabel: { fontSize: fontSize.caption, fontWeight: '600' },
+  accountDetail: { marginTop: 1, fontSize: fontSize.captionUppercase },
 });

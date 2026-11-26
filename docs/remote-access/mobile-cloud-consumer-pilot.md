@@ -102,21 +102,23 @@ MOB-088 keeps the MOB-087 Cloud Tool Gateway and adds target selection. Cloud
 Remote Chat still uses its existing deterministic most-recent-Host binding; the
 Local Agent no longer inherits that guess.
 
-- The Local Agent reads the account Host directory from `GET /v1/hosts` and
-  uses the server-owned Host id, `displayName` (or the real `deviceName` device
-  label when available) and availability. Relay rooms, tickets and credentials
-  are never included in candidate data.
-- Presence is only a lease. When more than one Host is online, Mobile probes the
-  real `/remote/v1/manifest` and `/remote/v1/tools` through each candidate's
-  Relay binding. A Host without `tools:read` + `tools:invoke` is not offered as
-  an executable target.
-- One usable Host is adopted automatically. If the current user turn uniquely
-  names a real Host (device name or Host id), that Host is adopted even when it
-  is older than another online Host. If multiple usable Hosts remain, the Agent
-  offers an Agent-visible Desktop discovery tool, without interrupting ordinary
-  chat or phone-only tasks. Only when the model requests Desktop discovery does
-  it emit a bounded clarification listing the real candidates. The next user
-  turn may name the machine, give its Host ID, or reply with the displayed number;
+- A Cloud-signed-in Local Agent turn starts with **only phone-local tools**
+  (including Who You) and a read-only `mira_desktop_hosts` discovery tool. It
+  makes **no Cloud Host directory, Relay, manifest or Tool RPC** before the
+  model requests Desktop discovery. Ordinary chat and phone tools do not rely
+  on a reachable Desktop; this explicitly fixes the Mobile 0.3.35 preflight
+  coupling regression.
+- On the model's discovery request, Mobile reads `GET /v1/hosts`, preserving
+  server-owned Host ids, real `deviceName` and availability. Presence is only
+  a lease. It probes `/remote/v1/manifest` and `/remote/v1/tools` through each
+  available candidate's authorized Relay path. A Host without `tools:read` +
+  `tools:invoke` is never exposed as an executable target.
+- If exactly one authorized Host remains, the Local Agent binds it automatically
+  and loads its tool schemas **in the next model round of the same Agent run**.
+  The model may then call actual Desktop tools through the existing Host Gateway
+  and approval path. When multiple usable Hosts remain, the app emits a bounded
+  clarification listing the real candidates and stops without mutation. The next
+  user turn may name the machine, give its Host ID, or reply with the displayed number;
   that number resolves against the previous assistant list and is revalidated
   through the current account's Host directory and Host Grant. It never silently
   picks the most recently active machine or fabricates a device.
@@ -130,14 +132,14 @@ Local Agent no longer inherits that guess.
   does not fall back to another Host, replay a side-effecting call, or downgrade
   a signed-in Cloud session to the paired Tailscale credential.
 
-Zero/offline Hosts yield `cloud-tools-unavailable`; a Host without the required
-tool scope/route yields `cloud-tools-unauthorized`. Multiple usable Hosts
-expose the read-only `mira_desktop_hosts` tool to the model while keeping phone
-local tools available; ordinary chat is not interrupted. When the model requests
-Desktop discovery, the app re-checks current authorization and displays the real
-candidate list in chat, without executing any remote tool mutation. An
-explicitly signed-out Cloud account keeps the previous Local + paired Host
-toolset.
+A genuine Desktop discovery request fails explicitly on missing or offline
+Hosts, missing `tools:read`/`tools:invoke`, or invalid Relay protocol; none of
+these errors is silently converted into a paired Tailscale Tool Gateway. The
+agent can always use phone-local tools without making that discovery call. The
+old explicit Local + paired pathway remains available only while signed out
+of Cloud. A follow-up reply to the **immediately preceding** device choice list
+is treated as explicit Host selection and revalidates the current account,
+Host Directory, grants and tool aliases before use.
 
 Each Local Agent run gets a fresh gateway bound to its Cloud account, Host and
 Relay access. Account logout/switch, Host replacement, authorization loss and

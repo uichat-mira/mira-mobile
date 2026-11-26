@@ -3,7 +3,6 @@ import {
   parseRemoteThread,
   type RemoteThread,
 } from '../protocol/remoteHostV1';
-import type { RemoteRelayEndpoint } from '../protocol/remotePairingV1';
 import {
   deviceCredentialStore,
   type DeviceCredentialStore,
@@ -13,7 +12,6 @@ import {
   requestRemoteJson,
   type RemoteJsonRequest,
 } from './remoteHttp';
-import { requestRelayJson } from './remoteRelay';
 
 export interface MobileWorkspace {
   id: string;
@@ -42,11 +40,6 @@ export interface WorkspaceThreadQuery {
 }
 
 type JsonTransport = <T>(request: RemoteJsonRequest<T>) => Promise<T>;
-type RelayJsonTransport = <T>(
-  relay: RemoteRelayEndpoint,
-  request: RemoteJsonRequest<T>,
-) => Promise<T>;
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -154,9 +147,6 @@ const parseWorkspaceThreadPage = (
   };
 };
 
-const isDirectNetworkError = (error: unknown) =>
-  error instanceof RemoteHostError && error.code === 'NETWORK_ERROR';
-
 /**
  * Read-only Mobile client for the Desktop-provided Workspace projections.
  * Product semantics still come from Desktop ChatWorkspace and RemoteThread;
@@ -166,7 +156,6 @@ export class WorkspaceApiClient {
   constructor(
     private readonly credentialStore: DeviceCredentialStore = deviceCredentialStore,
     private readonly directTransport: JsonTransport = requestRemoteJson,
-    private readonly relayTransport: RelayJsonTransport = requestRelayJson,
   ) {}
 
   async listChatWorkspaces(): Promise<MobileWorkspace[]> {
@@ -229,22 +218,7 @@ export class WorkspaceApiClient {
     });
 
     if (credential.hostUrl) {
-      try {
-        return await this.directTransport(
-          makeRequest(credential.hostUrl, __DEV__),
-        );
-      } catch (error) {
-        if (!credential.relay || !isDirectNetworkError(error)) {
-          throw error;
-        }
-      }
-    }
-
-    if (credential.relay) {
-      return this.relayTransport(
-        credential.relay,
-        makeRequest(credential.relay.endpoint, false),
-      );
+      return this.directTransport(makeRequest(credential.hostUrl, __DEV__));
     }
 
     throw new RemoteHostError(

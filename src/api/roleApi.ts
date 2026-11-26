@@ -1,5 +1,4 @@
 import type { Session } from '../types';
-import type { RemoteRelayEndpoint } from '../protocol/remotePairingV1';
 import {
   deviceCredentialStore,
   type DeviceCredentialStore,
@@ -9,7 +8,6 @@ import {
   requestRemoteJson,
   type RemoteJsonRequest,
 } from './remoteHttp';
-import { requestRelayJson } from './remoteRelay';
 
 export interface MobileRoleSummary {
   id: string;
@@ -19,11 +17,6 @@ export interface MobileRoleSummary {
 export type RoleNameMap = Readonly<Record<string, string>>;
 
 type JsonTransport = <T>(request: RemoteJsonRequest<T>) => Promise<T>;
-type RelayJsonTransport = <T>(
-  relay: RemoteRelayEndpoint,
-  request: RemoteJsonRequest<T>,
-) => Promise<T>;
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -86,15 +79,11 @@ export const getSessionRoleName = (
   return roleNames[roleId] ?? null;
 };
 
-const isDirectNetworkError = (error: unknown) =>
-  error instanceof RemoteHostError && error.code === 'NETWORK_ERROR';
-
 /** Read-only client for the Desktop-provided Mobile-safe Role projection. */
 export class RoleApiClient {
   constructor(
     private readonly credentialStore: DeviceCredentialStore = deviceCredentialStore,
     private readonly directTransport: JsonTransport = requestRemoteJson,
-    private readonly relayTransport: RelayJsonTransport = requestRelayJson,
   ) {}
 
   async listRoleSummaries(): Promise<MobileRoleSummary[]> {
@@ -115,22 +104,7 @@ export class RoleApiClient {
     });
 
     if (credential.hostUrl) {
-      try {
-        return await this.directTransport(
-          makeRequest(credential.hostUrl, __DEV__),
-        );
-      } catch (error) {
-        if (!credential.relay || !isDirectNetworkError(error)) {
-          throw error;
-        }
-      }
-    }
-
-    if (credential.relay) {
-      return this.relayTransport(
-        credential.relay,
-        makeRequest(credential.relay.endpoint, false),
-      );
+      return this.directTransport(makeRequest(credential.hostUrl, __DEV__));
     }
 
     throw new RemoteHostError(

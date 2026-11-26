@@ -7,6 +7,7 @@ import ReactTestRenderer from 'react-test-renderer';
 
 import { saveGeneralSettings } from '../src/settings/generalSettings';
 import { saveLastOpenedSession } from '../src/session/lastOpenedSession';
+import { useDesktopConnectionStore } from '../src/connectivity/desktopConnectionAuthority';
 
 type MockRoute = { name: string; params?: Record<string, unknown> };
 type MockNavigation = {
@@ -202,8 +203,8 @@ jest.mock('../src/screens/ReportErrorScreen', () => ({ ReportErrorScreen: 'Repor
 jest.mock('../src/screens/AboutScreen', () => ({ AboutScreen: 'AboutScreen' }));
 jest.mock('../src/screens/LicenseScreen', () => ({ LicenseScreen: 'LicenseScreen' }));
 jest.mock('../src/screens/SecurityScreen', () => ({ SecurityScreen: 'SecurityScreen' }));
+jest.mock('../src/screens/PluginsScreen', () => ({ PluginsScreen: 'PluginsScreen' }));
 jest.mock('../src/shiyan/ShiyanScreens', () => ({
-  PluginsScreen: 'PluginsScreen',
   ShiyanSceneConfigScreen: 'ShiyanSceneConfigScreen',
 }));
 jest.mock('../src/shiyan/ShiyanHomeScreen', () => ({
@@ -258,13 +259,16 @@ const renderApp = async (): Promise<ReactTestRenderer.ReactTestRenderer> => {
 };
 
 describe('startup session restore', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    useDesktopConnectionStore.setState({ mode: 'none', hydrated: false, transitioning: false });
+    await localKeyValueStore.set('mira.mobile.desktopConnection.v1', 'direct');
     mockInitialRouteNames.length = 0;
     mockNavigationStacks.length = 0;
     mockNavigations.length = 0;
     for (const key of Object.keys(mockScreenListeners)) delete mockScreenListeners[key];
     useHostStore.getState().setConnectionStatus('connected');
     const remote = jest.requireMock('../src/api/remoteMiraHost').remoteMiraHostClient;
+    remote.restoreConnection.mockReset();
     remote.restoreConnection.mockResolvedValue({ hostUrl: 'https://host.example' });
     const host = jest.requireMock('../src/api/miraHostClient').miraHostClient;
     host.listSessions.mockReset();
@@ -279,6 +283,7 @@ describe('startup session restore', () => {
   afterEach(async () => {
     jest.restoreAllMocks();
     useHostStore.getState().setConnectionStatus('disconnected');
+    await localKeyValueStore.remove('mira.mobile.desktopConnection.v1');
     await localKeyValueStore.remove('mira.mobile.last-opened-session.v1');
     await localKeyValueStore.remove('mira.mobile.general.v1');
   });
@@ -292,6 +297,7 @@ describe('startup session restore', () => {
         textScale: 'standard',
         hapticsEnabled: true,
         hapticsStrength: 60,
+        agentExecutionStrength: 'standard',
       },
       localKeyValueStore,
     );
@@ -305,6 +311,7 @@ describe('startup session restore', () => {
         textScale: 'standard',
         hapticsEnabled: true,
         hapticsStrength: 60,
+        agentExecutionStrength: 'standard',
       },
       localKeyValueStore,
     );
@@ -359,6 +366,16 @@ describe('startup session restore', () => {
     // startup restore must already be consumed, otherwise the old Chat would be
     // pushed again and the user would be trapped in the same loop.
     mockScreenListeners.SessionList?.({ navigation: mockNavigations[0] }).focus?.();
+    expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
+  });
+
+  it('does not reconnect an old paired Desktop without an active mode', async () => {
+    await localKeyValueStore.remove('mira.mobile.desktopConnection.v1');
+    await enableLastSessionLaunch();
+    await saveLastOpenedSession({ sessionId: 'thread-42', source: 'remote-host' }, localKeyValueStore);
+    const { remoteMiraHostClient } = jest.requireMock('../src/api/remoteMiraHost');
+    await renderApp();
+    expect(remoteMiraHostClient.restoreConnection).not.toHaveBeenCalled();
     expect(mockNavigationStacks[0]).toEqual([{ name: 'SessionList' }]);
   });
 

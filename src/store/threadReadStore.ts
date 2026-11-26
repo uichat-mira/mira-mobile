@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { ChatMessage, Session } from '../types';
-import { miraHostClient } from '../api/miraHostClient';
+import { miraHostClient, messageToChatMessage } from '../api/miraHostClient';
+import { cloudRemoteBusinessClient } from '../cloud/cloudRemoteBusiness';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { RemoteHostError } from '../api/remoteHttp';
 import { localKeyValueStore } from '../storage/localKeyValueStore';
 import {
@@ -172,7 +174,15 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
 
   syncSessions: async (sessions) => {
     await get().hydrate();
+    const { mode, generation } = useDesktopConnectionStore.getState();
+    if (mode === 'none') return;
+    const isCurrent = () => {
+      const current = useDesktopConnectionStore.getState();
+      return current.mode === mode && current.generation === generation && !current.transitioning;
+    };
     const candidates = sessions.filter((session) =>
+      session.source !== 'local-provider' &&
+      (mode === 'cloud' ? session.source === 'cloud-host' : session.source !== 'cloud-host') &&
       needsThreadObservation(
         get().progressByThreadId[session.id],
         session.messageCount,
@@ -180,19 +190,24 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
     );
 
     const observeOne = (session: Session): Promise<void> => {
-      const existing = inFlightObservations.get(session.id);
+      const key = mode + ':' + generation + ':' + session.id;
+      const existing = inFlightObservations.get(key);
       if (existing) return existing;
 
       const operation = (async () => {
         try {
-          const messages = await miraHostClient.getMessages(session.id);
+          if (!isCurrent()) return;
+          const messages = mode === 'cloud'
+            ? (await cloudRemoteBusinessClient.getMessages(session.id)).map(messageToChatMessage)
+            : await miraHostClient.getMessages(session.id);
+          if (!isCurrent()) return;
           await get().observeThread(
             session.id,
             messages,
             session.messageCount ?? messages.length,
           );
         } catch (error) {
-          if (error instanceof RemoteHostError && error.status === 404) {
+          if (isCurrent() && error instanceof RemoteHostError && error.status === 404) {
             try {
               await get().clearThread(session.id);
             } catch {
@@ -201,11 +216,11 @@ export const useThreadReadStore = create<ThreadReadStore>((set, get) => ({
           }
           // Network, offline, 401 and 403 preserve the previous local progress.
         } finally {
-          inFlightObservations.delete(session.id);
+          inFlightObservations.delete(key);
         }
       })();
 
-      inFlightObservations.set(session.id, operation);
+      inFlightObservations.set(key, operation);
       return operation;
     };
 

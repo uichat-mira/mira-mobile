@@ -13,11 +13,13 @@ import { useThreadReadStore } from '../store/threadReadStore';
 import { miraHostClient } from '../api/miraHostClient';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
 import { runtimeRegistry, type SessionSourceFilter } from '../runtime/runtimeRegistry';
+import { DesktopThreadWorkspaceError } from '../mcp/desktopThreadWorkspace';
 import { useRoleNameMap } from '../hooks/useRoleNameMap';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
 import { ConnectionSourceDropdown, type ConnectionSourceOption } from '../connectivity/ConnectionSourceDropdown';
 import { type ConnectionVisualStatus } from '../connectivity/ConnectionStatusDot';
+import { useDesktopConnectionStore } from '../connectivity/desktopConnectionAuthority';
 import { ProviderConfigStore } from '../provider/providerConfigStore';
 import { CustomDrawer } from '../session/CustomDrawer';
 import { EmptyStateIllustration } from '../components/EmptyStateIllustration';
@@ -44,6 +46,12 @@ export function SessionListScreen() {
   const { connectionStatus, config } = useHostStore();
   const cloudStatus = useCloudAccountStore(state => state.status);
   const cloudAccountId = useCloudAccountStore(state => state.account?.id);
+  const desktopMode = useDesktopConnectionStore(state => state.mode);
+  const connectionGeneration = useDesktopConnectionStore(state => state.generation);
+  const cloudConnectionStatus = useDesktopConnectionStore(state => state.cloudConnectionStatus);
+  const activateDirect = useDesktopConnectionStore(state => state.activateDirect);
+  const activateCloud = useDesktopConnectionStore(state => state.activateCloud);
+  const disconnectDesktop = useDesktopConnectionStore(state => state.disconnect);
   const roleNames = useRoleNameMap();
   const pinnedAtByThreadId = useThreadPinStore((state) => state.pinnedAtByThreadId);
   const hydratePins = useThreadPinStore((state) => state.hydrate);
@@ -96,9 +104,10 @@ export function SessionListScreen() {
     removeSession,
   } = useSessionCollection({
     listSessions: (filter) => runtimeRegistry.listSessions(filter),
-    canDeleteRemoteSessions: () => sourceFilter === 'cloud-host'
+    canDeleteRemoteSessions: () => desktopMode === 'cloud'
       ? runtimeRegistry.cloud.canDeleteSession()
-      : miraHostClient.canDeleteSession(),
+      : desktopMode === 'direct' ? miraHostClient.canDeleteSession() : Promise.resolve(false),
+    connectionGeneration,
     syncUnreadSessions,
     hydrateLocalState,
     autoLoad: false,
@@ -114,22 +123,56 @@ export function SessionListScreen() {
         : config
           ? 'disconnected'
           : 'not-configured';
+  const directActive = desktopMode === 'direct';
+  const cloudActive = desktopMode === 'cloud';
   const sourceOptions: ConnectionSourceOption<SessionSourceFilter>[] = [
-    { value: 'all', label: '全部任务', description: '同时显示远程和本地会话', status: localConfigured || !!config ? 'connected' : 'not-configured' },
-    { value: 'remote-host', label: '远程连接', description: '来自已配对 Mira Host 的会话', status: remoteStatus, disabled: remoteStatus !== 'connected' && remoteStatus !== 'connecting' },
-    { value: 'cloud-host', label: 'Mira Cloud', description: '当前云账号的桌面 Host，会话经官方 Relay 读取', status: cloudStatus !== 'signed_in' ? 'not-configured' : sourceFilter === 'cloud-host' && !isLoading ? loadDiagnostic ? 'error' : 'connected' : 'connecting', disabled: cloudStatus !== 'signed_in' },
+    {
+      value: 'all',
+      label: '全部任务',
+      description: '同时显示远程和本地会话',
+      status: (localConfigured || directActive || cloudActive) ? 'connected' : 'not-configured',
+    },
+    {
+      value: 'remote-host',
+      label: 'Tailscale 直连',
+      description: cloudActive
+        ? '先断开 Mira Cloud 连接'
+        : directActive
+          ? '已启用 · 已配对 Mira Desktop'
+          : '启用直连并查看已配对 Mira Desktop 会话',
+      status: directActive ? remoteStatus : 'disconnected',
+      disabled: cloudActive,
+    },
+    {
+      value: 'cloud-host',
+      label: 'Mira Cloud',
+      description: directActive
+        ? '先断开 Tailscale 直连'
+        : cloudStatus !== 'signed_in'
+          ? '需要登录 Mira Cloud'
+          : cloudActive
+            ? '已启用 · 会话经官方 Relay 读取'
+            : '启用 Cloud Relay 并查看账号下的桌面会话',
+      status: cloudActive
+        ? loadDiagnostic ? 'error' : cloudConnectionStatus === 'connected' ? 'connected' : 'connecting'
+        : cloudStatus === 'signed_in'
+          ? 'disconnected'
+          : 'not-configured',
+      disabled: directActive || cloudStatus !== 'signed_in',
+    },
     { value: 'local-provider', label: '本地连接', description: '保存在当前设备的直连会话', status: localConfigured ? 'connected' : 'not-configured' },
   ];
 
   React.useEffect(() => {
-    const remoteUnavailable = remoteStatus !== 'connected' && remoteStatus !== 'connecting';
-    if (sourceFilter === 'cloud-host' && cloudStatus !== 'signed_in') {
+    // A filter can only select a transport that is actually active. Transient
+    // network health never changes the active mode by itself.
+    if (sourceFilter === 'cloud-host' && !cloudActive) {
       setSourceFilter('all');
     }
-    if (sourceFilter === 'remote-host' && remoteUnavailable) {
+    if (sourceFilter === 'remote-host' && !directActive) {
       setSourceFilter('all');
     }
-  }, [cloudStatus, remoteStatus, sourceFilter]);
+  }, [cloudActive, directActive, sourceFilter]);
 
   const openDrawer = useCallback(() => {
     setDrawerOpen(true);
@@ -243,6 +286,13 @@ export function SessionListScreen() {
         );
       }
     } catch (error) {
+      if (error instanceof DesktopThreadWorkspaceError) {
+        Alert.alert(
+          '无法确认远程线程已结束',
+          `${error.message} 本机会话未删除；请检查 Mira Desktop 连接后重试。`,
+        );
+        return;
+      }
       const message =
         error instanceof Error && error.message
           ? error.message
@@ -253,7 +303,7 @@ export function SessionListScreen() {
 
   const confirmDelete = (session: Session) => {
     const message = session.source === 'local-provider'
-      ? `确定删除“${session.title}”吗？仅删除当前设备上的本地对话，不影响 Mira Host。`
+      ? `确定删除“${session.title}”吗？会先结束该线程在 Mira Desktop 上的远程任务（若有），已有文件保留；随后仅删除当前设备上的本地对话。`
       : `确定删除“${session.title}”吗？此操作会同步删除桌面端线程。`;
     Alert.alert('删除会话', message, [
       { text: '取消', style: 'cancel' },
@@ -263,6 +313,65 @@ export function SessionListScreen() {
         onPress: () => void deleteSession(session),
       },
     ]);
+  };
+
+  const changeSource = async (next: SessionSourceFilter) => {
+    if (next === 'remote-host') {
+      if (cloudActive) return;
+      if (!directActive) {
+        const activated = await activateDirect();
+        if (!activated) {
+          const message =
+            useDesktopConnectionStore.getState().message ??
+            '无法启用 Tailscale 直连，请先配对 Mira Desktop。';
+          Alert.alert('无法启用桌面连接', message, [
+            { text: '取消', style: 'cancel' },
+            { text: '去配对', onPress: () => navigation.navigate('HostConfig') },
+          ]);
+          return;
+        }
+      }
+      setSourceFilter('remote-host');
+      return;
+    }
+
+    if (next === 'cloud-host') {
+      if (directActive || cloudStatus !== 'signed_in') return;
+      if (!cloudActive) {
+        const activated = await activateCloud();
+        if (!activated) {
+          Alert.alert('无法启用桌面连接', '请先登录 Mira Cloud 账号。', [
+            { text: '取消', style: 'cancel' },
+            { text: '去登录', onPress: () => navigation.navigate('CloudAccount') },
+          ]);
+          return;
+        }
+      }
+      setSourceFilter('cloud-host');
+      return;
+    }
+
+    setSourceFilter(next);
+  };
+
+  const requestDisconnectDesktop = () => {
+    Alert.alert(
+      '断开桌面连接？',
+      desktopMode === 'cloud'
+        ? '只会断开 Cloud Relay 桌面连接，不会退出 Mira Cloud 账号，也不会影响本地模型和直连配对。'
+        : '只会断开当前 Tailscale 直连，不会撤销桌面配对，也不会影响 Mira Cloud 账号。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '断开',
+          style: 'destructive',
+          onPress: () => {
+            setSourceFilter('all');
+            void disconnectDesktop();
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -284,7 +393,19 @@ export function SessionListScreen() {
           <Menu size={20} color={colors.text.ink} />
         </Pressable>
         <View style={styles.headerCenter}>
-          <ConnectionSourceDropdown value={sourceFilter} options={sourceOptions} onChange={setSourceFilter} />
+          <ConnectionSourceDropdown
+            value={sourceFilter}
+            options={sourceOptions}
+            onChange={(next) => void changeSource(next)}
+            footerAction={desktopMode === 'none'
+              ? undefined
+              : {
+                  label: desktopMode === 'cloud'
+                    ? '断开 Mira Cloud 桌面连接'
+                    : '断开 Tailscale 直连',
+                  onPress: requestDisconnectDesktop,
+                }}
+          />
         </View>
         <Pressable
           accessibilityRole="button"

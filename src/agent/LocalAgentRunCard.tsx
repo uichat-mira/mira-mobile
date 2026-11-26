@@ -11,7 +11,8 @@ export type LocalAgentActivityStatus =
   | 'approved'
   | 'rejected'
   | 'completed'
-  | 'truncated';
+  | 'truncated'
+  | 'failed';
 
 export interface LocalAgentActivity {
   callId: string;
@@ -35,7 +36,8 @@ export type LocalAgentPauseReason =
   | 'app-suspended'
   | 'timeout'
   | 'cancelled'
-  | 'approval-rejected';
+  | 'approval-rejected'
+  | 'budget-exhausted';
 
 export type LocalAgentNoticeCode =
   | 'tool-channel-unavailable'
@@ -43,7 +45,8 @@ export type LocalAgentNoticeCode =
   | 'cloud-tools-unavailable'
   | 'cloud-tools-unauthorized'
   | 'cloud-tools-session-invalid'
-  | 'cloud-tools-host-ambiguous';
+  | 'cloud-tools-host-ambiguous'
+  | 'mcp-service-degraded';
 
 export interface LocalAgentApprovalView {
   invocationId: string;
@@ -84,20 +87,37 @@ const activityLabel: Record<LocalAgentActivityStatus, string> = {
   rejected: '已拒绝',
   completed: '已完成',
   truncated: '结果已截断',
+  failed: '调用失败',
 };
+
+/**
+ * A terminated Agent run does not prove that an in-flight tool finished or
+ * stopped on the Host. Keep completed tools completed, but never show a stale
+ * "running" label once the turn itself is terminal.
+ */
+export const getLocalAgentActivityLabel = (
+  status: LocalAgentActivityStatus,
+  phase: LocalAgentRunPhase,
+): string =>
+  status === 'running' &&
+  (phase === 'error' || phase === 'paused' ||
+    phase === 'completed' || phase === 'degraded')
+    ? '结果未确认'
+    : activityLabel[status];
 
 const pauseLabel: Record<LocalAgentPauseReason, string> = {
   'app-suspended': 'App 已进入后台。本轮不会伪装成继续运行，可重新发送后再执行。',
   timeout: '本轮运行已超时，可重新发送。',
   cancelled: '你已停止本轮运行。',
   'approval-rejected': '该工具调用已拒绝，本轮已停止。',
+  'budget-exhausted': '本轮执行强度已用尽，保留已有结果。',
 };
 
 const noticeLabel: Record<LocalAgentNoticeCode, string> = {
   'tool-channel-unavailable':
     '工具通道当前不可用，本次已按普通回答处理，未使用任何工具。',
   'toolset-degraded':
-    'Host 工具暂时不可用，本轮只使用手机内置工具（如天气）。',
+    'Host 工具暂时不可用，本轮只使用手机内置工具（如网页读取）。',
   'cloud-tools-unavailable':
     'Mira Cloud 或 Desktop Host 暂不可连接；本轮只使用手机内置工具。',
   'cloud-tools-unauthorized':
@@ -106,6 +126,8 @@ const noticeLabel: Record<LocalAgentNoticeCode, string> = {
     'Mira Cloud 登录已失效或本机设备授权已撤销；本轮只使用手机内置工具，请重新登录或注册设备。',
   'cloud-tools-host-ambiguous':
     '同一 Mira Cloud 账号有多台可用 Desktop Host；请从本轮消息中的设备列表选择一台后再发送。',
+  'mcp-service-degraded':
+    '云端 MCP 服务的可选能力声明不可用或与真实工具清单不一致；本轮已按真实 tools/list 降级，只保留已授权的只读工具。',
 };
 
 const preview = (value: string) => {
@@ -159,7 +181,7 @@ export function LocalAgentRunCard({
       {activities.slice(-4).map(activity => (
         <View key={activity.callId} style={styles.activityRow}>
           <Text style={[styles.activityState, { color: colors.text.muted }]}>
-            {activityLabel[activity.status]}
+            {getLocalAgentActivityLabel(activity.status, phase)}
           </Text>
           <View style={styles.activityBody}>
             <Text

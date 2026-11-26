@@ -4,6 +4,8 @@ import { remoteMiraHostClient } from '../api/remoteMiraHost';
 import { useHostStore } from '../store/hostStore';
 import { useTailscaleConnectivityStore } from '../store/tailscaleConnectivityStore';
 import { subscribeToSystemNetworkChanges } from './systemNetworkMonitor';
+import { useDesktopConnectionStore } from './desktopConnectionAuthority';
+import { activeDesktopConnectionKey, reconnectActiveDesktop } from './reconnectActiveDesktop';
 
 /**
  * Keeps the observable Mobile -> Tailscale -> Mira Host transport state fresh.
@@ -11,6 +13,7 @@ import { subscribeToSystemNetworkChanges } from './systemNetworkMonitor';
  * separate layer and is validated through Remote Host V1 manifest checks.
  */
 export function TailscaleConnectivityLifecycle() {
+  const mode = useDesktopConnectionStore(state => state.mode);
   const configuredHostUrl = useHostStore((state) => state.config?.hostUrl ?? '');
   const setHostUrl = useTailscaleConnectivityStore((state) => state.setHostUrl);
   const probe = useTailscaleConnectivityStore((state) => state.probe);
@@ -21,7 +24,7 @@ export function TailscaleConnectivityLifecycle() {
 
   useEffect(() => {
     let cancelled = false;
-    if (configuredHostUrl || !remoteMiraHostClient.isSecureStorageAvailable()) {
+    if (mode !== 'direct' || configuredHostUrl || !remoteMiraHostClient.isSecureStorageAvailable()) {
       return () => {
         cancelled = true;
       };
@@ -45,9 +48,13 @@ export function TailscaleConnectivityLifecycle() {
     return () => {
       cancelled = true;
     };
-  }, [configuredHostUrl]);
+  }, [configuredHostUrl, mode]);
 
   useEffect(() => {
+    if (mode !== 'direct') {
+      lastConfiguredHost.current = '';
+      return;
+    }
     const target = configuredHostUrl.trim();
     if (!target) return;
 
@@ -56,7 +63,7 @@ export function TailscaleConnectivityLifecycle() {
       lastConfiguredHost.current = target;
       void probe(target, 'startup');
     }
-  }, [configuredHostUrl, probe, setHostUrl]);
+  }, [configuredHostUrl, mode, probe, setHostUrl]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -67,6 +74,7 @@ export function TailscaleConnectivityLifecycle() {
       const target = useTailscaleConnectivityStore.getState().hostUrl.trim();
       const currentState = useTailscaleConnectivityStore.getState().state;
       if (
+        useDesktopConnectionStore.getState().mode === 'direct' &&
         wasBackground &&
         nextState === 'active' &&
         target &&
@@ -90,6 +98,17 @@ export function TailscaleConnectivityLifecycle() {
       // VPN, Wi-Fi and cellular transitions often emit several callbacks.
       // Debounce them into one transport verification against the actual Host.
       networkRecoveryTimer.current = setTimeout(() => {
+        const mode = useDesktopConnectionStore.getState().mode;
+        if (mode === 'cloud') {
+          const key = activeDesktopConnectionKey();
+          void reconnectActiveDesktop().then(result => {
+            if (activeDesktopConnectionKey() === key) useDesktopConnectionStore.setState({ cloudConnectionStatus: result ? 'connected' : 'disconnected' });
+          }).catch(() => {
+            if (activeDesktopConnectionKey() === key) useDesktopConnectionStore.setState({ cloudConnectionStatus: 'reconnecting' });
+          });
+          return;
+        }
+        if (mode !== 'direct') return;
         const store = useTailscaleConnectivityStore.getState();
         const target = store.hostUrl.trim();
         if (!target || store.state === 'probing') return;
@@ -109,6 +128,8 @@ export function TailscaleConnectivityLifecycle() {
   useEffect(() => {
     let cancelled = false;
     const hostState = useHostStore.getState();
+    if (mode !== 'direct') return;
+    const key = activeDesktopConnectionKey();
 
     if (connectivityState === 'probing') {
       if (hostState.connectionStatus === 'connected') {
@@ -127,22 +148,21 @@ export function TailscaleConnectivityLifecycle() {
         };
       }
 
-      void remoteMiraHostClient
-        .restoreConnection()
+      void reconnectActiveDesktop()
         .then((restored) => {
-          if (cancelled) return;
+          if (cancelled || activeDesktopConnectionKey() !== key) return;
           useHostStore
             .getState()
             .setConnectionStatus(restored ? 'connected' : 'disconnected');
         })
         .catch(() => {
-          if (cancelled) return;
+          if (cancelled || activeDesktopConnectionKey() !== key) return;
 
           // Network failure is not device revocation. restoreConnection clears
           // the device credential only for 401/403, so preserve reconnecting
           // while a credential still exists.
           void remoteMiraHostClient.getStoredHostUrl().then((storedHostUrl) => {
-            if (cancelled) return;
+            if (cancelled || activeDesktopConnectionKey() !== key) return;
             useHostStore
               .getState()
               .setConnectionStatus(storedHostUrl ? 'reconnecting' : 'disconnected');
@@ -170,7 +190,7 @@ export function TailscaleConnectivityLifecycle() {
     return () => {
       cancelled = true;
     };
-  }, [connectivityState]);
+  }, [connectivityState, mode]);
 
   useEffect(() => {
     const transientHostUrl = useTailscaleConnectivityStore

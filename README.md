@@ -4,9 +4,9 @@ Mira 官方移动端工程，基于 React Native 构建。
 
 ## 项目定位
 
-移动端是用户随身连接 Mira Host 的入口，负责移动交互、设备能力和可靠连接。
+移动端有两条独立路径：**Remote Host** 消费 Mira Host 的远端会话与工具能力；**Local Provider** 在手机端保存用户配置的模型凭据，运行本地会话与前台 Pi Core Agent。
 
-当前处于基建阶段，首要目标是建立稳定、可维护、可验证的移动端骨架。
+当前重点是两条路径的可靠连接、跨端工具授权、错误恢复与 Android / iOS 真实验收。具体实现边界见 [Pi Core Local Agent 工程说明](docs/engineering/pi-core-mobile-bridge.md)，不能把已合并代码等同于所有设备、Provider 或远程工具都已验收。
 
 ## 技术栈
 
@@ -17,7 +17,7 @@ Mira 官方移动端工程，基于 React Native 构建。
 
 ## 环境要求
 
-- Node.js 22.x (>= 22.11.0)
+- Node.js 26.x (>= 26.13.1, LTS)
 - Android SDK 36+ / API 24+
 - JDK 17+
 - iOS 15.0+
@@ -53,12 +53,14 @@ npm run lint
 
 ```text
 src/
-├── api/           # Mira Host API 适配层接口
-│   └── miraHost.ts
-├── types/         # 共享类型定义
-│   └── index.ts
-└── screens/       # 页面组件
-    └── HomeScreen.tsx
+├── api/        # Host / Cloud 网络客户端
+├── chat/       # 会话编排与状态
+├── provider/   # Local Provider 线协议与流式响应
+├── runtime/    # Pi Core Agent、运行控制与会话 Runtime
+├── tools/      # 本地工具、Remote / Cloud Tool Gateway
+├── settings/   # 设置与 Agent 执行预算
+├── screens/    # 移动端页面
+└── types/      # 共享类型
 ```
 
 ## Mira Cloud 设备恢复
@@ -71,20 +73,41 @@ Session 仍然撤销。中途取消或重试使用已持久化的新身份，不
 本地聊天、Local Provider、独立 Remote Host/Tailscale 及 Push 身份均不改变。
 服务端错误契约见 [Cloud Auth OAuth](https://github.com/uichat-mira/cloud-auth/blob/dev/docs/oauth-authorization-v0.md)。
 
-## 狐邮 Who You · 移动端只读接入
+## Desktop 远程线程工作空间
 
-在 Mira Cloud 登录后，Mobile 可以独立通过狐邮 MCP 查看当前账号的已绑定邮箱，
-并由用户主动搜索、阅读**已同步**邮件的纯文本正文，不依赖 Desktop 或 Relay。
-同步不完整时，搜索不到不代表 Gmail 中没有这封邮件；同步、重授权、解绑继续由狐邮网页管理。
+使用 Local Provider 会话调用官方 Mira Cloud MCP 的 Mira Desktop 工具时，Mobile
+把本机会话 ID 作为 `X-Mira-Thread-Id` 只发送给官方 Cloud MCP `tools/call` 及其对应
+Remote V1 审批/取消请求。实际的 Desktop 工作空间由 Desktop 按 C2
+[Remote Thread Workspace V1](https://github.com/uichat-mira/mira-desktop/blob/b3015ff86366832b543db72181987e3b9270d158/docs/remote-access/remote-thread-workspace-v1.md)
+权威创建；手机端不会根据线程 ID 虚构目录，也不会要求用户先选择目录。
 
-Local Provider 的 Agent 模式只注册狐邮搜索与正文读取两项只读工具。
-**每次**将搜索结果或正文发送给用户配置的外部模型前，都展示接收方、用途和范围并请求确认。
-邮件属于不可信输入，不能用于后续工具执行或权限提升；发信、附件及后台同步不在本能力范围。
-含邮件信息的回答可在手机**本地会话历史**查看，但会携带私密标记，
-不自动加入未来的模型请求上下文或自动记忆整理。
+线程菜单里的「查看远程工作空间」读取真实 `GET /remote/v1/threads/:threadId/workspace`
+结果，只有存在 `active` 空间时才展示 Desktop 返回的 opaque 引用。普通聊天、狐邮
+和不需要 Desktop 工作空间的任务不会创建空间。线程绑定本机会话、Cloud 账号、
+Desktop Host/设备和连接代际，换线程、账号或 Host 不会串用。
 
-行为与验收合同以 [MOB-086](https://github.com/uichat-mira/mira-mobile/issues/337) 为准。
-此段描述代码能力，不代表 Android 真机完整链路已经验收。
+「结束远程线程」或删除该本机会话时，Mobile 调用
+`POST /remote/v1/threads/:threadId/end`（`tools:control`）。只有 Desktop 明确确认
+`ended` 后才算结束；断线、清理未完成或响应不确定时保留本机会话并如实提示可重试，
+不会把单轮回答完成、退到后台或关闭 App 当作线程结束。结束时只停止该线程仍在运行
+的调用和终端会话，已有成果文件保留。真实 Desktop + Mobile 的持久任务终止与成果
+检查仍以 #258 T4 为准。
+
+## Mira ID 授权应用服务
+
+Mobile 仅从当前账号的 `GET /v1/application-services` 发现授权 MCP 服务。
+按 APP_ID + serviceId + resource 隔离实例，使用实例级短期凭据及 MCP 2026-07-28
+discovery / tools/list / tools/call。不预置第三方设置入口，不支持旧目录或取票 fallback。
+设置中的「插件」统一展示本地插件与当前账号拥有兼容授权服务的应用；按 APP_ID 聚合，每个应用只显示一行，名称来自目录的必填 appName（已验证 manifest 顶层 name），不使用 service name。列表仅读取同一目录，不签发短票或连接 MCP。运行时仍按 APP_ID + serviceId + resource 建立独立绑定。应用名缺失或冲突时插件页明确报错，不推测名称；展示字段不改变服务执行权限。
+应用返回前台时使目录缓存失效，插件页聚焦/恢复时刷新，撤权后不保留旧列表。
+当前目录不下发远程图标，动态应用显示应用名称首字符；远程图标传输留待后续合同。
+工具 Schema 来自实际 tools/list；账号目录和授权声明不替代工具执行权限。
+Local Provider 内置 `web(url)` 仍只读取公开 HTTP(S) 网页。
+真实邮件读取工具继续执行独立披露确认、最多 10 封收件箱摘要及最多 8000 字符纯文本正文的
+本地治理，不发送附件，不执行邮件中的指令，不自动将私密结果加入未来模型上下文。
+验收合同见 [MOB-105](https://github.com/uichat-mira/mira-mobile/issues/392)、
+[MOB-107](https://github.com/uichat-mira/mira-mobile/issues/403) 与
+[OPS-053](https://github.com/uichat-mira/cloud-auth/issues/213)。
 
 ## 分支流程
 
@@ -142,7 +165,7 @@ keytool -genkeypair -v -keystore release.keystore -alias <alias> -keyalg RSA -ke
 
 主工作流 `.github/workflows/mobile-ci.yml` 会在同一个 macOS Job 中构建：
 
-- 无签名 iOS Simulator Debug 压缩包。
+- 采用 ad-hoc 签名（包含 Keychain entitlement）的 iOS Simulator Debug 压缩包，可供模拟器联调；不涉及 Apple 开发者证书。
 - 面向 `iphoneos` / `arm64` 的无签名 Release IPA。
 
 没有 Mac、没有付费 Apple Developer Program 的开发者，可以在 Windows 上使用自己的免费 Apple Account，通过 Sideloadly 临时签名并安装到 iPhone。

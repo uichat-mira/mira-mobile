@@ -1,6 +1,12 @@
 import { localKeyValueStore, type LocalKeyValueStore } from '../storage/localKeyValueStore';
 import { setTextScale, type TextScaleId } from '../theme/tokens';
 import type { SessionSource } from '../types';
+import {
+  DEFAULT_AGENT_EXECUTION_STRENGTH,
+  isAgentExecutionStrengthId,
+  migrateLegacyAgentBudgetToStrength,
+  type AgentExecutionStrengthId,
+} from './agentExecutionStrength';
 
 export type DefaultSessionSource = 'ask' | SessionSource;
 export type LaunchBehavior = 'home' | 'last-session';
@@ -25,6 +31,8 @@ export interface GeneralSettings {
   textScale: TextScaleId;
   hapticsEnabled: boolean;
   hapticsStrength: number;
+  /** Default for threads that inherit the global strength. */
+  agentExecutionStrength: AgentExecutionStrengthId;
 }
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
@@ -34,6 +42,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   textScale: 'standard',
   hapticsEnabled: true,
   hapticsStrength: HAPTICS_STRENGTH_DEFAULT,
+  agentExecutionStrength: DEFAULT_AGENT_EXECUTION_STRENGTH,
 };
 
 const GENERAL_SETTINGS_KEY = 'mira.mobile.general.v1';
@@ -74,6 +83,15 @@ const sanitizeGeneralSettings = (value: unknown): GeneralSettings => {
       typeof candidate.hapticsEnabled === 'boolean'
         ? candidate.hapticsEnabled
         : DEFAULT_GENERAL_SETTINGS.hapticsEnabled,
+    agentExecutionStrength: isAgentExecutionStrengthId(
+      candidate.agentExecutionStrength,
+    )
+      ? candidate.agentExecutionStrength
+      : candidate.agentBudget !== undefined
+        // Read-only migration of the removed free-form budget. New writes never
+        // persist agentBudget again.
+        ? migrateLegacyAgentBudgetToStrength(candidate.agentBudget)
+        : DEFAULT_GENERAL_SETTINGS.agentExecutionStrength,
     hapticsStrength:
       typeof candidate.hapticsStrength === 'number' &&
       Number.isFinite(candidate.hapticsStrength)

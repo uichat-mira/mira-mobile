@@ -26,7 +26,6 @@ const createHarness = (
 ) => {
   let connectionStatus: ConnectionStatus = 'connected';
   const setLocalExecutionSuspended = jest.fn();
-  const refreshRelayConnection = jest.fn();
   const setConnectionStatus = jest.fn((status: ConnectionStatus) => {
     connectionStatus = status;
   });
@@ -34,7 +33,6 @@ const createHarness = (
 
   const controller = createAppLifecycleController('active', {
     setLocalExecutionSuspended,
-    refreshRelayConnection,
     getConnectionStatus: () => connectionStatus,
     setConnectionStatus,
     restoreConnection: restore,
@@ -43,7 +41,6 @@ const createHarness = (
   return {
     controller,
     setLocalExecutionSuspended,
-    refreshRelayConnection,
     setConnectionStatus,
     restore,
     getConnectionStatus: () => connectionStatus,
@@ -51,6 +48,22 @@ const createHarness = (
 };
 
 describe('app lifecycle owner', () => {
+  it('invalidates the account catalog only on resume, before local execution resumes', () => {
+    const order: string[] = [];
+    const controller = createAppLifecycleController('active', {
+      invalidateAccountServices: () => order.push('catalog'),
+      setLocalExecutionSuspended: suspended => order.push(suspended ? 'suspend' : 'resume'),
+      getConnectionStatus: () => 'disconnected',
+      setConnectionStatus: jest.fn(),
+      restoreConnection: jest.fn(),
+    });
+    controller.handleStateChange('background');
+    controller.handleStateChange('inactive');
+    controller.handleStateChange('active');
+    controller.handleStateChange('active');
+    expect(order).toEqual(['suspend', 'suspend', 'catalog', 'resume', 'resume']);
+  });
+
   it('suspends local execution in background and restores on foreground', async () => {
     const harness = createHarness();
 
@@ -59,7 +72,6 @@ describe('app lifecycle owner', () => {
 
     harness.controller.handleStateChange('active');
     expect(harness.setLocalExecutionSuspended).toHaveBeenLastCalledWith(false);
-    expect(harness.refreshRelayConnection).toHaveBeenCalledTimes(1);
     expect(harness.setConnectionStatus).toHaveBeenCalledWith('reconnecting');
 
     await flush();

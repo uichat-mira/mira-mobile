@@ -257,4 +257,147 @@ describe('LocalSessionRepository', () => {
 
     await expect(repository.rename('missing', 'Nope')).rejects.toThrow('not found');
   });
+
+  it('rebinds provider ownership without touching history, identity, or Agent mode', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const session = await repository.create('provider-a', 'Keep my history');
+    const other = await repository.create('provider-a', 'Other thread');
+    const message = {
+      id: 'user-1',
+      role: 'user' as const,
+      content: 'hello',
+      timestamp: new Date('2026-09-05T00:00:00Z'),
+    };
+    await repository.appendMessages(session.id, [message]);
+    await repository.setAgentStrengthOverride(session.id, 'deep');
+    const before = await repository.get(session.id);
+
+    await repository.setProviderId(session.id, 'provider-b');
+
+    await expect(repository.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(repository.get(session.id)).resolves.toEqual(before);
+    await expect(repository.getMessages(session.id)).resolves.toEqual([message]);
+    await expect(repository.getAgentStrengthOverride(session.id)).resolves.toBe('deep');
+    await expect(repository.getProviderId(other.id)).resolves.toBe('provider-a');
+    await expect(repository.list('provider-a')).resolves.toMatchObject([
+      { id: other.id, title: 'Other thread' },
+    ]);
+    await expect(repository.list('provider-b')).resolves.toMatchObject([
+      { id: session.id, title: 'Keep my history' },
+    ]);
+
+    const restarted = new LocalSessionRepository(storage);
+    await expect(restarted.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(restarted.getMessages(session.id)).resolves.toEqual([message]);
+  });
+
+  it('preserves a concurrent Agent-mode write when selection rebinds provider ownership', async () => {
+    const repository = new LocalSessionRepository(
+      new DelayedLocalKeyValueStore(),
+    );
+    const session = await repository.create('provider-a', 'Concurrent');
+
+    await Promise.all([
+      repository.setAgentStrengthOverride(session.id, 'deep'),
+      repository.setProviderId(session.id, 'provider-b'),
+    ]);
+
+    await expect(repository.getProviderId(session.id)).resolves.toBe('provider-b');
+    await expect(repository.getAgentStrengthOverride(session.id)).resolves.toBe('deep');
+  });
+
+  it('rejects rebinding an unknown session', async () => {
+    const repository = new LocalSessionRepository(new MemoryLocalKeyValueStore());
+
+    await expect(
+      repository.setProviderId('missing', 'provider-b'),
+    ).rejects.toThrow('not found');
+  });
+
+  it('persists thread strength overrides and inheritance across reloads', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    const repository = new LocalSessionRepository(storage);
+    const first = await repository.create('provider-a', 'First');
+    const second = await repository.create('provider-a', 'Second');
+
+    await repository.setAgentStrengthOverride(first.id, 'deep');
+    await expect(repository.getAgentStrengthOverride(first.id)).resolves.toBe('deep');
+    await expect(repository.getAgentStrengthOverride(second.id)).resolves.toBeNull();
+
+    const reloaded = new LocalSessionRepository(storage);
+    await expect(reloaded.getAgentStrengthOverride(first.id)).resolves.toBe('deep');
+    await expect(reloaded.getAgentStrengthOverride(second.id)).resolves.toBeNull();
+    await expect(reloaded.list('provider-a')).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: first.id,
+        agentStrengthOverride: 'deep',
+        agentEnabled: true,
+      }),
+      expect.objectContaining({
+        id: second.id,
+        agentStrengthOverride: null,
+        agentEnabled: true,
+      }),
+    ]));
+
+    await reloaded.resetAgentStrength(first.id);
+    await expect(reloaded.getAgentStrengthOverride(first.id)).resolves.toBeNull();
+  });
+
+  it('migrates legacy explicit Agent booleans without keeping a second switch', async () => {
+    const storage = new MemoryLocalKeyValueStore();
+    await storage.set('mira.local-provider.sessions.v1', JSON.stringify([
+      {
+        id: 'legacy-plain', providerId: 'provider-a', title: 'Plain',
+        updatedAt: '2026-11-24T00:00:00.000Z', agentEnabled: false, messages: [],
+      },
+      {
+        id: 'legacy-agent', providerId: 'provider-a', title: 'Agent',
+        updatedAt: '2026-11-24T00:00:01.000Z', agentEnabled: true,
+        futureModelId: 'model-from-a-parallel-card', messages: [],
+      },
+      {
+        id: 'unknown-strength', providerId: 'provider-a', title: 'Unknown',
+        updatedAt: '2026-11-24T00:00:02.000Z', agentStrength: 'unlimited',
+        messages: [],
+      },
+    ]));
+    const repository = new LocalSessionRepository(storage);
+
+    await expect(repository.getAgentStrengthOverride('legacy-plain')).resolves.toBe('plain');
+    await expect(repository.getAgentStrengthOverride('legacy-agent')).resolves.toBeNull();
+    // Unknown persisted strengths fail closed instead of granting tools.
+    await expect(repository.getAgentStrengthOverride('unknown-strength')).resolves.toBe('plain');
+
+    await repository.setAgentStrengthOverride('legacy-agent', 'light');
+    const stored = JSON.parse(
+      (await storage.get('mira.local-provider.sessions.v1')) ?? '[]',
+    ) as Array<Record<string, unknown>>;
+    expect(stored.find((item) => item.id === 'legacy-agent')).toMatchObject({
+      agentStrength: 'light',
+      // Fields owned by a parallel session-settings card survive the write.
+      futureModelId: 'model-from-a-parallel-card',
+    });
+    expect(stored.find((item) => item.id === 'legacy-agent')).not.toHaveProperty('agentEnabled');
+  });
+
+  it('updates only the requested thread strength when writes race', async () => {
+    const repository = new LocalSessionRepository(new DelayedLocalKeyValueStore());
+    const first = await repository.create('provider-a', 'First');
+    const second = await repository.create('provider-a', 'Second');
+
+    await Promise.all([
+      repository.setAgentStrengthOverride(first.id, 'enhanced'),
+      repository.setAgentStrengthOverride(second.id, 'light'),
+      repository.rename(second.id, 'Second renamed'),
+    ]);
+
+    await expect(repository.getAgentStrengthOverride(first.id)).resolves.toBe('enhanced');
+    await expect(repository.getAgentStrengthOverride(second.id)).resolves.toBe('light');
+    await expect(repository.get(second.id)).resolves.toMatchObject({
+      title: 'Second renamed',
+      agentStrengthOverride: 'light',
+    });
+  });
 });

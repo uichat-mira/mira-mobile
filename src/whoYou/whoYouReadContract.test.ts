@@ -1,0 +1,30 @@
+import { parseIdentity, parseMailSearch, parseMailMessage, parseToolStructuredContent } from './whoYouReadContract';
+const whoami = {
+  accountId: 'account-1',
+  consumerId: 'account-1',
+  scopes: ['whoyou.read'],
+};
+
+describe('Who You read contract after registry cutover', () => {
+  it('checks both account and consumer and rejects widened scope', () => {
+    expect(parseIdentity(whoami,'account-1',['whoyou.read'])).toEqual(whoami);
+    for(const broken of [
+      {...whoami,accountId:'another'},
+      {...whoami,consumerId:'another'},
+      {...whoami,scopes:['whoyou.read','whoyou.mail.write']},
+    ]) expect(()=>parseIdentity(broken,'account-1',['whoyou.read'])).toThrow();
+  });
+  const mail = {id:'msg-1',threadId:'thread-1',direction:'inbound',from:[],subject:'Fixture',receivedAt:1790000000000,snippet:'fixture',attachmentCount:0};
+  it('preserves opaque pagination and only accepts untrusted plain text results', () => {
+    expect(parseMailSearch({messages:[mail],nextCursor:'opaque-page'}).nextCursor).toBe('opaque-page');
+    expect(parseMailMessage({...mail,untrusted:true,bodyKind:'text',body:'fixture body',truncated:false}).body).toBe('fixture body');
+    expect(()=>parseMailMessage({...mail,untrusted:false,bodyKind:'text',body:'fixture',truncated:false})).toThrow();
+    expect(()=>parseMailSearch({messages:[{...mail,receivedAt:1e20}],nextCursor:null})).toThrow();
+    expect(()=>parseMailSearch({messages:[{id:'bad'}],nextCursor:null})).toThrow();
+  });
+  it('maps tool errors without disclosing arbitrary upstream content', () => {
+    expect(()=>parseToolStructuredContent({isError:true,structuredContent:{error:'insufficient_scope'}})).toThrow();
+    try {parseToolStructuredContent({isError:true,structuredContent:{error:'insufficient_scope'}});} catch(error){expect(error).toMatchObject({kind:'rejected',code:'insufficient_scope'});}
+    expect(()=>parseToolStructuredContent({isError:false})).toThrow();
+  });
+});

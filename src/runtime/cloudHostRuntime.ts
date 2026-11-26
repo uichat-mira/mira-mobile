@@ -1,5 +1,6 @@
 import type { ChatMessage, Session } from '../types';
 import { RemoteHostError } from '../api/remoteHttp';
+import { assertDesktopConnectionActive } from '../connectivity/desktopConnectionAuthority';
 import {
   messageToChatMessage,
   threadToSession,
@@ -65,6 +66,7 @@ export class CloudHostRuntime implements ConversationRuntime {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
+    assertDesktopConnectionActive('cloud');
     if (!await this.canDeleteSession()) {
       throw new RemoteHostError('CLOUD_HOST_GRANT_REQUIRED',
         'Mira Desktop has not granted permission to delete threads', 403);
@@ -75,8 +77,9 @@ export class CloudHostRuntime implements ConversationRuntime {
   async sendMessage(
     sessionId: string,
     input: string,
-    options?: { agentEnabled?: boolean; messageId?: string },
+    options?: { messageId?: string },
   ): Promise<AsyncIterable<RuntimeEvent>> {
+    assertDesktopConnectionActive('cloud');
     const thread = await this.cloud.getThread(sessionId);
     if (thread.status !== 'active') {
       throw new RemoteHostError('CLOUD_THREAD_NOT_ACTIVE',

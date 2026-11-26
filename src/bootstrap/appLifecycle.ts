@@ -2,10 +2,12 @@ import type { ConnectionStatus } from '../types';
 
 export interface AppLifecycleDeps {
   setLocalExecutionSuspended(suspended: boolean): void;
-  refreshRelayConnection(): void;
   getConnectionStatus(): ConnectionStatus;
   setConnectionStatus(status: ConnectionStatus): void;
   restoreConnection(): Promise<unknown | null>;
+  invalidateAccountServices?(): void;
+  /** When supplied, only the selected transport is eligible for recovery. */
+  connectionKey?(): string | null;
 }
 
 export interface AppLifecycleController {
@@ -43,6 +45,9 @@ export const createAppLifecycleController = (
     handleStateChange(nextState) {
       if (disposed) return;
 
+      if (nextState === 'active' && previousState !== 'active') {
+        deps.invalidateAccountServices?.();
+      }
       deps.setLocalExecutionSuspended(nextState !== 'active');
 
       if (nextState !== 'active') {
@@ -50,10 +55,11 @@ export const createAppLifecycleController = (
       }
 
       if (nextState === 'active' && previousState !== 'active') {
-        deps.refreshRelayConnection();
 
-        const shouldRestore =
-          deps.getConnectionStatus() === 'connected' || retryInterruptedResume;
+        const key = deps.connectionKey?.();
+        const shouldRestore = deps.connectionKey
+          ? key !== null
+          : deps.getConnectionStatus() === 'connected' || retryInterruptedResume;
         if (shouldRestore) {
           retryInterruptedResume = false;
           const generation = ++resumeGeneration;
@@ -65,11 +71,13 @@ export const createAppLifecycleController = (
             .then((restored) => {
               if (disposed || generation !== resumeGeneration) return;
               resumeRestoreInFlight = false;
+              if (deps.connectionKey && deps.connectionKey() !== key) return;
               deps.setConnectionStatus(restored ? 'connected' : 'disconnected');
             })
             .catch(() => {
               if (disposed || generation !== resumeGeneration) return;
               resumeRestoreInFlight = false;
+              if (deps.connectionKey && deps.connectionKey() !== key) return;
               deps.setConnectionStatus('reconnecting');
             });
         }
