@@ -6,6 +6,7 @@ import { deviceCredentialStore } from '../security/deviceCredentialStore';
 import { useHostStore } from '../store/hostStore';
 import { runtimeRegistry } from '../runtime/runtimeRegistry';
 import { createAppLifecycleController } from './appLifecycle';
+import { accountServiceCatalogCache } from '../mcp/accountServiceRegistry';
 import { pushBindingService } from '../push/pushBindingService';
 import { subscribePushProviderRegistration } from '../push/providerToken';
 
@@ -15,6 +16,7 @@ import { subscribePushProviderRegistration } from '../push/providerToken';
 export const useAppLifecycle = (): void => {
   useEffect(() => {
     const controller = createAppLifecycleController(AppState.currentState, {
+      invalidateAccountServices: () => accountServiceCatalogCache.invalidate(),
       setLocalExecutionSuspended: (suspended) =>
         runtimeRegistry.local.setExecutionSuspended(suspended),
       connectionKey: activeDesktopConnectionKey,

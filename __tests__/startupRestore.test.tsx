@@ -203,8 +203,8 @@ jest.mock('../src/screens/ReportErrorScreen', () => ({ ReportErrorScreen: 'Repor
 jest.mock('../src/screens/AboutScreen', () => ({ AboutScreen: 'AboutScreen' }));
 jest.mock('../src/screens/LicenseScreen', () => ({ LicenseScreen: 'LicenseScreen' }));
 jest.mock('../src/screens/SecurityScreen', () => ({ SecurityScreen: 'SecurityScreen' }));
+jest.mock('../src/screens/PluginsScreen', () => ({ PluginsScreen: 'PluginsScreen' }));
 jest.mock('../src/shiyan/ShiyanScreens', () => ({
-  PluginsScreen: 'PluginsScreen',
   ShiyanSceneConfigScreen: 'ShiyanSceneConfigScreen',
 }));
 jest.mock('../src/shiyan/ShiyanHomeScreen', () => ({

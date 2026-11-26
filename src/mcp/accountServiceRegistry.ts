@@ -19,8 +19,7 @@ import {
 } from './mcpProtocolClient';
 import { projectMcpService } from './mcpServiceCapabilities';
 import { createWhoYouMcpReadExecutor } from './whoYouMcpReadTools';
-import { discoverWhoYouResource, parseToolStructuredContent, parseIdentity, parseMailboxes, type WhoYouReadSession, type WhoYouSnapshot } from '../whoYou/whoYouReadContract';
-import { WhoYouError } from '../whoYou/whoYouError';
+import { parseToolStructuredContent, parseIdentity } from '../whoYou/whoYouReadContract';
 import { requiredMailRole } from '../tools/agentToolPolicies';
 import {
   McpServiceBinding,
@@ -73,6 +72,8 @@ export interface AccountServiceDefinition {
 
 export interface AccountServiceEntry {
   definition: AccountServiceDefinition;
+  /** Presentation metadata is not part of the service authorization contract. */
+  appName: string | null;
   revision: number;
   manifestRevision: number;
 }
@@ -220,10 +221,12 @@ export const parseAccountServiceCatalog = (value: unknown): AccountServiceEntry[
         typeof raw.manifestRevision !== 'number' || !Number.isSafeInteger(raw.manifestRevision) || raw.manifestRevision < 1) continue;
     let definition: AccountServiceDefinition;
     try { definition = parseDefinition(raw); } catch { continue; }
+    const appName = nonEmpty(raw.appName, 100) && raw.appName === raw.appName.trim()
+      ? raw.appName : null;
     const identity = JSON.stringify([definition.appId, definition.serviceId]);
     if (seen.has(identity)) { conflicts.add(identity); continue; }
     seen.add(identity);
-    entries.push({ definition, revision: raw.revision, manifestRevision: raw.manifestRevision });
+    entries.push({ definition, appName, revision: raw.revision, manifestRevision: raw.manifestRevision });
   }
   return entries.filter(entry => !conflicts.has(JSON.stringify([entry.definition.appId, entry.definition.serviceId])));
 };
@@ -605,6 +608,7 @@ export class AccountServiceCatalogCache {
     if (!input.force && this.inFlight && this.inFlight.key === key) {
       return this.inFlight.promise;
     }
+    if (input.force) this.cached = null;
     const generation = ++this.generation;
     const promise = this.request(input, now, generation).finally(() => {
       if (this.inFlight?.promise === promise) this.inFlight = null;
@@ -930,18 +934,12 @@ const connectAccountMcpService = async (
     accountId: string;
     serviceId: string;
     signal?: AbortSignal;
-    expectedSessionToken?: string;
-    forceCatalog?: boolean;
   },
   deps: AccountServiceDiscoveryDeps,
 ) => {
   const session = await currentSession(deps, input.accountId);
-  if (input.expectedSessionToken !== undefined && input.expectedSessionToken !== session.sessionToken) {
-    throw new McpProtocolError('unauthorized', 'The Mira ID session changed', 'SERVICE_REGISTRY_SESSION_CHANGED');
-  }
   let entries = await loadCatalogForSession(deps, session, {
     ...(input.signal ? { signal: input.signal } : {}),
-    ...(input.forceCatalog ? { force: true } : {}),
   });
   let entry = findEntry(entries, input.serviceId);
   if (!entry) {
@@ -1030,18 +1028,6 @@ const connectAccountMcpService = async (
     throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
   }
 
-  const isWhoYou = entry.definition.projectId === 'who-you';
-  // Preserve the existing Who You resource/issuer check before sending any
-  // bearer. Its endpoint comes only from the authorized registry declaration.
-  if (isWhoYou) {
-    await discoverWhoYouResource({
-      mcpUrl: entry.definition.resource,
-      cloudAuthBaseUrl: deps.baseUrl ?? resolveCloudAuthBaseUrl(),
-      fetchImpl: deps.fetchImpl,
-      timeoutMs: deps.timeoutMs,
-      signal: input.signal,
-    });
-  }
   const client = new McpProtocolClient({
     endpoint: entry.definition.protocol.endpoint,
     token: credential.token,
@@ -1086,31 +1072,39 @@ const connectAccountMcpService = async (
   await assertCurrent();
   const serverInfo = await client.discover(input.signal);
   const toolDescriptors = await client.listTools(input.signal);
-  const identity = isWhoYou && toolDescriptors.some(tool => tool.name === 'whoyou_whoami')
-    ? parseIdentity(parseToolStructuredContent(await client.callTool('whoyou_whoami', {}, input.signal)), accountId)
-    : undefined;
   await assertCurrent();
-  if (isWhoYou && !identity) throw invalidCredential('SERVICE_MAIL_IDENTITY_REQUIRED');
-  return { client, entry, credential, serverInfo, toolDescriptors, identity, isWhoYou, expiresAt, revision, accountId, assertCurrent };
+  return { client, entry, credential, serverInfo, toolDescriptors, expiresAt, revision, accountId, assertCurrent };
 };
 
 export const discoverAccountMcpService = async (
   input: { accountId: string; serviceId: string; signal?: AbortSignal },
   deps: AccountServiceDiscoveryDeps,
 ): Promise<McpServiceSnapshot> => {
-  const { client, entry, credential, serverInfo, toolDescriptors, isWhoYou, expiresAt, revision, accountId, assertCurrent } =
+  const { client, entry, credential, serverInfo, toolDescriptors, expiresAt, revision, accountId, assertCurrent } =
     await connectAccountMcpService(input, deps);
   const capabilityResource = serverInfo.resources
     ? await readCapabilityResource(client, entry.definition.serviceId, input.signal)
     : undefined;
-  const hasMailReaders = toolDescriptors.some(tool => requiredMailRole(tool.name) !== null);
-  const mailPolicy = isWhoYou || hasMailReaders;
+  // Bind the existing sensitive mail contract to real tool declarations, not
+  // the application/project name. Retain the account/consumer check before
+  // exposing these privileged readers.
+  const mailPolicy = toolDescriptors.some(tool => tool.name.startsWith('whoyou_'));
+  if (toolDescriptors.some(tool => requiredMailRole(tool.name) !== null)) {
+    if (!toolDescriptors.some(tool => tool.name === 'whoyou_whoami')) {
+      throw invalidCredential('SERVICE_MAIL_IDENTITY_REQUIRED');
+    }
+    await assertCurrent();
+    parseIdentity(parseToolStructuredContent(
+      await client.callTool('whoyou_whoami', {}, input.signal),
+    ), accountId, credential.claims.scopes);
+    await assertCurrent();
+  }
   const permittedToolNames = mailPolicy ? toolDescriptors.filter(tool => requiredMailRole(tool.name) !== null).map(tool => tool.name) : toolDescriptors.map(tool => tool.name);
   const projection = projectMcpService({
     serviceId: entry.definition.serviceId,
     serviceName: entry.definition.displayName,
-    serviceDescription: isWhoYou
-      ? 'Mira ID 已授权的狐邮只读邮件服务；逐页和正文发送给模型前须单独同意。'
+    serviceDescription: mailPolicy
+      ? 'Mira ID 已授权的只读邮件服务；逐页和正文发送给模型前须单独同意。'
       : 'Mira ID 账号已授权的标准 MCP 服务；工具与 Schema 由服务自身声明。',
     toolDescriptors,
     capabilityResource,
@@ -1175,6 +1169,11 @@ export const createAccountMcpServiceDiscovery = (
   },
 });
 
+export interface AuthorizedApplicationListItem {
+  readonly appId: string;
+  readonly name: string;
+}
+
 export interface AccountMcpServiceDirectoryOptions {
   loadSession?: () => Promise<StoredCloudSession | null>;
   currentCloud?: () => { status: string; accountId: string | null; deviceId?: string | null };
@@ -1219,61 +1218,50 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     };
   }
 
-  async loadWhoYouSnapshot(input: WhoYouReadSession): Promise<WhoYouSnapshot> {
-    try {
-      const session = await currentSession(this.deps, input.accountId);
-      if (session.sessionToken !== input.sessionToken) throw new WhoYouError('session_rejected', 'Mira ID 会话已变化。');
-      const entries = await loadCatalogForSession(this.deps, session, { force: true, signal: input.signal });
-      const mail = entries.filter(entry => entry.definition.projectId === 'who-you' && isCompatibleCatalogEntry(entry));
-      if (mail.length !== 1) throw new WhoYouError('unauthorized', mail.length ? '存在多个狐邮实例，请在 Mira ID 中确认授权。' : '尚无狐邮授权。', 'SERVICE_REGISTRATION_NOT_FOUND');
-      const connection = await connectAccountMcpService({
-        accountId: input.accountId, serviceId: accountServiceIdentity(mail[0].definition),
-        expectedSessionToken: input.sessionToken, signal: input.signal,
-      }, this.deps);
-      if (!connection.identity) {
-        throw new WhoYouError('invalid_response', '狐邮未确认当前 Mira ID 身份。');
-      }
-      await connection.assertCurrent();
-      if (!connection.toolDescriptors.some(tool => tool.name === 'whoyou_mailbox_list')) throw new WhoYouError('invalid_response', '狐邮未声明邮箱列表工具。');
-      const mailboxes = parseMailboxes(parseToolStructuredContent(
-        await connection.client.callTool('whoyou_mailbox_list', {}, input.signal),
-      ));
-      await connection.assertCurrent();
-      return { identity: connection.identity, mailboxes };
-    } catch (error) {
-      if (error instanceof WhoYouError) throw error;
-      if (error instanceof McpProtocolError) {
-        if (error.code === 'SERVICE_REGISTRATION_NOT_FOUND' || error.code === 'SERVICE_REGISTRATION_CHANGED') {
-          throw new WhoYouError('unauthorized', '当前 Mira ID 未注册狐邮服务或授权已撤销。', error.code);
-        }
-        if (error.kind === 'unauthorized') {
-          throw new WhoYouError('session_rejected', 'Mira ID 会话或服务凭据已失效。', error.code);
-        }
-        if (error.kind === 'invalid_response') {
-          throw new WhoYouError('invalid_response', '狐邮返回无效服务数据。', error.code);
-        }
-      }
-      throw new WhoYouError('unavailable', '狐邮暂时不可用，请稍后重试。');
+  private async compatibleCatalog(input: {
+    accountId: string;
+    force?: boolean;
+    signal?: AbortSignal;
+  }) {
+    const session = await currentSession(this.deps, input.accountId);
+    const entries = await loadCatalogForSession(this.deps, session, input);
+    const latest = await currentSession(this.deps, input.accountId);
+    if (latest.sessionToken !== session.sessionToken) {
+      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
     }
+    return { session, entries: entries.filter(isCompatibleCatalogEntry) };
+  }
+
+  /** Read-only UI projection of the same authorized catalog used by bindings.
+   * No service credentials or MCP traffic are needed for this list.
+   */
+  async listAuthorizedApplications(input: {
+    accountId: string;
+    force?: boolean;
+    signal?: AbortSignal;
+  }): Promise<readonly AuthorizedApplicationListItem[]> {
+    const { entries } = await this.compatibleCatalog(input);
+    const applications = new Map<string, AuthorizedApplicationListItem>();
+    for (const { definition, appName } of entries) {
+      if (appName === null) throw invalidCatalog('SERVICE_CATALOG_APP_NAME_INVALID');
+      const existing = applications.get(definition.appId);
+      if (existing && existing.name !== appName) {
+        throw invalidCatalog('SERVICE_CATALOG_APP_NAME_CONFLICT');
+      }
+      applications.set(definition.appId, { appId: definition.appId, name: appName });
+    }
+    return [...applications.values()];
   }
 
   async bindings(input: {
     accountId: string;
     signal?: AbortSignal;
   }): Promise<readonly McpServiceBinding[]> {
-    const session = await currentSession(this.deps, input.accountId);
-    const entries = await loadCatalogForSession(this.deps, session, {
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-    const latest = await currentSession(this.deps, input.accountId);
-    if (latest.sessionToken !== session.sessionToken) {
-      throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
-    }
+    const { session, entries: compatible } = await this.compatibleCatalog(input);
     if (this.bindingSession?.accountId !== input.accountId || this.bindingSession.sessionToken !== session.sessionToken) {
       this.bindingsByRevision.clear();
       this.bindingSession = { accountId: input.accountId, sessionToken: session.sessionToken };
     }
-    const compatible = entries.filter(isCompatibleCatalogEntry);
     if (this.bindingsByRevision.size > 64) this.bindingsByRevision.clear();
     return compatible.map((entry) => {
       const serviceId = accountServiceIdentity(entry.definition);

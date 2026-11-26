@@ -4,18 +4,9 @@ import { AccountServiceCatalogCache, accountServiceIdentity, discoverAccountMcpS
 const WHO_YOU_MCP_RESOURCE_URI = 'mira://service/who-you/capabilities';
 const APP_ID = 'app-whoyou-fixture';
 const MCP_URL = 'https://who-you.example.test/mcp';
-const METADATA_URL =
-  'https://who-you.example.test/.well-known/oauth-protected-resource/mcp';
 const CLOUD_AUTH_URL = 'https://cloud-auth.example.test';
 const SESSION = 'mcs_v1.session.secret';
 const ACCOUNT = 'account-1';
-
-const metadata = {
-  resource: MCP_URL,
-  authorization_servers: [CLOUD_AUTH_URL],
-  scopes_supported: ['whoyou.read'],
-  bearer_methods_supported: ['header'],
-};
 
 const credential: IssuedAccountServiceCredential = {
   token: 'who-you-read-token',
@@ -119,7 +110,6 @@ const fixtureFetch = (options: {
   tools?: unknown[];
 } = {}) =>
   jest.fn(async (url: string, init?: RequestInit): Promise<Response> => {
-    if (url === METADATA_URL) return json(200, metadata);
     if (url !== MCP_URL) throw new Error('unexpected URL ' + url);
     const body = JSON.parse(String(init?.body)) as {
       id?: number;
@@ -175,7 +165,7 @@ const discover = (
 ) => {
   const accountId = overrides.accountId ?? ACCOUNT;
   const stored = { schemaVersion: 1 as const, account: { id: accountId, username:'fixture' }, sessionToken: SESSION, expiresAt: '2099-01-01T00:00:00.000Z', savedAt:'2026-11-24T00:00:00.000Z' };
-  const catalogFetch = jest.fn(async () => json(200, { services:[{ appId:APP_ID, serviceId:'who-you', projectId:'who-you', name:'Who You', type:'mcp', protocol:{name:'mcp',version:'2026-07-28',endpoint:MCP_URL},resource:MCP_URL,scopes:['whoyou.read'],revision:1,manifestRevision:1}]})) as unknown as typeof fetch;
+  const catalogFetch = jest.fn(async () => json(200, { services:[{ appId:APP_ID, serviceId:'who-you', projectId:'independent-mail', appName:'Fixture Mail Application', name:'Fixture Mail', type:'mcp', protocol:{name:'mcp',version:'2026-07-28',endpoint:MCP_URL},resource:MCP_URL,scopes:['whoyou.read'],revision:1,manifestRevision:1}]})) as unknown as typeof fetch;
   return discoverAccountMcpService({accountId,serviceId:accountServiceIdentity({appId:APP_ID,serviceId:'who-you',resource:MCP_URL})},{
     loadSession: overrides.liveSession ? () => cloudSessionStore.load() : async () => stored,
     currentCloud: overrides.liveSession ? () => ({status:useCloudAccountStore.getState().status,accountId:useCloudAccountStore.getState().account?.id ?? null}) : () => ({status:'signed_in',accountId}),
@@ -189,6 +179,7 @@ describe('Who You trusted MCP service discovery', () => {
   it('maps the real read tools and verified v1 resource into a trusted read-only catalog', async () => {
     const fetchImpl = fixtureFetch();
     const snapshot = await discover(fetchImpl);
+    expect(snapshot.service.name).toBe('Fixture Mail');
     expect(snapshot.service.id).toBe(accountServiceIdentity({appId:APP_ID,serviceId:'who-you',resource:MCP_URL}));
     expect(snapshot.tools.map((entry) => entry.name)).toEqual([
       'whoyou_mail_search',
@@ -268,6 +259,19 @@ describe('Who You trusted MCP service discovery', () => {
         },
       },
     })).rejects.toMatchObject({ code: 'SERVICE_CREDENTIAL_SCOPE_MISMATCH' });
+  });
+
+  it('does not expose mail writes when the real service omits both approved readers', async () => {
+    const snapshot = await discover(fixtureFetch({
+      tools: tools.filter(entry => !['whoyou_mail_search', 'whoyou_mail_message_get'].includes(entry.name)),
+    }));
+    expect(snapshot.tools).toEqual([]);
+  });
+
+  it('fails closed when the declared mail readers lack the identity proof tool', async () => {
+    await expect(discover(fixtureFetch({
+      tools: tools.filter(entry => entry.name !== 'whoyou_whoami'),
+    }))).rejects.toMatchObject({ code: 'SERVICE_MAIL_IDENTITY_REQUIRED' });
   });
 
   it('omits permitted tools that the real tools/list no longer declares', async () => {

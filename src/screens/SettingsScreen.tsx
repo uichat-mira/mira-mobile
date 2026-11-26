@@ -30,7 +30,6 @@ import {
   MessageCircle,
   Palette,
   Cloud,
-  Mail,
 } from 'lucide-react-native';
 import type { RootStackParamList } from '../types/navigation';
 import { useTheme, type AccentColor, type ThemeMode } from '../theme/ThemeContext';
@@ -325,9 +324,6 @@ export function SettingsScreen() {
       case 'cloud-account':
         navigation.navigate('CloudAccount');
         break;
-      case 'who-you':
-        navigation.navigate('WhoYou');
-        break;
       case 'plugins':
         navigation.navigate('Plugins');
         break;
@@ -437,17 +433,6 @@ export function SettingsScreen() {
             subtitle={cloudSubtitle}
             actionId="cloud-account"
             isFirst
-            isLast={false}
-          />
-          <Row
-            icon={Mail}
-            title="狐邮 Who You"
-            subtitle={
-              cloudStatus === 'signed_in'
-                ? '云端只读邮箱'
-                : '需要登录 Mira Cloud'
-            }
-            actionId="who-you"
             isLast={false}
           />
           <Row icon={Smile} title="个性化" actionId="personalization" isLast={false} />
