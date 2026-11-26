@@ -98,6 +98,9 @@ Desktop Host/设备和连接代际，换线程、账号或 Host 不会串用。
 Mobile 仅从当前账号的 `GET /v1/application-services` 发现授权 MCP 服务。
 按 APP_ID + serviceId + resource 隔离实例，使用实例级短期凭据及 MCP 2026-07-28
 discovery / tools/list / tools/call。不预置第三方设置入口，不支持旧目录或取票 fallback。
+设置中的「插件」统一展示本地插件与当前账号兼容的授权服务；列表仅读取同一目录，不签发短票或连接 MCP。
+应用返回前台时使目录缓存失效，插件页聚焦/恢复时刷新，撤权后不保留旧列表。
+当前目录没有远程图标字段，动态服务显示名称首字符；远程图标运输仍待服务端合同支持。
 工具 Schema 来自实际 tools/list；账号目录和授权声明不替代工具执行权限。
 Local Provider 内置 `web(url)` 仍只读取公开 HTTP(S) 网页。
 真实邮件读取工具继续执行独立披露确认、最多 10 封收件箱摘要及最多 8000 字符纯文本正文的

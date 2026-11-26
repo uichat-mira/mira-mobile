@@ -27,10 +27,8 @@ import { LicenseScreen } from './src/screens/LicenseScreen';
 import { SecurityScreen } from './src/screens/SecurityScreen';
 import { CloudAccountScreen } from './src/screens/CloudAccountScreen';
 import { CloudAuthCallbackScreen } from './src/screens/CloudAuthCallbackScreen';
-import {
-  PluginsScreen,
-  ShiyanSceneConfigScreen,
-} from './src/shiyan/ShiyanScreens';
+import { PluginsScreen } from './src/screens/PluginsScreen';
+import { ShiyanSceneConfigScreen } from './src/shiyan/ShiyanScreens';
 import { ShiyanHomeScreen } from './src/shiyan/ShiyanHomeScreen';
 import { ShiyanSceneSelectScreen } from './src/shiyan/ShiyanSceneSelectScreen';
 import { ShiyanRecordScreen } from './src/shiyan/ShiyanRecordScreen';

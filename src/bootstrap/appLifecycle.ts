@@ -5,6 +5,7 @@ export interface AppLifecycleDeps {
   getConnectionStatus(): ConnectionStatus;
   setConnectionStatus(status: ConnectionStatus): void;
   restoreConnection(): Promise<unknown | null>;
+  invalidateAccountServices?(): void;
   /** When supplied, only the selected transport is eligible for recovery. */
   connectionKey?(): string | null;
 }
@@ -44,6 +45,9 @@ export const createAppLifecycleController = (
     handleStateChange(nextState) {
       if (disposed) return;
 
+      if (nextState === 'active' && previousState !== 'active') {
+        deps.invalidateAccountServices?.();
+      }
       deps.setLocalExecutionSuspended(nextState !== 'active');
 
       if (nextState !== 'active') {

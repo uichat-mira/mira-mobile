@@ -48,6 +48,22 @@ const createHarness = (
 };
 
 describe('app lifecycle owner', () => {
+  it('invalidates the account catalog only on resume, before local execution resumes', () => {
+    const order: string[] = [];
+    const controller = createAppLifecycleController('active', {
+      invalidateAccountServices: () => order.push('catalog'),
+      setLocalExecutionSuspended: suspended => order.push(suspended ? 'suspend' : 'resume'),
+      getConnectionStatus: () => 'disconnected',
+      setConnectionStatus: jest.fn(),
+      restoreConnection: jest.fn(),
+    });
+    controller.handleStateChange('background');
+    controller.handleStateChange('inactive');
+    controller.handleStateChange('active');
+    controller.handleStateChange('active');
+    expect(order).toEqual(['suspend', 'suspend', 'catalog', 'resume', 'resume']);
+  });
+
   it('suspends local execution in background and restores on foreground', async () => {
     const harness = createHarness();
 

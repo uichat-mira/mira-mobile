@@ -102,25 +102,6 @@ function ActionCard({
   );
 }
 
-export function PluginsScreen() {
-  const navigation = useNavigation<NavProp>();
-  const { colors } = useTheme();
-
-  return (
-    <ScreenShell title="插件">
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={[styles.eyebrow, { color: colors.text.soft }]}>Mira 官方插件</Text>
-        <ActionCard
-          icon={Mic2}
-          title="拾言"
-          description="把会议和口述快速收敛成可编辑、可投递的工作内容。"
-          onPress={() => navigation.navigate('ShiyanHome')}
-        />
-      </ScrollView>
-    </ScreenShell>
-  );
-}
-
 export function ShiyanHomeScreen() {
   const navigation = useNavigation<NavProp>();
   const { colors } = useTheme();
@@ -380,7 +361,6 @@ const styles = StyleSheet.create({
   backButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 18, fontWeight: '600' },
   content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
-  eyebrow: { fontSize: 13, fontWeight: '600', marginBottom: 4 },
   hero: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.lg, padding: spacing.xl, gap: spacing.sm },
   heroTitle: { fontSize: 22, fontWeight: '700' },
   heroText: { fontSize: 14, lineHeight: 21 },

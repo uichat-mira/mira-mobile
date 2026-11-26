@@ -604,6 +604,7 @@ export class AccountServiceCatalogCache {
     if (!input.force && this.inFlight && this.inFlight.key === key) {
       return this.inFlight.promise;
     }
+    if (input.force) this.cached = null;
     const generation = ++this.generation;
     const promise = this.request(input, now, generation).finally(() => {
       if (this.inFlight?.promise === promise) this.inFlight = null;
@@ -1164,6 +1165,14 @@ export const createAccountMcpServiceDiscovery = (
   },
 });
 
+export interface AuthorizedServiceListItem {
+  readonly id: string;
+  readonly appId: string;
+  readonly serviceId: string;
+  readonly name: string;
+  readonly resource: string;
+}
+
 export interface AccountMcpServiceDirectoryOptions {
   loadSession?: () => Promise<StoredCloudSession | null>;
   currentCloud?: () => { status: string; accountId: string | null; deviceId?: string | null };
@@ -1208,23 +1217,47 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
     };
   }
 
-  async bindings(input: {
+  private async compatibleCatalog(input: {
     accountId: string;
+    force?: boolean;
     signal?: AbortSignal;
-  }): Promise<readonly McpServiceBinding[]> {
+  }) {
     const session = await currentSession(this.deps, input.accountId);
-    const entries = await loadCatalogForSession(this.deps, session, {
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
+    const entries = await loadCatalogForSession(this.deps, session, input);
     const latest = await currentSession(this.deps, input.accountId);
     if (latest.sessionToken !== session.sessionToken) {
       throw new McpProtocolError('unauthorized', 'The Mira ID session changed during discovery', 'SERVICE_REGISTRY_SESSION_CHANGED');
     }
+    return { session, entries: entries.filter(isCompatibleCatalogEntry) };
+  }
+
+  /** Read-only UI projection of the same authorized catalog used by bindings.
+   * No service credentials or MCP traffic are needed for this list.
+   */
+  async listAuthorizedServices(input: {
+    accountId: string;
+    force?: boolean;
+    signal?: AbortSignal;
+  }): Promise<readonly AuthorizedServiceListItem[]> {
+    const { entries } = await this.compatibleCatalog(input);
+    return entries.map(({ definition }) => ({
+      id: accountServiceIdentity(definition),
+      appId: definition.appId,
+      serviceId: definition.serviceId,
+      name: definition.displayName,
+      resource: definition.resource,
+    }));
+  }
+
+  async bindings(input: {
+    accountId: string;
+    signal?: AbortSignal;
+  }): Promise<readonly McpServiceBinding[]> {
+    const { session, entries: compatible } = await this.compatibleCatalog(input);
     if (this.bindingSession?.accountId !== input.accountId || this.bindingSession.sessionToken !== session.sessionToken) {
       this.bindingsByRevision.clear();
       this.bindingSession = { accountId: input.accountId, sessionToken: session.sessionToken };
     }
-    const compatible = entries.filter(isCompatibleCatalogEntry);
     if (this.bindingsByRevision.size > 64) this.bindingsByRevision.clear();
     return compatible.map((entry) => {
       const serviceId = accountServiceIdentity(entry.definition);
