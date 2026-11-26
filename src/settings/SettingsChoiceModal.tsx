@@ -1,5 +1,13 @@
 import React from 'react';
-import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Animated,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Check } from 'lucide-react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, spacing } from '../theme/tokens';
@@ -98,39 +106,43 @@ export function SettingsChoiceModal<T extends string>({
           {title ? (
             <Text style={[styles.menuTitle, { color: colors.text.muted }]}>{title}</Text>
           ) : null}
-          {options.map((option) => (
-            <Pressable
-              key={option.value}
-              style={({ pressed }) => [
-                styles.option,
-                withinModal && styles.drawerOption,
-                withinModal && option.value === value && { backgroundColor: colors.bg.soft },
-                pressed && { backgroundColor: colors.bg.soft },
-              ]}
-              onPress={() => {
-                onChange(option.value);
-                onClose();
-              }}
-              accessibilityRole="radio"
-              accessibilityLabel={option.accessibilityLabel ?? option.label}
-              accessibilityState={{ checked: option.value === value }}
-            >
-              {option.swatch ? <View style={[styles.swatch, { backgroundColor: option.swatch }]} /> : null}
-              {option.description ? (
-                <View style={styles.optionCopy}>
-                  <Text style={[styles.drawerLabel, { color: colors.text.ink }]}>
-                    {option.label}
-                  </Text>
-                  <Text style={[styles.description, { color: colors.text.muted }]}>
-                    {option.description}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={[styles.label, { color: colors.text.ink }]}>{option.label}</Text>
-              )}
-              {option.value === value ? <Check size={20} color={withinModal ? colors.primary : colors.text.ink} /> : <View style={styles.checkSpace} />}
-            </Pressable>
-          ))}
+          {/* Descriptions wrap, so the list can outgrow a short screen (landscape
+              or the 大 text scale). Scroll instead of clipping the last option. */}
+          <ScrollView bounces={false} showsVerticalScrollIndicator={false}>
+            {options.map((option) => (
+              <Pressable
+                key={option.value}
+                style={({ pressed }) => [
+                  styles.option,
+                  withinModal && styles.drawerOption,
+                  withinModal && option.value === value && { backgroundColor: colors.bg.soft },
+                  pressed && { backgroundColor: colors.bg.soft },
+                ]}
+                onPress={() => {
+                  onChange(option.value);
+                  onClose();
+                }}
+                accessibilityRole="radio"
+                accessibilityLabel={option.accessibilityLabel ?? option.label}
+                accessibilityState={{ checked: option.value === value }}
+              >
+                {option.swatch ? <View style={[styles.swatch, { backgroundColor: option.swatch }]} /> : null}
+                {option.description ? (
+                  <View style={styles.optionCopy}>
+                    <Text style={[styles.drawerLabel, { color: colors.text.ink }]}>
+                      {option.label}
+                    </Text>
+                    <Text style={[styles.description, { color: colors.text.muted }]}>
+                      {option.description}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.label, { color: colors.text.ink }]}>{option.label}</Text>
+                )}
+                {option.value === value ? <Check size={20} color={withinModal ? colors.primary : colors.text.ink} /> : <View style={styles.checkSpace} />}
+              </Pressable>
+            ))}
+          </ScrollView>
         </Animated.View>
     </Pressable>
   );
@@ -163,6 +175,7 @@ const styles = StyleSheet.create({
   menu: {
     width: '78%',
     maxWidth: 320,
+    maxHeight: '80%',
     borderRadius: radius.lg,
     paddingVertical: spacing.sm,
     overflow: 'hidden',
@@ -170,6 +183,7 @@ const styles = StyleSheet.create({
   drawerMenu: {
     width: '100%',
     maxWidth: '100%',
+    maxHeight: '100%',
     borderRadius: radius.md,
     padding: spacing.sm,
   },

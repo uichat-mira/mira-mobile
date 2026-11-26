@@ -178,6 +178,8 @@ GET /mcp/external/servers
 
 对应 Mobile：设置 →「语音」，以及后续 Assistant 消息朗读。
 
+> 现状：设置页中的「语音」占位行已移除（无 actionId、点击无行为），本节的 Voice / TTS 入口随该能力真正落地时重新加入设置 IA。
+
 Mobile 只需要消费 Host 已配置好的 TTS，不管理 Provider 密钥和模型配置：
 
 ```text
