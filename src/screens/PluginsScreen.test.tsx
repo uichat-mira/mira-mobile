@@ -3,7 +3,7 @@ import { AppState, Text } from 'react-native';
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 import { PluginsScreen, pluginInitial } from './PluginsScreen';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
-import { accountMcpServiceDirectory, type AuthorizedServiceListItem } from '../mcp/accountServiceRegistry';
+import { accountMcpServiceDirectory, type AuthorizedApplicationListItem } from '../mcp/accountServiceRegistry';
 
 const mockNavigate = jest.fn();
 let mockFocused = true;
@@ -24,9 +24,8 @@ jest.mock('../theme/ThemeContext', () => ({
   } }),
 }));
 
-const item = (appId: string, name: string): AuthorizedServiceListItem => ({
-  id: JSON.stringify([appId, 'mail', 'https://example.test/mcp']),
-  appId, serviceId: 'mail', name, resource: 'https://example.test/mcp',
+const item = (appId: string, name: string): AuthorizedApplicationListItem => ({
+  appId, name,
 });
 const a = item('app-fixture-one', '狐邮 Who You');
 const b = item('app-fixture-two', 'Another Mail Service');
@@ -48,7 +47,7 @@ beforeEach(() => {
   mockNavigate.mockReset();
   Object.defineProperty(AppState, 'currentState', { configurable: true, writable: true, value: 'active' });
   useCloudAccountStore.setState({ status: 'signed_out', account: null, expiresAt: null });
-  list = jest.spyOn(accountMcpServiceDirectory, 'listAuthorizedServices').mockResolvedValue([]);
+  list = jest.spyOn(accountMcpServiceDirectory, 'listAuthorizedApplications').mockResolvedValue([]);
 });
 afterEach(() => {
   act(() => tree?.unmount());
@@ -74,7 +73,7 @@ it('shows only local plugins for an authorized empty catalog', async () => {
   expect(strings()).not.toContain('云端插件暂时无法更新');
 });
 
-it('projects both instances and removes a revoked service on focus refresh', async () => {
+it('projects both instances and removes a revoked application on focus refresh', async () => {
   signedIn();
   list.mockResolvedValueOnce([a, b]).mockResolvedValueOnce([b]);
   await render();
@@ -116,7 +115,7 @@ it('refreshes a focused screen after background and discards the prior list on l
 
 it('never displays a delayed result from a previous account', async () => {
   signedIn();
-  let resolveFirst!: (items: readonly AuthorizedServiceListItem[]) => void;
+  let resolveFirst!: (items: readonly AuthorizedApplicationListItem[]) => void;
   list.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
     .mockResolvedValueOnce([b]);
   await render();

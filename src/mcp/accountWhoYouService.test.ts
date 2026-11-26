@@ -165,7 +165,7 @@ const discover = (
 ) => {
   const accountId = overrides.accountId ?? ACCOUNT;
   const stored = { schemaVersion: 1 as const, account: { id: accountId, username:'fixture' }, sessionToken: SESSION, expiresAt: '2099-01-01T00:00:00.000Z', savedAt:'2026-11-24T00:00:00.000Z' };
-  const catalogFetch = jest.fn(async () => json(200, { services:[{ appId:APP_ID, serviceId:'who-you', projectId:'independent-mail', name:'Fixture Mail', type:'mcp', protocol:{name:'mcp',version:'2026-07-28',endpoint:MCP_URL},resource:MCP_URL,scopes:['whoyou.read'],revision:1,manifestRevision:1}]})) as unknown as typeof fetch;
+  const catalogFetch = jest.fn(async () => json(200, { services:[{ appId:APP_ID, serviceId:'who-you', projectId:'independent-mail', appName:'Fixture Mail Application', name:'Fixture Mail', type:'mcp', protocol:{name:'mcp',version:'2026-07-28',endpoint:MCP_URL},resource:MCP_URL,scopes:['whoyou.read'],revision:1,manifestRevision:1}]})) as unknown as typeof fetch;
   return discoverAccountMcpService({accountId,serviceId:accountServiceIdentity({appId:APP_ID,serviceId:'who-you',resource:MCP_URL})},{
     loadSession: overrides.liveSession ? () => cloudSessionStore.load() : async () => stored,
     currentCloud: overrides.liveSession ? () => ({status:useCloudAccountStore.getState().status,accountId:useCloudAccountStore.getState().account?.id ?? null}) : () => ({status:'signed_in',accountId}),

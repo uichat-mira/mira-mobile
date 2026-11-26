@@ -82,6 +82,7 @@ const definition = (input: {
     ...identity(serviceId, input.appId, input.resource ?? input.endpoint),
     projectId: canonical(serviceId) ? serviceId : 'fixture-project',
     name: input.displayName ?? serviceId,
+    appName: "Fixture application " + (input.appId ?? serviceId),
     type: 'mcp',
     protocol: {
       name: input.protocolName ?? 'mcp',
@@ -272,29 +273,52 @@ describe('Mira ID service registry catalog', () => {
       .toThrow('Mira ID returned an invalid service catalog');
   });
 
-  it('projects fresh authorized names and composite identities without requesting service credentials', async () => {
+  it('projects verified manifest app names once per APP_ID, without requesting credentials or changing service identity', async () => {
     let services: unknown[] = [];
     const fixture = fetchFixture({ catalog: () => ({ services }), toolsFor });
     const registry = directory({ fetchImpl: fixture.fetchImpl });
-    expect(await registry.listAuthorizedServices({ accountId: ACCOUNT_ID })).toEqual([]);
-    const one = { ...definition({ serviceId: 'mail', appId: 'app-fixture-one', displayName: '狐邮 Who You' }),
-      projectId: 'independent-mail', revision: 1, manifestRevision: 1 };
-    const two = { ...one, appId: 'app-fixture-two', name: 'Another Mail Service' };
-    services = [one, two, { ...one, appId: 'app-fixture-desktop', targets: ['desktop'] },
+    expect(await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID })).toEqual([]);
+    const one = { ...definition({ serviceId: 'mail', appId: 'app-fixture-one', displayName: '狐邮邮件服务' }),
+      projectId: 'independent-mail', appName: '狐邮 Who You', revision: 1, manifestRevision: 1 };
+    const archive = { ...definition({ serviceId: 'archive', appId: one.appId, displayName: '归档服务' }),
+      projectId: one.projectId, appName: one.appName, revision: 2, manifestRevision: 1 };
+    const two = { ...one, appId: 'app-fixture-two', appName: 'Another Mail Application' };
+    services = [one, archive, two, { ...one, appId: 'app-fixture-desktop', targets: ['desktop'] },
       { ...one, appId: 'app-fixture-legacy', protocol: { ...one.protocol, version: '2025-06-18' } }];
-    const visible = await registry.listAuthorizedServices({ accountId: ACCOUNT_ID, force: true });
-    expect(visible.map(item => item.name)).toEqual(['狐邮 Who You', 'Another Mail Service']);
-    expect(visible[0].id).not.toBe(visible[1].id);
+    const visible = await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true });
+    expect(visible).toEqual([
+      { appId: one.appId, name: '狐邮 Who You' },
+      { appId: two.appId, name: 'Another Mail Application' },
+    ]);
     expect((await registry.bindings({ accountId: ACCOUNT_ID })).map(binding => binding.serviceTypeId))
-      .toEqual(visible.map(item => item.id));
+      .toEqual([one, archive, two].map(accountServiceIdentity));
     expect(fixture.catalogCalls()).toBe(2);
     expect(fixture.credentialCalls).toEqual([]);
     expect(fixture.mcpCalls).toEqual([]);
-    services = [two];
-    expect(await registry.listAuthorizedServices({ accountId: ACCOUNT_ID, force: true })).toEqual([visible[1]]);
+    services = [archive, two];
+    expect(await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true })).toEqual(visible);
     expect((await registry.bindings({ accountId: ACCOUNT_ID })).map(binding => binding.serviceTypeId))
-      .toEqual([visible[1].id]);
+      .toEqual([archive, two].map(accountServiceIdentity));
+    services = [two];
+    expect(await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true })).toEqual([visible[1]]);
     expect(fixture.credentialCalls).toEqual([]);
+  });
+
+  it('rejects missing or conflicting application metadata without guessing a plugin name', async () => {
+    const one = { ...definition({ serviceId: 'mail', appId: 'app-fixture-one' }), revision: 1, manifestRevision: 1 };
+    const two = { ...definition({ serviceId: 'archive', appId: one.appId }), revision: 1, manifestRevision: 1 };
+    let services: unknown[] = [{ ...one, appName: undefined }];
+    const fixture = fetchFixture({ catalog: () => ({ services }), toolsFor });
+    const registry = directory({ fetchImpl: fixture.fetchImpl });
+    await expect(registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true }))
+      .rejects.toMatchObject({ code: 'SERVICE_CATALOG_APP_NAME_INVALID' });
+    expect((await registry.bindings({ accountId: ACCOUNT_ID })).map(binding => binding.serviceTypeId))
+      .toEqual([accountServiceIdentity(one)]);
+    services = [{ ...one, appName: one.appName }, { ...two, appName: 'Conflicting application' }];
+    await expect(registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true }))
+      .rejects.toMatchObject({ code: 'SERVICE_CATALOG_APP_NAME_CONFLICT' });
+    expect((await registry.bindings({ accountId: ACCOUNT_ID })).map(binding => binding.serviceTypeId))
+      .toEqual([one, two].map(accountServiceIdentity));
   });
 
   it('invalidates an already discovered binding when a UI refresh observes revocation before TTL', async () => {
@@ -306,7 +330,7 @@ describe('Mira ID service registry catalog', () => {
     if (ready.status !== 'ready') throw new Error('binding unavailable');
     const before = fixture.mcpCalls.length;
     registrations = [];
-    expect(await registry.listAuthorizedServices({ accountId: ACCOUNT_ID, force: true })).toEqual([]);
+    expect(await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true })).toEqual([]);
     await expect(ready.gateway.callTool({ callId: 'revoked', name: 'notes_lookup', arguments: '{}' }))
       .rejects.toMatchObject({ code: 'MCP_SERVICE_UNAUTHORIZED' });
     expect(fixture.mcpCalls).toHaveLength(before);
@@ -314,7 +338,7 @@ describe('Mira ID service registry catalog', () => {
 
   it('does not project an invalid catalog as a legitimate empty response', async () => {
     const fetchImpl = jest.fn(async () => json(200, { services: 'not-an-array' })) as unknown as typeof fetch;
-    await expect(directory({ fetchImpl }).listAuthorizedServices({ accountId: ACCOUNT_ID, force: true }))
+    await expect(directory({ fetchImpl }).listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true }))
       .rejects.toMatchObject({ kind: 'invalid_response' });
   });
 
@@ -324,9 +348,9 @@ describe('Mira ID service registry catalog', () => {
       ? json(503, { error: { code: 'UNAVAILABLE' } })
       : json(200, catalogBody([{ serviceId: 'notes' }]))) as unknown as typeof fetch;
     const registry = directory({ fetchImpl });
-    expect(await registry.listAuthorizedServices({ accountId: ACCOUNT_ID })).toHaveLength(1);
+    expect(await registry.listAuthorizedApplications({ accountId: ACCOUNT_ID })).toHaveLength(1);
     unavailable = true;
-    await expect(registry.listAuthorizedServices({ accountId: ACCOUNT_ID, force: true })).rejects.toBeDefined();
+    await expect(registry.listAuthorizedApplications({ accountId: ACCOUNT_ID, force: true })).rejects.toBeDefined();
     await expect(registry.bindings({ accountId: ACCOUNT_ID })).rejects.toBeDefined();
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });

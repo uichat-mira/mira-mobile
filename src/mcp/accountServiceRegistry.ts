@@ -72,6 +72,8 @@ export interface AccountServiceDefinition {
 
 export interface AccountServiceEntry {
   definition: AccountServiceDefinition;
+  /** Presentation metadata is not part of the service authorization contract. */
+  appName: string | null;
   revision: number;
   manifestRevision: number;
 }
@@ -219,10 +221,12 @@ export const parseAccountServiceCatalog = (value: unknown): AccountServiceEntry[
         typeof raw.manifestRevision !== 'number' || !Number.isSafeInteger(raw.manifestRevision) || raw.manifestRevision < 1) continue;
     let definition: AccountServiceDefinition;
     try { definition = parseDefinition(raw); } catch { continue; }
+    const appName = nonEmpty(raw.appName, 100) && raw.appName === raw.appName.trim()
+      ? raw.appName : null;
     const identity = JSON.stringify([definition.appId, definition.serviceId]);
     if (seen.has(identity)) { conflicts.add(identity); continue; }
     seen.add(identity);
-    entries.push({ definition, revision: raw.revision, manifestRevision: raw.manifestRevision });
+    entries.push({ definition, appName, revision: raw.revision, manifestRevision: raw.manifestRevision });
   }
   return entries.filter(entry => !conflicts.has(JSON.stringify([entry.definition.appId, entry.definition.serviceId])));
 };
@@ -1165,12 +1169,9 @@ export const createAccountMcpServiceDiscovery = (
   },
 });
 
-export interface AuthorizedServiceListItem {
-  readonly id: string;
+export interface AuthorizedApplicationListItem {
   readonly appId: string;
-  readonly serviceId: string;
   readonly name: string;
-  readonly resource: string;
 }
 
 export interface AccountMcpServiceDirectoryOptions {
@@ -1234,19 +1235,22 @@ export class AccountMcpServiceDirectory implements McpServiceDirectory {
   /** Read-only UI projection of the same authorized catalog used by bindings.
    * No service credentials or MCP traffic are needed for this list.
    */
-  async listAuthorizedServices(input: {
+  async listAuthorizedApplications(input: {
     accountId: string;
     force?: boolean;
     signal?: AbortSignal;
-  }): Promise<readonly AuthorizedServiceListItem[]> {
+  }): Promise<readonly AuthorizedApplicationListItem[]> {
     const { entries } = await this.compatibleCatalog(input);
-    return entries.map(({ definition }) => ({
-      id: accountServiceIdentity(definition),
-      appId: definition.appId,
-      serviceId: definition.serviceId,
-      name: definition.displayName,
-      resource: definition.resource,
-    }));
+    const applications = new Map<string, AuthorizedApplicationListItem>();
+    for (const { definition, appName } of entries) {
+      if (appName === null) throw invalidCatalog('SERVICE_CATALOG_APP_NAME_INVALID');
+      const existing = applications.get(definition.appId);
+      if (existing && existing.name !== appName) {
+        throw invalidCatalog('SERVICE_CATALOG_APP_NAME_CONFLICT');
+      }
+      applications.set(definition.appId, { appId: definition.appId, name: appName });
+    }
+    return [...applications.values()];
   }
 
   async bindings(input: {

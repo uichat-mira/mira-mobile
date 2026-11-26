@@ -5,7 +5,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ChevronRight, Mic2 } from 'lucide-react-native';
 import { useCloudAccountStore } from '../cloud/cloudAccountStore';
-import { accountMcpServiceDirectory, type AuthorizedServiceListItem } from '../mcp/accountServiceRegistry';
+import { accountMcpServiceDirectory, type AuthorizedApplicationListItem } from '../mcp/accountServiceRegistry';
 import { SettingsPageHeader } from '../settings/SettingsPageHeader';
 import { useTheme } from '../theme/ThemeContext';
 import { fontSize, radius, sizing, spacing } from '../theme/tokens';
@@ -15,7 +15,7 @@ type LoadState = {
   accountId: string;
   expiresAt: string | null;
   status: 'loading' | 'ready' | 'error';
-  items: readonly AuthorizedServiceListItem[];
+  items: readonly AuthorizedApplicationListItem[];
 };
 
 export const pluginInitial = (name: string): string =>
@@ -76,7 +76,7 @@ export function PluginsScreen() {
       try {
         // Do not abort the shared catalog transport when this screen blurs.
         // The local generation fence discards obsolete UI results instead.
-        const items = await accountMcpServiceDirectory.listAuthorizedServices({ accountId, force: true });
+        const items = await accountMcpServiceDirectory.listAuthorizedApplications({ accountId, force: true });
         if (focused && request === generation) {
           setLoad({ accountId, expiresAt, status: 'ready', items });
         }
@@ -87,13 +87,13 @@ export function PluginsScreen() {
       }
     };
     retryRef.current = refresh;
-    if (previousState === 'active' || previousState == null) refresh();
+    if (previousState === 'active' || previousState == null) void refresh();
     const subscription = AppState.addEventListener('change', nextState => {
       const resumed = nextState === 'active' && previousState !== 'active';
       previousState = nextState;
       if (nextState !== 'active') generation += 1;
       // Let the global lifecycle owner invalidate before requesting the list.
-      if (resumed) Promise.resolve().then(() => { if (focused && previousState === 'active') return refresh(); });
+      if (resumed) void Promise.resolve().then(() => { if (focused && previousState === 'active') return refresh(); });
     });
     return () => {
       focused = false;
@@ -117,7 +117,7 @@ export function PluginsScreen() {
           <PluginRow title="拾言" subtitle="Mira 官方插件" local
             onPress={() => navigation.navigate('ShiyanHome')} />
           {items.map(item => (
-            <React.Fragment key={item.id}>
+            <React.Fragment key={item.appId}>
               <View style={[styles.separator, { backgroundColor: colors.border.soft }]} />
               <PluginRow title={item.name} subtitle="Mira ID" />
             </React.Fragment>
@@ -130,7 +130,7 @@ export function PluginsScreen() {
           <View style={styles.noticeRow}>
             <Text style={[styles.notice, { color: colors.text.muted }]}>云端插件暂时无法更新</Text>
             {signedIn ? <Pressable accessibilityRole="button" accessibilityLabel="重试更新云端插件"
-              onPress={() => retryRef.current?.()} style={styles.retry}>
+              onPress={() => { void retryRef.current?.(); }} style={styles.retry}>
               <Text style={[styles.subtitle, { color: colors.primary }]}>重试</Text>
             </Pressable> : null}
           </View>
