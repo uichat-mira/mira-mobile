@@ -169,7 +169,20 @@ describe('SettingsScreen MOB-056D information architecture', () => {
     for (const title of ['模型直连', '远程连接', '记忆', '常规', '通知']) {
       expect(titles).toContain(title);
     }
-    expect(strings).toContain('语音');
     expect(strings).toContain('未配置');
+  });
+
+  it('does not render entries that have no effect yet', async () => {
+    const tree = await renderScreen();
+    const strings = renderedStrings(tree);
+    const titles = rowTitles(tree);
+
+    // 设备同步 and 语音 were dead rows: no actionId means the row can never be
+    // pressed, so they must not stay visible as if they were usable settings.
+    expect(strings).not.toContain('设备同步');
+    expect(strings).not.toContain('所有设备');
+    expect(strings).not.toContain('语音');
+    expect(titles).not.toContain('设备同步');
+    expect(titles).not.toContain('语音');
   });
 });

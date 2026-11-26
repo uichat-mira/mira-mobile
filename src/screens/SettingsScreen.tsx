@@ -21,7 +21,6 @@ import {
   Moon,
   Settings as GearIcon,
   Bell,
-  Volume2,
   ShieldCheck,
   HardDrive,
   Bug,
@@ -476,7 +475,7 @@ export function SettingsScreen() {
             title="重点色"
             subtitle={`${accentOption.label}${persistenceSuffix}`}
             actionId="accent"
-            isLast={false}
+            isLast
             right={
               <View style={styles.accentRow}>
                 <View style={[styles.accentDot, { backgroundColor: accentOption.swatch ?? colors.text.soft }]} />
@@ -484,12 +483,6 @@ export function SettingsScreen() {
               </View>
             }
             showChevron={false}
-          />
-          <Row
-            icon={Monitor}
-            title="设备同步"
-            subtitle="所有设备"
-            isLast
           />
         </RowGroup>
 
@@ -503,7 +496,6 @@ export function SettingsScreen() {
             isLast={false}
           />
           <Row icon={Bell} title="通知" actionId="notifications" isLast={false} />
-          <Row icon={Volume2} title="语音" isLast={false} />
           <Row icon={ShieldCheck} title="安全" actionId="security" isLast={false} />
           <Row icon={HardDrive} title="存储" actionId="storage" isLast={false} />
           <Row icon={Bug} title="报告错误" actionId="report-error" isLast={false} />
@@ -555,19 +547,18 @@ const styles = StyleSheet.create({
   },
   headerSpacer: { flex: 1 },
   scrollContent: {
-    paddingTop: 8,
+    paddingTop: 0,
     paddingHorizontal: 20,
     paddingBottom: 48,
   },
   profileSection: {
     alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 24,
+    paddingTop: 0,
+    paddingBottom: 8,
   },
   avatarWrap: {
     width: 96,
     height: 96,
-    marginBottom: 16,
   },
   avatar: {
     width: 96,

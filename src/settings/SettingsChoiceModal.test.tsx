@@ -65,4 +65,29 @@ describe('SettingsChoiceModal drawer presentation', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     await act(async () => { tree.unmount(); });
   });
+
+  it('lets a long option description wrap instead of truncating it', async () => {
+    let tree!: ReactTestRenderer;
+    const description = '适合长链路任务；仍受运行时间和取消操作约束。';
+    await act(async () => {
+      tree = renderer.create(
+        <SettingsChoiceModal
+          withinModal
+          visible
+          value="deep"
+          options={[{ value: 'deep', label: '深度', description }]}
+          onChange={jest.fn()}
+          onClose={jest.fn()}
+        />,
+      );
+    });
+
+    const descriptionNode = tree.root.find(
+      node => typeof node.props.children === 'string' && node.props.children === description,
+    );
+    // Any numberOfLines cap re-introduces the ellipsis the picker must avoid.
+    expect(descriptionNode.props.numberOfLines).toBeUndefined();
+
+    await act(async () => { tree.unmount(); });
+  });
 });

@@ -118,10 +118,10 @@ export function SettingsChoiceModal<T extends string>({
               {option.swatch ? <View style={[styles.swatch, { backgroundColor: option.swatch }]} /> : null}
               {option.description ? (
                 <View style={styles.optionCopy}>
-                  <Text numberOfLines={1} style={[styles.drawerLabel, { color: colors.text.ink }]}>
+                  <Text style={[styles.drawerLabel, { color: colors.text.ink }]}>
                     {option.label}
                   </Text>
-                  <Text numberOfLines={1} style={[styles.description, { color: colors.text.muted }]}>
+                  <Text style={[styles.description, { color: colors.text.muted }]}>
                     {option.description}
                   </Text>
                 </View>
