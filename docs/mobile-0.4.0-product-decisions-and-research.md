@@ -2,7 +2,7 @@
 
 > 状态：**产品决策基线（已确认项）+ 研究证据（非实施授权）**  
 > 适用：Mira Mobile Local Provider / Pi Core 的工具发现、跨服务能力消费，以及与 Desktop / Who-You / MCP 的边界  
-> 记录截至：2026-11-25
+> 记录截至：2026-11-27
 > **重要：0.4.0 是本轮讨论的版本基线，不表示本页目标架构已随 0.4.0-dev 发布。** 具体版本和执行现状仍以对应分支、源码、构建及真机证据为准。
 
 ## 1. 真相源与文档边界
@@ -58,7 +58,7 @@
 - **已确认的产品原则**：网页、搜索结果、邮件、文档等第三方数据可以成为 Agent 后续工具调用的**事实输入**。不得一概以「网络来的数据不可信」为理由阻断正常浏览、搜索→打开、邮件读取→整理→保存等合法工作流。
 - **仍需保持的安全区别**：外部数据不能仅凭正文里的命令提升为用户/系统指令，也不能自动扩张 Host Grant、账号授权、收件人或外传范围。实际副作用、敏感数据发往外部 Provider、跨服务传输等仍要符合相应授权/用户批准与执行策略。
 - **2026-11-24 MOB-100 已移除冲突实现**：src/tools/agentToolPolicies.ts 的 MailStage、`MAIL_TOOL_CHAIN_RESTRICTED` 及 src/runtime/piAgentLoop.ts 中按前序邮件结果缩减工具集、禁止跨能力披露的检查已从活动执行路径删除，不再以新状态机、白名单或意图分类器替代。已授权工具不会因前序结果被禁用；工具结果只是模型可用的数据。
-- **保留的边界**：`sensitiveResult` 仅承载现有狐邮向 Local Provider 的逐次披露同意与接收方提示，不参与工具选择；身份/服务绑定、授权范围、撤权、schema/目录校验、具体服务审批、审批拒绝、取消与预算仍按既有合同执行。外部数据中的指令不能提升权限或扩大外传范围。
+- **保留的边界（历史实现；目标去业务化见 D12）**：`sensitiveResult` 仅承载现有狐邮向 Local Provider 的逐次披露同意与接收方提示，不参与工具选择；身份/服务绑定、授权范围、撤权、schema/目录校验、具体服务审批、审批拒绝、取消与预算仍按既有合同执行。外部数据中的指令不能提升权限或扩大外传范围。
 - **未来审批设计意图（本期不实现）**：可由 MCP Server 声明工具评级，Gateway 按评级和用户忽略设置确定性地放行或弹窗；本期不新增评级、字段、设置或弹窗。
 - **残余风险（记录，不虚报解决）**：狐邮披露同意只覆盖将数据交给当前模型；后续调用若把该内容发往其他服务，仍须由目标服务现有 exact-call 审批/授权合同覆盖。Mobile 不新增载荷语义分类器；若某服务缺少参数级审批，该缺口由 #337 与该服务权威解决。
 - 早期产品决策**不等于**无合同地删除邮件防护；MOB-100 通过删除语义阻断、保留明确审批/隐私合同并更新测试来落地，没有靠删测试或一键放开权限制造绿灯。
@@ -79,6 +79,44 @@
 - **Mobile 职责**：保留 Local Provider 和 Host-owned Run 两种不同执行所有权；Pi Core 只实现通用标准 MCP Client 与可选能力 Resource 的解析、可信路由、渐进式模型 Schema 披露和缓存失效，不按 Desktop/狐邮名字硬编码工具组。**服务层级不构成三轮状态机**；对已知有效 Tool 可以直接执行，但每次真实执行仍需服务端重新判断权限、当前就绪与必要审批。
 - **可验证事实与当前交付**：Who-You OPS-046 / PR #80 已交付可选 MCP Resource（17 个语义能力、30 个真实 Tool），并随 Who-You prod 8a17dcf5 部署生产；Mobile 的受限只读消费由 MOB-096 / PR #377 接入。Desktop AGT-071 / PR #498 已在 dev 交付受控 POST /mcp，复用既有 Harness/Tool Core 与 exact-call 审批；Mobile MOB-097 / PR #380 已将 MCP 消费收敛为可并存多服务 binding。MOB-098 在上述真实基线上完成当前 Desktop 的 Direct/官方 Relay MCP 接线。**这些代码与自动化证据不等于真机 T4 已完成。**
 - **实施收敛**：B1（Desktop MCP 出口）与 B2（Mobile 通用多服务消费）已进入 dev；B3 当前代码已把 Desktop 与 Who-You 纳入同一 Pi Core 服务目录并退役旧 Mobile Agent Remote V1 聚合入口。Remote V1 继续承担设备/Host/会话、审批恢复、取消等非 MCP 权威。下一步重点是维护者真机跨端验收及 D9 合法数据连续调用策略，不再重新选择协议路线。
+
+
+### D12：工具治理归服务提供者，Mobile 运行时去业务化（2026-11-27 维护者裁决）
+
+**决策状态：已确认产品与架构方向；尚未实施、验收或授权发布。** 本轮真机联调触发的是基础机制审计，不是狐邮专项 UX 优化。D12 是 D8/D9/D11 的收敛与纠偏；早期为首个邮件只读切片引入的客户端专用规则是待整改的历史实现，不再作为通用 Agent 架构目标。
+
+#### 职责边界与决定
+
+- **工具提供者治理工具。** Who-You、Desktop 及未来 MCP Server 拥有工具注册、可用/开放范围、真实 Schema、业务参数与默认值、业务权限、执行限制、分页、截断、结果和业务错误的权威。服务端必须执行实际授权及账号隔离；客户端不能伪造授权或替它实现业务逻辑。
+- **Model 拥有语义决策权；Pi Core 拥有工具循环。** 合法工具由模型按任务选择、构造参数、消费结果、修正错误、换工具或总结部分结果。普通工具失败不等于 Agent Run 失败。MCP 的 `isError: true` 以及可安全处理的协议/网络/参数/权限拒绝须以带调用身份的真实失败结果反馈模型，保留可披露的具体错误及原始语义，不吞掉、伪造成成功或一律提升为 fatal。内部异常可以存在，但必须在正确执行边界转换。用户取消、预算耗尽、不可继续的 Runtime/会话故障可终止或暂停；副作用结果不确定不得盲目重试，撤权/失效绑定必须拒绝执行，其他合法工具仍可继续。
+- **Mobile 是通用消费者，而非业务代理。** 保留标准 MCP 传输、协议结构校验、Mira ID/Host 认证、服务实例绑定、凭据及目录生命周期、同名工具的确定性路由/别名、三层渐进披露、本机工具接入、取消与运行状态呈现。不得按服务名、工具前缀或业务类别维护远程工具白名单、参数约束、结果字段、分页或专用执行器。协议适配与服务端治理必须区分；不为新服务增加 Mobile 业务代码，不魔改 MCP。
+- **Gateway 做减法。** 审计并收敛其实际必要职责，优先归还给 MCP Client、服务绑定、Pi Core 或独立通用安全边界；删除重复层、无消费者的旧实现及测试合同。不以换名、迁目录、新代理或新增 Planner/toolGuardNode/toolSelectNode 代替删除。是否能彻底去掉某一层由真实依赖和替代路径证据决定，不能为追求行数盲删。保留必要的 Remote Host 非工具权威以及本机真实工具所有权。
+- **客户端数据安全与服务端工具治理是不同问题。** 用户授权读取不自动等于授权把敏感结果发给某个模型、其他服务或持久记忆。将已有邮件专用披露、接收方、历史及记忆保护迁移为通用、与可信服务/调用身份绑定的数据披露机制；不能以隐私为理由重写远程业务参数、静默丢字段或接管工具准入。服务声明/评级只能提供决策输入，不自行授予权限。既有 #337 的逐页/正文披露合同在明确批准替代方案之前仍然有效；不擅自放宽写/发/删除、外传、持久化或其他权限。任务级有界授权是否替换逐次授权、采用何种可信元数据和缺省策略仍须另行设计及裁决，本轮优先基础稳定性。
+
+#### 2026-11-27 审计证据（Mobile/Who-You dev 静态核查，非修复结果）
+
+| 位置（仓库内路径） | 已证实缺陷 / 风险 |
+| --- | --- |
+| [Mobile accountServiceRegistry.ts](../src/mcp/accountServiceRegistry.ts) | 按 `whoyou_` 前缀进入 mailPolicy；强制 whoami、按名称筛出两个工具、优先披露搜索、注入邮件角色与专用 executor。V1 实例目录通用化不等于执行链通用化；前缀还可能误匹配其他服务。普通 MCP 路径也将 `isError: true` 抛为 SERVICE_TOOL_REJECTED，丢失原始内容；文本化结果丢弃非文本块、在已有文本时不保留结构化结果，并裁剪。 |
+| [Mobile whoYouMcpReadTools.ts](../src/mcp/whoYouMcpReadTools.ts) | 重复业务 Schema：字段白名单、长度、folder=inbox、limit 1–10（缺省 10）、include=text；参数错误抛 ToolGatewayError，实际 RPC 前即可终止。真实服务端允许合法但客户端拒绝的调用。 |
+| [Mobile whoYouReadContract.ts](../src/whoYou/whoYouReadContract.ts) / [whoYouMailTools.ts](../src/tools/localTools/whoYouMailTools.ts) | 将合法 MCP 失败结果转异常；要求特定 structuredContent 及邮件字段；多次裁剪、重组。结果丢失服务端 coverage 等事实；假如页大小允许超过 10 而仍按原 cursor 裁剪，会跳过记录（当前输入上限会先拦截，此为整改时必须防止的潜在缺陷）。 |
+| [Mobile localToolGatewayClient.ts](../src/tools/localToolGatewayClient.ts) | 通用本地 executor 保留邮件工具名特判及专用参数逻辑；当前动态路径优先使用 normalizeArguments，旧分支生产可达性尚需证明，不能当作已确认死代码。 |
+| [Mobile toolGatewayClient.ts](../src/tools/toolGatewayClient.ts) / [agentToolPolicies.ts](../src/tools/agentToolPolicies.ts) / [localConversationExecution.ts](../src/runtime/localConversationExecution.ts) | 基础接口以 mail-search/mail-body 表示敏感结果，运行时按固定邮件工具名验证隐私角色，会话持久化和记忆也按固定名称判断。业务耦合扩散到基础类型与历史数据；别名及未来工具的保护覆盖必须验证。 |
+| [Mobile mcpServiceToolGateway.ts](../src/tools/mcpServiceToolGateway.ts) / [piAgentLoop.ts](../src/runtime/piAgentLoop.ts) | MCP 错误被重新包装；普通 ToolGatewayError 记录 fatalError，finishTurn 终止；只有 RecoverableToolCallError 有明确非 fatal 路径，代码搜索中本机 web 是实际生产工具使用者。ToolCallResult 基础接口仅 content:string，无通用工具失败标记。披露/批次/调用预检失败也可能终止 run；须区分安全/协议必要阻断与可恢复调用失败。通用字节上限需显式传达截断且不破坏结构/分页；不能假装完整结果。 |
+| [Mobile localAgentRunController.ts](../src/runtime/localAgentRunController.ts) / piAgentLoop.ts | 审批等待使用单 pending slot；executor 另持一次性待执行调用，两者职责不同，不直接判定错误。Run 的绝对 deadline 在等待人工批准时继续计时；连续审批、过期/旧审批、取消、批准后执行失败与部分结果保留需专项验证。 |
+| [Who-You mail.ts](https://github.com/uichat-mira/who-you/blob/dev/src/mcp/mail.ts) / [server.ts](https://github.com/uichat-mira/who-you/blob/dev/src/mcp/server.ts) / [service-capabilities.ts](https://github.com/uichat-mira/who-you/blob/dev/src/mcp/service-capabilities.ts) | 服务端已注册并治理真实工具。search limit 1–50、默认 20；folder inbox/archive/trash/all；message include metadata/text/html、默认 metadata；实际账号归属、分页、覆盖、长度及业务权限均在服务端；失败返回 isError:true、具体错误 code/detail。可选语义 Resource 不替代真实工具与授权。Mobile 的重复契约和错误转换与这些事实冲突。 |
+
+上述 Mobile 路径链接指向仓库内对应源码；审计主要证据来自 11-27 dev 源码（accountServiceRegistry blob `c9c7c223e1a2aa573a2aabcf1447d5988acdcea5`、piAgentLoop blob `9906713b824e3e3ca4c10858689d9d275ec95489`、mcpServiceToolGateway blob `89db1c44b6045c5ecd78b270d1ff27c60cafee90`；Who-You mail.ts blob `42031237a12d1d1dbb5e37e95365ea0ba45edab2`）。当前仍有必要的通用能力：多实例绑定与失效、冲突别名、路由、渐进披露、Local/Direct/Relay 接入。不得误删安全边界或将 Gateway 整体已可删除当成既定事实。
+
+**真机证据（维护者 11-27 联调）**：普通邮件请求遇到“Mobile Agent 每次搜索仅允许返回最多 10 封邮件”；模型展示 limit=50 的计划，显式要求 10 封后可返回邮件摘要、识别分页，并至少部分读取正文。维护者报告为这 10 封信点击审批至少 10 次后 run 失败，界面出现通用发送失败文案。已证明真实邮件能力至少部分可达，但不能认定连续任务已通过。尚未捕获失败调用原始参数、确切错误码、计时、生产服务实时 Schema 或真机日志；最后一次中断原因未定位。不能把审批次数推定为具体超时或 ID bug。没有真实邮件内容进入本记录。
+
+#### 整改顺序与验收方向（后续 Issue 持有具体施工合同）
+
+1. **架构减法**：对以上已证实业务耦合和同类代码逐项删除或收敛，核实历史入口可达性；不要把专用代理搬到新 Adapter。先确定通用披露授权的等价安全边界，未获批准的权限扩张不做。
+2. **机制修复**：保留原始 MCP 成功/失败语义、稳定 call ID 及可供模型修正的错误；验证错误经过发现/调用/审批后仍可回到 Pi Core，服务局部失效不能拖垮其他服务。预算、人工等待、部分成功、取消、失效与不确定副作用分开处理。诊断可定位真实失败，禁止隐式自动重试副作用。
+3. **独立验收**：使用至少两个未知且独立授权的 MCP 服务（含同名工具、无语义 Resource 的标准服务）、真实 Pi Core 与 MCP 客户端/绑定路径，mock 仅外部模型/网络等必要边界。新增工具/修改 Schema 无需修改 Mobile；合法参数与结果保持服务端语义；非法参数返回模型后能修正；服务拒绝、网络故障、审批失败后合法工作可继续；分页不漏项，部分结果不假报成功。用足够预算的测试 run 验证至少 20 次连续工具调用、连续人工批准模拟及取消/撤权/账号切换，明确审批耗时与执行预算语义。安全负例需覆盖未授权外传、历史/记忆、旧凭据、跨实例路由及副作用不确定。真实 Android/iOS 与授权服务联调另记脱敏版本、计数、错误码和结果，不以 fixture 冒充真机。验收对象是通用 Runtime 的稳定性，不仅是狐邮能读信。
+
+本节不新建工作项，不批准施工/合并/发布，不改变 #337 当前授权范围；与 #337、#386、#392 及后续实施合同冲突之处须按本次最新产品方向在授权施工时明确收口。
 
 ## 3. 源码证实的当前技术基线（不是目标状态）
 
@@ -146,4 +184,4 @@
 
 **一句话产品定义：Mobile Pi Core 以通用 MCP Client 消费 Desktop、Who-You 及未来 MCP Server；第一方服务可选声明「环境（服务）→ 能力 → 工具」，Agent 自适应发现、按需披露 Schema 并连续调用。Desktop 保留自身 Harness/审批与必要 Remote V1 远程业务权威；协议方向已裁决，未交付部分必须以代码与运行证据验收。**
 
-- **MOB-105 / MOB-107 联合候选（V1）**：仅使用 `/v1/application-services` 目录及实例级凭据，按 APP_ID + serviceId + resource 隔离绑定，退役狐邮静态发现和旧工具包装，保留邮件逐次授权及真实 MCP Schema；MCP 2026-07-28 标准参数镜像与 Direct/Relay Accept 转发已补齐。真实部署和设备验收仍待执行。详见 pi-core-mobile-bridge.md。
+- **MOB-105 / MOB-107 联合候选（V1）**：仅使用 `/v1/application-services` 目录及实例级凭据，按 APP_ID + serviceId + resource 隔离绑定，退役狐邮静态发现与旧取票路径，但狐邮专用执行包装、业务规则及错误转换仍存在（11-27 审计见 D12）；保留邮件逐次授权及真实 MCP Schema；MCP 2026-07-28 标准参数镜像与 Direct/Relay Accept 转发已补齐。真实部署和设备验收仍待执行。详见 pi-core-mobile-bridge.md。
